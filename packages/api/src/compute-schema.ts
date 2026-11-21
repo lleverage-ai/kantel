@@ -2125,6 +2125,61 @@ export const FileContent = Type.Object(
 	},
 );
 
+// A command's output, read by range.
+
+export const CommandStream = Type.Union([Type.Literal("stdout"), Type.Literal("stderr")], {
+	title: "CommandStream",
+	description: "One of a command's output streams. Reading, `stdout` is the default.",
+});
+
+export const ReadCommandOutputQuery = Type.Object(
+	{
+		stream: Type.Optional(CommandStream),
+		encoding: Type.Optional(FileEncoding),
+		offset: Type.Optional(Type.Integer({ minimum: 0, description: "Read from this byte (default 0)." })),
+		length: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 1024 * 1024,
+				description: "Read at most this many bytes: default, and at most, 1 MiB (1048576).",
+			}),
+		),
+	},
+	{ title: "ReadCommandOutputQuery" },
+);
+
+export const CommandOutput = Type.Object(
+	{
+		commandId: Type.String(),
+		stream: CommandStream,
+		encoding: FileEncoding,
+		content: Type.String({ description: "The part read: at most `length` bytes from `offset`." }),
+		offset: Type.Integer({ description: "The byte `content` starts at. At `size`, it's empty." }),
+		size: Type.Integer({
+			description:
+				"How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` " +
+				"plus the part's length.",
+		}),
+		ended: Type.Boolean({ description: "The command has ended, so `size` is the whole of what is kept." }),
+		truncated: Type.Boolean({
+			description:
+				"Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps " +
+				"in all), or the command ended with its machine, whose last output may not have reached the disk.",
+		}),
+		limit: Type.Integer({
+			description:
+				"The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and " +
+				"1 MiB (the command's own `stdout` and `stderr`) elsewhere.",
+		}),
+	},
+	{
+		title: "CommandOutput",
+		description:
+			"A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall " +
+			"inside a UTF-8 character.",
+	},
+);
+
 export const WriteFileBody = Type.Object(
 	{
 		path: Type.String({ minLength: 1 }),

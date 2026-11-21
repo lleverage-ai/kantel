@@ -329,7 +329,8 @@ export function commandResult(command: Command): ToolResult {
 	if (command.terminated !== undefined) {
 		lines.push(`The isolate stopped it for using too much ${command.terminated} time.`);
 	}
-	if (command.truncated) lines.push("Kantel kept only its first 1 MiB of output.");
+	if (command.truncated)
+		lines.push("Only its first 1 MiB of output is shown here: kantel attach reads all Kantel kept.");
 	if (command.state !== "running" || stdout !== "" || stderr !== "") {
 		lines.push("stdout:", stdout === "" ? "(empty)" : stdout);
 		if (stderr !== "") lines.push("stderr:", stderr);

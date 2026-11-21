@@ -97,3 +97,31 @@ Ends a running command and the processes it started; one that has ended is answe
 - `200`: [Command](/api/reference/types/#command) (`application/json`). The command.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Read a command's output
+
+`GET /v1/sandboxes/{sandboxId}/commands/{commandId}/output` (SDK method `readCommandOutput`)
+
+Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+| `commandId` | string | yes | The command's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `stream` | [CommandStream](/api/reference/types/#commandstream) | no | One of a command's output streams. Reading, `stdout` is the default. |
+| `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | no |  |
+| `offset` | integer | no | Read from this byte (default 0). (minimum 0) |
+| `length` | integer | no | Read at most this many bytes: default, and at most, 1 MiB (1048576). (minimum 1, maximum 1048576) |
+
+**Answers**
+
+- `200`: [CommandOutput](/api/reference/types/#commandoutput) (`application/json`). The part read.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).

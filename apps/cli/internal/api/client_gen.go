@@ -571,6 +571,29 @@ func (q *ListWebhooksQuery) values() url.Values {
 	return v
 }
 
+// ReadCommandOutputQuery is ReadCommandOutput's query.
+type ReadCommandOutputQuery struct {
+	// One of a command's output streams. Reading, `stdout` is the default.
+	Stream   *CommandStream
+	Encoding *FileEncoding
+	// Read from this byte (default 0).
+	Offset *int64
+	// Read at most this many bytes: default, and at most, 1 MiB (1048576).
+	Length *int64
+}
+
+func (q *ReadCommandOutputQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "stream", q.Stream)
+	setQuery(v, "encoding", q.Encoding)
+	setQuery(v, "offset", q.Offset)
+	setQuery(v, "length", q.Length)
+	return v
+}
+
 // ReadFileQuery is ReadFile's query.
 type ReadFileQuery struct {
 	Path     *string
@@ -1502,6 +1525,15 @@ func (c *Client) KillCommand(ctx context.Context, sandboxID string, commandID st
 func (c *Client) GetCommand(ctx context.Context, sandboxID string, commandID string, opts ...CallOption) (*Command, error) {
 	var out Command
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/commands/%s", url.PathEscape(sandboxID), url.PathEscape(commandID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// ReadCommandOutput GET /sandboxes/{sandboxId}/commands/{commandId}/output: Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`.
+func (c *Client) ReadCommandOutput(ctx context.Context, sandboxID string, commandID string, query *ReadCommandOutputQuery, opts ...CallOption) (*CommandOutput, error) {
+	var out CommandOutput
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/commands/%s/output", url.PathEscape(sandboxID), url.PathEscape(commandID)), Query: query.values(), Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

@@ -476,6 +476,25 @@ type CommandNeedsMicrovm struct {
 	Reason string `json:"reason"`
 }
 
+// A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character.
+type CommandOutput struct {
+	CommandID string `json:"commandId"`
+	// The part read: at most `length` bytes from `offset`.
+	Content  string       `json:"content"`
+	Encoding FileEncoding `json:"encoding"`
+	// The command has ended, so `size` is the whole of what is kept.
+	Ended bool `json:"ended"`
+	// The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and 1 MiB (the command's own `stdout` and `stderr`) elsewhere.
+	Limit int64 `json:"limit"`
+	// The byte `content` starts at. At `size`, it's empty.
+	Offset int64 `json:"offset"`
+	// How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` plus the part's length.
+	Size   int64         `json:"size"`
+	Stream CommandStream `json:"stream"`
+	// Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps in all), or the command ended with its machine, whose last output may not have reached the disk.
+	Truncated bool `json:"truncated"`
+}
+
 type CommandPage struct {
 	Items []Command `json:"items"`
 	// Present when more items follow.
@@ -489,6 +508,14 @@ const (
 	CommandStateExited   CommandState = "exited"
 	CommandStateKilled   CommandState = "killed"
 	CommandStateTimedOut CommandState = "timed_out"
+)
+
+// One of a command's output streams. Reading, `stdout` is the default.
+type CommandStream string
+
+const (
+	CommandStreamStdout CommandStream = "stdout"
+	CommandStreamStderr CommandStream = "stderr"
 )
 
 // In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`).

@@ -71,8 +71,10 @@ import {
 	type BackendStickyDisk,
 	type BackendStickyDiskStatus,
 	type BootOptions,
+	type CommandOutputPart,
 	type CommandProgress,
 	type ExecResult,
+	type FileRange,
 	type HostSandboxRef,
 	hostNotConnected,
 	isBootDroppedMemory,
@@ -1883,6 +1885,25 @@ function decodeUtf8(bytes: Uint8Array, path: string): string {
 	} catch {
 		throw new KantelError("invalid", `${path} is not UTF-8 text; read it with encoding base64`);
 	}
+}
+
+/**
+ * A part of a command's stream as its record holds it (`stdout` or `stderr`): its first `MAX_OUTPUT_CHARS`. Cut when the
+ * record is and this stream filled it.
+ */
+function recordedOutput(command: StoredCommand, stream: "stdout" | "stderr", range: FileRange): CommandOutputPart {
+	const text = command[stream];
+	const bytes = new TextEncoder().encode(text);
+	const offset = Math.min(range.offset, bytes.byteLength);
+	return {
+		bytes: bytes.subarray(offset, Math.min(offset + range.length, bytes.byteLength)),
+		offset,
+		size: bytes.byteLength,
+		ended: command.state !== "running",
+		// A record cut at its cap: this stream filled it (within a character), the other may not have.
+		truncated: command.truncated && (text.length >= MAX_OUTPUT_CHARS || bytes.byteLength > MAX_OUTPUT_CHARS - 4),
+		limit: MAX_OUTPUT_CHARS,
+	};
 }
 
 const truncate = (text: string): { text: string; truncated: boolean } =>
@@ -6571,6 +6592,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				truncated:
 					stdout.truncated ||
 					stderr.truncated ||
+					result.truncated === true ||
 					(latest.truncated && !(result.stdout.startsWith(latest.stdout) && result.stderr.startsWith(latest.stderr))),
 				endedAt: at,
 				durationMs: at - latest.startedAt,
@@ -11678,6 +11700,46 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Following a command that still runs (`kantel exec --attach`, an MCP client's `command_get`) is a use.
 			if (fetched.state === "running") noteActivity(sandbox.id);
 			return commandView(fetched);
+		},
+
+		readCommandOutput: async (principal, { params, query }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
+			const stored = await store.commands.get(params.commandId);
+			if (stored === undefined || stored.sandboxId !== sandbox.id) throw notFound("command");
+			const command = await fetchedCommand(stored);
+			if (command.state === "running") noteActivity(sandbox.id);
+			const stream = query.stream ?? "stdout";
+			const encoding = query.encoding ?? "utf8";
+			const range = { offset: query.offset ?? 0, length: Math.min(query.length ?? MAX_FILE_BYTES, MAX_FILE_BYTES) };
+			const answer = (part: CommandOutputPart) => ({
+				commandId: command.id,
+				stream,
+				encoding,
+				content:
+					encoding === "base64" ? bytesToBase64(part.bytes) : decodeUtf8(part.bytes, `${command.id}'s ${stream}`),
+				offset: part.offset,
+				size: part.size,
+				ended: part.ended,
+				truncated: part.truncated,
+				limit: part.limit,
+			});
+			// Its sandbox may keep it all (a microVM's guest agent, on its disk), read while it runs, as files are: from there
+			// whenever it can, so one reader's offsets stay the sandbox's bytes. Stopped, the record answers for a command that
+			// exited (its end its backend's own) with none of it cut; anything else needs the sandbox running.
+			const whole = (command.state === "exited" || command.state === "timed_out") && !command.truncated;
+			const read = sandbox.type === "isolate" ? undefined : backend.commandOutput?.bind(backend);
+			if (read !== undefined && (sandbox.state === "running" || !whole)) {
+				await requireRunning(principal, sandbox.id);
+				try {
+					return answer(await read(sandbox.id, command.id, stream, range));
+				} catch (error) {
+					// A sandbox that keeps none (an older kantel-host or guest agent), or none of this command (it ran on one).
+					if (!(error instanceof KantelError && (error.code === "not_supported" || error.code === "not_found"))) {
+						throw error;
+					}
+				}
+			}
+			return answer(recordedOutput(command, stream, range));
 		},
 
 		killCommand: async (principal, { params }) => {

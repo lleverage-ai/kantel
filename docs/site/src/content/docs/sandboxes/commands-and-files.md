@@ -57,7 +57,7 @@ Check `exitCode`, not the HTTP status: a command that fails still answers `200`,
 | `timeoutMs` | How long to wait. Default 30,000 (30 seconds), at most 600,000 (10 minutes). A detached command has no limit unless you give one |
 | `detached` | Start it and answer at once. See [below](#long-commands-and-servers) |
 
-A command still running at `timeoutMs` is killed, and the answer has `state: "timed_out"`. `stdout` and `stderr` each hold up to 1 MiB; when there was more, `truncated` is `true`. For big output, write it to a file in the command and [read the file](#read-a-file).
+A command still running at `timeoutMs` is killed, and the answer has `state: "timed_out"`. `stdout` and `stderr` each hold up to 1 MiB; when there was more, `truncated` is `true`, and you can [read the rest](#read-output-past-1-mib).
 
 Commands are safe to retry with an `Idempotency-Key` header: a retry with the same key answers the first run and doesn't run it again, detached or not. The same key with another command is `422` with `refused`. If the first call failed part way or stopped answering, the command may have run: a retry with the same key is `409` `conflict` with `details.idempotencyKey: "held"`, and doesn't run it. List the sandbox's commands to see, then use a new key. Without a key, a retry that reached Kantel the first time runs the command twice, so send one with anything that isn't safe to run twice. The `kantel` CLI and its MCP server send one with every command. See [Safe retries](/api/reference/#safe-retries).
 
@@ -74,7 +74,7 @@ curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/commands" \
   -d '{"command": "cd app && npm run dev -- --host 0.0.0.0 --port 3000", "detached": true}' | jq -r .id
 ```
 
-Read it back by its ID for its state, its output so far while it runs (on a microVM, for any command, detached or not), and once it has ended its exit code and output (up to 1 MiB of each stream, as for any command). Kill it when you're done:
+Read it back by its ID for its state, its output so far while it runs (on a microVM, for any command, detached or not), and once it has ended its exit code and output (up to 1 MiB of each stream, as for any command; [read the rest](#read-output-past-1-mib) by range). Kill it when you're done:
 
 ```ts
 const server = await kantel.runCommand("sbx_4kq9x2mt", {
@@ -93,6 +93,41 @@ A detached command doesn't keep its sandbox running: the sandbox still stops at 
 An isolate on a kantel-host runs a command in its own shell rather than as a process, so a command there stops after 30 seconds unless its `timeoutMs` says otherwise, detached or not.
 
 On a self-hosted host, detached commands with no limit and kills that stop the process need a kantel-host that has them. On an older one, a detached command still stops at that host's own limit (2 minutes on a microVM), and a kill marks the command killed but can't stop its process. The command's `stderr` says so in either case. Upgrade the host's kantel-host to fix both.
+
+## Read output past 1 MiB
+
+A command's `stdout` and `stderr` hold the first 1 MiB of each stream. A microVM keeps more: up to 64 MiB of each of a command's streams, on the sandbox's own disk. Read any part of it by `offset` and `length`, while the command runs and after it ends, as you read a big file:
+
+```sh
+curl -s "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/commands/cmd_9a8b7c/output?stream=stdout&offset=1048576&encoding=base64" \
+  -H "authorization: Bearer $KANTEL_API_KEY" | jq '{offset, size, ended, truncated}'
+```
+
+```ts
+let offset = 0;
+for (;;) {
+	const part = await kantel.readCommandOutput("sbx_4kq9x2mt", "cmd_9a8b7c", { stream: "stdout", offset, encoding: "base64" });
+	process.stdout.write(Buffer.from(part.content, "base64"));
+	offset = part.offset + Buffer.from(part.content, "base64").length;
+	if (offset >= part.size && part.ended) break;
+	if (offset >= part.size) await new Promise((resolve) => setTimeout(resolve, 1000)); // still running
+}
+```
+
+The answer is a [CommandOutput](/api/reference/types/#commandoutput). `stream` is `stdout` (the default) or `stderr`, and one read answers at most 1 MiB. `size` is how much of the stream is kept now, and grows while the command runs; `ended` says it has ended, so `size` is all there is. Read again from `offset` plus the part's length until you reach `size`. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character. `truncated` says some of it may be missing past what is kept: the stream went past `limit`, the most kept of it, or past what the sandbox keeps in all, or the command ended with its machine.
+
+What is kept, and where:
+
+| | Kept | Where |
+| --- | --- | --- |
+| Each stream of a command | 64 MiB | The sandbox's own disk, read by root only (`/disk/kantel/commands`), so it counts against its disk |
+| All of a sandbox's commands | 1 GiB, and 10,000 commands | A new command makes room by dropping the oldest ended commands' output. Commands running at once share the 1 GiB: a stream that would take it past is cut there |
+
+It stays until the sandbox is deleted, through stops, restarts, moves and its machine failing: a machine that fails loses at most the last 2 seconds of output, which may not have reached the disk yet, so a command that ended with its machine reads as `truncated`. A snapshot keeps it with the rest of the disk.
+
+Read it while the sandbox runs, as you read files: a call to a stopped one answers `409` with a [SandboxNotRunning](#when-the-sandbox-isnt-running), unless the command exited and its own `stdout` and `stderr` hold all of it (not `truncated`), when the answer comes from those. An isolate, and a microVM on a self-hosted kantel-host or guest image from before it, keep only the command's own 1 MiB: the route reads that, with `limit` 1 MiB.
+
+`kantel exec` and `kantel attach` read a command's output this way for you, all Kantel keeps of it, and say where the rest is if the sandbox has stopped.
 
 ## Command history
 

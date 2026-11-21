@@ -245,6 +245,83 @@ describe("sandboxes", () => {
 		expect((await failure(tom.readFile(sandbox.id, { path: "a.txt", length: 1024 * 1024 + 1 }))).code).toBe("invalid");
 	});
 
+	it("reads a command's output past 1 MiB from its sandbox, and from its record where the sandbox keeps none", async () => {
+		const stub = createStubBackend();
+		const kept = new TextEncoder().encode("x".repeat(3 * MiB));
+		const asked: { commandId: string; stream: string; offset: number; length: number }[] = [];
+		let keeps = true;
+		const backend: SandboxBackend = {
+			...stub,
+			exec: async (id, request) =>
+				request.command === "big"
+					? { exitCode: 0, stdout: "x".repeat(MiB + 10), stderr: "", timedOut: false }
+					: stub.exec(id, request),
+			commandOutput: async (_id, commandId, stream, range) => {
+				if (!keeps) throw new KantelError("not_supported", "This sandbox's host keeps no command output");
+				asked.push({ commandId, stream, ...range });
+				const offset = Math.min(range.offset, kept.byteLength);
+				return {
+					bytes: kept.subarray(offset, offset + range.length),
+					offset,
+					size: kept.byteLength,
+					ended: true,
+					truncated: false,
+					limit: 64 * MiB,
+				};
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const big = await tom.runCommand(sandbox.id, { command: "big" });
+		expect(big).toMatchObject({ truncated: true });
+		expect(big.stdout.length).toBe(MiB);
+
+		// Past its record's 1 MiB, from its sandbox.
+		const part = await tom.readCommandOutput(sandbox.id, big.id, { offset: 2 * MiB, length: 5, encoding: "base64" });
+		expect(part).toMatchObject({ commandId: big.id, stream: "stdout", offset: 2 * MiB, size: 3 * MiB, ended: true });
+		expect(part).toMatchObject({ truncated: false, limit: 64 * MiB, encoding: "base64" });
+		expect(atob(part.content)).toBe("xxxxx");
+		expect(asked).toEqual([{ commandId: big.id, stream: "stdout", offset: 2 * MiB, length: 5 }]);
+		// No length is a read's most, 1 MiB.
+		expect((await tom.readCommandOutput(sandbox.id, big.id, { stream: "stderr" })).content.length).toBe(MiB);
+		expect(asked.at(-1)).toMatchObject({ stream: "stderr", offset: 0, length: MiB });
+
+		// A sandbox that keeps none (an older kantel-host): its record's first 1 MiB, cut.
+		keeps = false;
+		const recorded = await tom.readCommandOutput(sandbox.id, big.id, { offset: MiB - 2 });
+		expect(recorded).toMatchObject({
+			content: "xx",
+			offset: MiB - 2,
+			size: MiB,
+			ended: true,
+			truncated: true,
+			limit: MiB,
+		});
+		expect(await tom.readCommandOutput(sandbox.id, big.id, { stream: "stderr" })).toMatchObject({
+			content: "",
+			size: 0,
+			truncated: false,
+		});
+
+		// Running, the sandbox answers even for one its record holds whole, so a reader's offsets are always its bytes.
+		keeps = true;
+		const small = await tom.runCommand(sandbox.id, { command: "echo small" });
+		asked.length = 0;
+		await tom.readCommandOutput(sandbox.id, small.id);
+		expect(asked).toHaveLength(1);
+		// Killed: its record may lack what it wrote as it was killed, so a stopped sandbox doesn't answer from it.
+		const held = await tom.runCommand(sandbox.id, { command: "sleep 600", detached: true });
+		await tom.killCommand(sandbox.id, held.id);
+		// Stopped: one its record holds whole is read from there; one cut, or killed, needs the sandbox running.
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		expect((await failure(tom.readCommandOutput(sandbox.id, held.id))).code).toBe("conflict");
+		expect(await tom.readCommandOutput(sandbox.id, small.id)).toMatchObject({ content: "small\n", ended: true });
+		const stopped = await failure(tom.readCommandOutput(sandbox.id, big.id, { offset: 2 * MiB }));
+		expect(stopped.code).toBe("conflict");
+		expect(stopped.details).toMatchObject({ code: "sandbox_stopped" });
+		expect((await failure(tom.readCommandOutput(sandbox.id, "cmd_none"))).code).toBe("not_found");
+	});
+
 	it("runs a detached command in the background and records how it ended", async () => {
 		const { api, tom } = setup();
 		const sandbox = await tom.createSandbox({ wait: true });

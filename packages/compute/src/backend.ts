@@ -890,6 +890,11 @@ export interface ExecResult {
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly timedOut: boolean;
+	/**
+	 * Its backend cut a stream at its own cap, so `stdout` or `stderr` holds only the start of it: said even when what is
+	 * left fits the compute API's own cap (a microVM's guest keeps 1 MiB of bytes, which is 1 MiB of characters too).
+	 */
+	readonly truncated?: boolean;
 	/** In an isolate: it failed because it ran something an isolate doesn't have (`Command.needsMicrovm`). */
 	readonly needsMicrovm?: {
 		readonly command: string;
@@ -929,6 +934,20 @@ export interface CommandProgress {
 
 export function isCommandProgress(answer: ExecResult | CommandProgress): answer is CommandProgress {
 	return (answer as CommandProgress).running === true;
+}
+
+/**
+ * A part of a command's stream as its sandbox keeps it: its bytes from `offset`, how much is kept now (`size`, which only
+ * grows while the command runs), whether the command has ended, whether the stream went past `limit` (`truncated`),
+ * and the most of a stream the sandbox keeps.
+ */
+export interface CommandOutputPart {
+	readonly bytes: Uint8Array;
+	readonly offset: number;
+	readonly size: number;
+	readonly ended: boolean;
+	readonly truncated: boolean;
+	readonly limit: number;
 }
 
 /** A file being read as a stream: its size, when known up front, and its bytes. */
@@ -1244,6 +1263,17 @@ export interface SandboxBackend {
 	 * detached command's result is only what its `exec` answers.
 	 */
 	commandResult?(sandboxId: string, commandId: string): Promise<ExecResult | CommandProgress | undefined>;
+	/**
+	 * At most `range.length` bytes of a command's stream from `range.offset`, as its sandbox keeps it, past what its
+	 * result holds. `not_supported` where the sandbox keeps none (an isolate, a host or guest agent too old), and
+	 * `not_found` for a command whose output it doesn't keep. Absent, a command's output is its result's alone.
+	 */
+	commandOutput?(
+		sandboxId: string,
+		commandId: string,
+		stream: "stdout" | "stderr",
+		range: FileRange,
+	): Promise<CommandOutputPart>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
 	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */

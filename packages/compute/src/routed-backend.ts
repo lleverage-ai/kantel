@@ -348,6 +348,13 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			}
 			return backend.commandResult(id, commandId);
 		},
+		async commandOutput(id, commandId, stream, range) {
+			const backend = await on(id);
+			if (backend.commandOutput === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend keeps no command output past its result");
+			}
+			return backend.commandOutput(id, commandId, stream, range);
+		},
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
 		writeFile: async (id, path, content, mode, options) => (await on(id)).writeFile(id, path, content, mode, options),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),

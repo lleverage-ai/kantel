@@ -342,9 +342,11 @@ describe("retries", () => {
 		});
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("built\n");
-		expect(result.calls).toHaveLength(3);
-		expect(result.keys[0]).toMatch(/^[0-9a-f-]{36}$/);
-		expect(new Set(result.keys)).toEqual(new Set([result.keys[0]]));
+		// The start, sent three times under one key (then its output, asked for once a stream, has none of this fake's).
+		const starts = result.calls.flatMap((call, i) => (call.method === "POST" ? [result.keys[i]] : []));
+		expect(starts).toHaveLength(3);
+		expect(starts[0]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(new Set(starts)).toEqual(new Set([starts[0]]));
 		expect(result.slept).toEqual([500, 1_000]);
 	});
 
@@ -643,6 +645,73 @@ describe("exec", () => {
 		expect(attached.stderr).toBe("warn\n");
 	});
 
+	it("attach reads output past 1 MiB by range, and says where the rest is when it can't", async () => {
+		const MiB = 1024 * 1024;
+		const record = "a".repeat(MiB);
+		const whole = `${record}${"b".repeat(MiB)}end\n`;
+		const kept =
+			(stdout: string, extra: { truncated?: boolean } = {}) =>
+			(call: Call) => {
+				const text = call.query.get("stream") === "stderr" ? "" : stdout;
+				const offset = Math.min(Number(call.query.get("offset") ?? 0), text.length);
+				const part = text.slice(offset, offset + MiB);
+				return {
+					commandId: "cmd_1",
+					stream: call.query.get("stream"),
+					encoding: "base64",
+					content: btoa(part),
+					offset,
+					size: text.length,
+					ended: true,
+					truncated: extra.truncated === true && call.query.get("stream") === "stdout",
+					limit: 64 * MiB,
+				};
+			};
+		const ended = command({ state: "exited", exitCode: 0, stdout: record, truncated: true });
+		const views = [command({ state: "running", exitCode: undefined, stdout: record, truncated: true }), ended];
+		const read = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift() ?? ended,
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": kept(whole),
+			},
+		});
+		expect(read.code).toBe(0);
+		expect(read.stdout).toBe(whole);
+		expect(read.stderr).toBe("");
+		const first = read.calls.find((call) => call.path.endsWith("/output") && call.query.get("stream") === "stdout");
+		// From its start, never from its record.
+		expect(first?.query.get("offset")).toBe("0");
+		expect(first?.query.get("encoding")).toBe("base64");
+
+		const cut = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => ended,
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": kept(`${record}more`, { truncated: true }),
+			},
+		});
+		expect(cut.stdout).toBe(`${record}more`);
+		expect(cut.stderr).toContain("kantel: the stdout was cut at 64 MiB");
+
+		const stopped = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => ended,
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": () =>
+					kantelError(409, "conflict", "The sandbox is stopped; resume it first"),
+			},
+		});
+		expect(stopped.stdout.length).toBe(MiB);
+		expect(stopped.stderr).toContain(
+			"the rest of its stdout is kept in the sandbox, which isn't running: resume it, then kantel attach sbx_test1 cmd_1",
+		);
+
+		// A gateway from before readCommandOutput: its record is all there is.
+		const old = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: { "GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => ended },
+		});
+		expect(old.stdout.length).toBe(MiB);
+		expect(old.stderr).toBe("kantel: the output was cut at 1 MiB\n");
+	});
+
 	it("with --timeout 0 runs it detached and follows it", async () => {
 		const views = [command({ state: "exited", exitCode: 0, stdout: "built\n" })];
 		const result = await kantel(["exec", "sbx_test1", "--timeout", "0", "--", "make"], {
@@ -721,7 +790,8 @@ describe("exec", () => {
 		expect(result.stdout).toBe("Reading package lists...\nSetting up gcc\n");
 		// Nothing of kantel's own on a plain exec's stderr: only the command's.
 		expect(result.stderr).toBe("E: broken\n");
-		expect(result.calls.map((call) => call.method)).toEqual(["POST", "GET", "GET", "GET"]);
+		// A gateway with no readCommandOutput (this fake's 404) is asked once a stream, then its record is shown.
+		expect(result.calls.map((call) => call.method)).toEqual(["POST", "GET", "GET", "GET", "GET", "GET"]);
 		// Looked at soon after its start, so a short command's end comes quickly.
 		expect(result.slept[0]).toBeLessThanOrEqual(100);
 	});
