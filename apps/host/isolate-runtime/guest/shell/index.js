@@ -26,7 +26,9 @@
 // `{ stdout, stderr, exitCode }`. Nothing it gets can commit: its changes are saved by
 // the shell command's one commit, as a host command's are. A name the shell already has (just-bash's commands, `node`,
 // `python`, `python3`, a host command) is an error unless the command says `override: true`; one the isolate lacks
-// (git, say) is the embedder's to take, and is then neither stubbed nor refused before running.
+// (git, say) is the embedder's to take, and is then neither stubbed nor refused before running. A name the interpreter
+// runs itself (cd, export, echo, test, …) can't be replaced at all. A command that replaces one the parse-before-run
+// check takes as plain (cat, say) isn't taken as plain any more.
 import { Bash, defineCommand, getCommandNames, getNetworkCommandNames } from "just-bash/browser";
 import { latin1 } from "../common/text.js";
 import { Chunks, egressFetch, unpack } from "../common/web.js";
@@ -49,8 +51,25 @@ const fromLatin1 = (s) => {
 	return out;
 };
 
-/** The commands the shell has of its own: just-bash's, and the runtimes it runs in a fresh isolate. */
-const BUILT_IN = new Set([...getCommandNames(), ...getNetworkCommandNames(), "node", "python", "python3"]);
+/** The commands the shell has of its own: just-bash's, and the runtimes it runs in a fresh isolate. Not the ones it
+ * answers with a stub (it lacks them), which are the embedder's to take. */
+const BUILT_IN = new Set(
+	[...getCommandNames(), ...getNetworkCommandNames(), "node", "python", "python3"].filter(
+		(name) => !UNAVAILABLE_BY_NAME.has(name),
+	),
+);
+
+/** Names just-bash 3.6's interpreter runs itself, before any command of that name: no command can replace them. */
+const INTERPRETER = new Set(
+	[
+		": true false cd export unset exit local set break continue return eval shift getopts compgen complete compopt",
+		"pushd popd dirs source . read mapfile readarray declare typeset readonly let command shopt exec test [ echo",
+		"printf pwd alias unalias type hash ulimit umask trap times wait kill jobs fg bg disown suspend fc history help",
+		"enable builtin caller",
+	]
+		.join(" ")
+		.split(" "),
+);
 
 /** The embedder's guest commands by name, checked: each a name and a `run`, once, and a built-in only on purpose. */
 function embedderCommands(commands) {
@@ -62,6 +81,7 @@ function embedderCommands(commands) {
 			throw new TypeError(`createShell: a command is { name, run(args, ctx, shell), override }, not ${String(name)}`);
 		}
 		if (byName.has(name)) throw new Error(`createShell: two commands named ${name}`);
+		if (INTERPRETER.has(name)) throw new Error(`createShell: ${name} is the shell's own, which no command replaces`);
 		if (BUILT_IN.has(name) && override !== true) {
 			throw new Error(`createShell: the shell has a ${name} command; pass override: true to replace it`);
 		}
@@ -270,7 +290,8 @@ export function createShell(ops, options = {}) {
 		let refused;
 		if (request.env?.PATH === undefined && (cwd === ROOT || cwd.startsWith(`${ROOT}/`))) {
 			try {
-				refused = prescan(bash.transform(request.command).ast, unavailableProgram);
+				// The embedder's commands may do anything, so one replacing a plain command isn't taken as plain.
+				refused = prescan(bash.transform(request.command).ast, unavailableProgram, own);
 			} catch {
 				// A command the parser refuses fails as it always has, when it runs.
 			}

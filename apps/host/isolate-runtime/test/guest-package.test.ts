@@ -165,6 +165,21 @@ describe("the embedder's own guest commands", () => {
 		);
 		const replaced = createShell(ops, { filesystem: keptFilesystem(), commands: [{ ...mine, override: true }] });
 		expect((await run(replaced, "cat a.txt")).stdout).toBe("mine\n");
+		// A replaced plain command may do anything, so what follows it isn't refused before it runs.
+		const after = await run(replaced, "cat a.txt && git status");
+		expect(after).toMatchObject({ exitCode: 127, stdout: "mine\n", needsMicrovm: { command: "git" } });
+		expect(after.effects).not.toBe("none");
+		// What the interpreter runs itself can't be replaced, override or not.
+		for (const override of [false, true]) {
+			expect(() =>
+				createShell(ops, { filesystem: keptFilesystem(), commands: [{ ...mine, name: "cd", override }] }),
+			).toThrow("cd is the shell's own");
+		}
+		// A just-bash command this shell answers with a stub (it lacks it) is the embedder's to take.
+		const html = { ...mine, name: "html-to-markdown" };
+		expect(
+			(await run(createShell(ops, { filesystem: keptFilesystem(), commands: [html] }), "html-to-markdown")).stdout,
+		).toBe("mine\n");
 		const git = { name: "git", run: async () => ({ stdout: "my git\n", stderr: "", exitCode: 0 }) };
 		const r = await run(createShell(ops, { filesystem: keptFilesystem(), commands: [git] }), "git status");
 		expect(r).toMatchObject({ exitCode: 0, stdout: "my git\n" });

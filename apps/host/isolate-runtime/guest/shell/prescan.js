@@ -94,9 +94,10 @@ function plainCommand(command) {
 
 /**
  * The unavailable program the parsed command can't succeed past, which is safe to refuse before anything runs, or
- * undefined. `lookup(name)` answers the program's `{ command, reason }` if the isolate doesn't have it.
+ * undefined. `lookup(name)` answers the program's `{ command, reason }` if the isolate doesn't have it. `replaced`
+ * (optional, anything with `has(name)`) names commands the embedder replaced, which aren't taken as plain.
  */
-export function prescan(script, lookup) {
+export function prescan(script, lookup, replaced) {
 	if (!isNode(script) || !Array.isArray(script.statements) || script.statements.length === 0) return undefined;
 	const statements = script.statements;
 	let found;
@@ -112,7 +113,7 @@ export function prescan(script, lookup) {
 			for (let c = 0; c < commands.length; c += 1) {
 				const words = plainCommand(commands[c]);
 				if (!words) return undefined;
-				if (PLAIN.has(words[0])) continue;
+				if (PLAIN.has(words[0]) && !replaced?.has(words[0])) continue;
 				// The one program the check refuses on: the last command of a pipeline in the final `&&` chain.
 				const program = lookup(words[0]);
 				if (!program || found || !last || c !== commands.length - 1) return undefined;

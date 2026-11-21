@@ -44,6 +44,10 @@ references), or a small command of the embedder's own. Each is `{ name, run(args
   a built-in throws from `createShell`. The host commands' names are known only when a command runs, so a clash with
   one throws from every `exec`. A name the isolate lacks (`git`, say) needs no override, and the command then runs
   instead of the stub and isn't refused before running.
+- A name the interpreter runs itself (`cd`, `export`, `echo`, `test` and the other shell built-ins) can't be replaced,
+  with or without `override`: just-bash runs those before any command of the name.
+- The parse-before-run check takes a few commands (`cat`, `ls`, …) as only touching files. A command that replaces one
+  of them isn't taken that way, since it may do anything.
 
 ```js
 const rg = {
