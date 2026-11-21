@@ -1,0 +1,37 @@
+{
+	"name": "@kantel/isolate-guest",
+	"version": "0.1.0",
+	"description": "kantel-isolate's guest pieces: the memory guards, node, python, a just-bash shell over any filesystem, and createGuest to compose a guest bundle. See README.md.",
+	"license": "Apache-2.0",
+	"type": "module",
+	"exports": {
+		".": "./index.js",
+		"./shell": "./shell/index.js",
+		"./shell/manifest-fs": "./shell/manifest-fs.js",
+		"./shell/prescan": "./shell/prescan.js",
+		"./shell/fs-errors": "./shell/fs-errors.js",
+		"./shell/unavailable": "./shell/unavailable.js",
+		"./shell/zlib": "./shell/zlib.js",
+		"./node": "./node/index.js",
+		"./python": "./python/index.js",
+		"./common/*": "./common/*.js",
+		"./just-bash-patches": "./just-bash-patches.ts",
+		"./patches/*": "./patches/*"
+	},
+	"files": [
+		"index.js",
+		"common",
+		"node",
+		"python",
+		"shell",
+		"just-bash-patches.ts",
+		"patches",
+		"README.md"
+	],
+	"peerDependencies": {
+		"just-bash": "3.6.0"
+	},
+	"dependencies": {
+		"whatwg-url": "14.2.0"
+	}
+}

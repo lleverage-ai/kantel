@@ -1,11 +1,22 @@
-// The sandbox isolate's shell: images/isolate-host/src/sandbox.ts on kantel-isolate's ops instead of workerd's
-// bindings. just-bash runs each command over a lazy InMemoryFs built from the manifest the host sends: a file's body
-// is read from STORE only when the command reads it, and the files the command changed are uploaded at the end and
-// returned as the next manifest. `node` and `python` run in a fresh isolate each (op_kt_run), over the same files.
-import { Bash, defineCommand, InMemoryFs } from "just-bash/browser";
+// The sandbox isolate's shell: just-bash over a filesystem the embedder chooses (Kantel's is shell/manifest-fs.js: a
+// lazy in-memory one built from the manifest the host sends, its changes committed to the workspace at the end), with
+// `node` and `python` run in a fresh isolate each (op_kt_run) over the same files, the commands an isolate lacks
+// answered by stubs (shell/unavailable.js), and a parse-before-run check for those (shell/prescan.js).
+//
+// createShell(ops, { filesystem, log }) takes any `ShellFilesystem`:
+//
+//   filesystem.open(request) -> {
+//     fs,                  // a just-bash IFileSystem with the sandbox's files under /workspace
+//     childIndex(chunks),  // the files as a node/python run sees them (manifest-fs.js has the format)
+//     unchanged(),         // the reply's { manifest, changed, lazyReads? } when the command didn't run
+//     finish(),            // save the command's changes: { manifest, changed, commit?, lazyReads? }, where `commit`
+//                          // ({ status, error }) says when they weren't saved
+//   }
+import { Bash, defineCommand } from "just-bash/browser";
 import { latin1 } from "../common/text.js";
 import { Chunks, egressFetch, unpack } from "../common/web.js";
-import { describeFsError, readError } from "./fs-errors.js";
+import { describeFsError } from "./fs-errors.js";
+import { abs, manifestFilesystem, normalise, ROOT } from "./manifest-fs.js";
 import { prescan } from "./prescan.js";
 import { message, UNAVAILABLE } from "./unavailable.js";
 
@@ -17,41 +28,8 @@ const UNAVAILABLE_BY_NAME = new Map(UNAVAILABLE);
 const unavailableProgram = (name) =>
 	UNAVAILABLE_BY_NAME.has(name) ? { command: name, reason: `${UNAVAILABLE_BY_NAME.get(name)}.` } : undefined;
 
-const ROOT = "/workspace";
 /** The most output one command may make (parity with sandbox.ts: zlib's 128 MiB output cap). */
 const MAX_OUTPUT_BYTES = 128 * 1024 * 1024;
-
-const abs = (path) => (path === "" ? ROOT : `${ROOT}/${path}`);
-const rel = (path) => (path === ROOT ? "" : path.startsWith(`${ROOT}/`) ? path.slice(ROOT.length + 1) : undefined);
-
-function normalise(base, path) {
-	const out = [];
-	for (const part of (path.startsWith("/") ? path : `${base}/${path}`).split("/")) {
-		if (part === "" || part === ".") continue;
-		if (part === "..") out.pop();
-		else out.push(part);
-	}
-	return `/${out.join("/")}`;
-}
-
-/** Wrap a just-bash filesystem so writes over existing paths are recorded (as sandbox.ts does). */
-function track(fs, dirty) {
-	const mark = (path) => dirty.add(normalise("/", path));
-	const wrap = (name, pick) => {
-		const original = fs[name].bind(fs);
-		fs[name] = (...args) => {
-			for (const path of pick(args)) mark(path);
-			return original(...args);
-		};
-	};
-	const first = (args) => [String(args[0])];
-	const second = (args) => [String(args[1])];
-	// rm too: a file removed and made again as a directory (by the shell, or replayed from a node/python run) is
-	// then looked at afresh instead of keeping its old file entry.
-	for (const name of ["writeFile", "appendFile", "chmod", "utimes", "rm"]) wrap(name, first);
-	for (const name of ["cp", "mv", "symlink", "link"]) wrap(name, second);
-	return fs;
-}
 
 const fromLatin1 = (s) => {
 	const out = new Uint8Array(s.length);
@@ -59,96 +37,30 @@ const fromLatin1 = (s) => {
 	return out;
 };
 
-/** A workspace node (the filesystem provider's) as a manifest entry. */
-function entryOf(node) {
-	if (node.kind === "file") return { kind: "file", sha: node.file, size: node.size, mode: node.mode };
-	if (node.kind === "symlink") return { kind: "symlink", target: node.target };
-	return { kind: "dir" };
-}
-
-export function createShell(ops, log) {
-	const hex = (bytes) => Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
-	const sha256 = (bytes) => hex(ops.op_kt_digest("sha256", bytes));
+/**
+ * The shell isolate's entry point (`{ exec(json) }`). `ops` are the runtime's (the shell kind's); `filesystem` is a
+ * `ShellFilesystem` (Kantel's manifest one by default); `log(level, line)` gets a line per command.
+ */
+export function createShell(ops, options = {}) {
+	// The second argument was `log` alone before options; still accepted.
+	const { filesystem = manifestFilesystem(ops), log } = typeof options === "function" ? { log: options } : options;
 	let nextRun = 1;
-	let nextCommit = 1;
 
 	async function exec(request) {
 		const t0 = performance.now();
-		let lazyReads = 0;
-		const manifest = request.manifest ?? {};
-		// What the workspace keeps, and whether its file ids are the bytes' SHA-256 (Kantel's are): otherwise an id
-		// says nothing about the bytes, and an unchanged file is told by the digest of what the command read.
-		const capabilities = JSON.parse(ops.op_kt_workspace_capabilities());
-		const originals = new Map();
-		const files = {};
-		for (const [path, entry] of Object.entries(manifest)) {
-			if (entry.kind !== "file") continue;
-			files[abs(path)] = async () => {
-				lazyReads++;
-				let bytes;
-				try {
-					bytes = await ops.op_kt_blob_read(entry.sha);
-				} catch (error) {
-					throw readError(error);
-				}
-				if (!capabilities.contentAddressed) originals.set(path, sha256(bytes));
-				return bytes;
-			};
-		}
-		/** The SHA-256 of a manifest file's bytes as the command found them, or undefined if they can't be read. */
-		const originalDigest = async (path, entry) => {
-			if (capabilities.contentAddressed) return entry.sha;
-			if (originals.has(path)) return originals.get(path);
-			// Overwritten without being read: read what it was, to compare.
-			try {
-				return sha256(await ops.op_kt_blob_read(entry.sha));
-			} catch {
-				return undefined;
-			}
-		};
-		const fs = new InMemoryFs(files);
-		await fs.mkdir(ROOT, { recursive: true });
-		for (const [path, entry] of Object.entries(manifest)) {
-			if (entry.kind === "dir") await fs.mkdir(abs(path), { recursive: true });
-			else if (entry.kind === "symlink") await fs.symlink(entry.target, abs(path));
-			else if (entry.mode !== 0o644) await fs.chmod(abs(path), entry.mode);
-		}
-		const dirty = new Set();
-		track(fs, dirty);
-		const isDirty = (path) => {
-			for (const mark of dirty) if (path === mark || path.startsWith(`${mark}/`)) return true;
-			return false;
-		};
+		const files = await filesystem.open(request);
+		const { fs } = files;
 
 		/** The first command that needed a microVM, and whether any child run was stopped (and why). */
 		let needsMicrovm;
 		let terminated;
 
-		// node / python: the workspace as the child sees it (untouched files by digest, read by the child only if it
-		// reads them; files this command changed, inline) and stdin; the child's writes come back here, so they reach
-		// the manifest like any other command's.
+		// node / python: the workspace as the child sees it and stdin; the child's writes come back here, so they
+		// reach the workspace like any other command's.
 		const child = (name) =>
 			defineCommand(name, async (args, ctx) => {
 				const chunks = new Chunks();
-				const index = {};
-				for (const full of fs.getAllPaths()) {
-					const path = rel(full);
-					if (path === undefined || path === "") continue;
-					const before = manifest[path];
-					if (before?.kind === "file" && !isDirty(full)) {
-						// `hash` is the bytes' SHA-256 where known, for the run to tell the file unchanged.
-						const hash = capabilities.contentAddressed ? before.sha : originals.get(path);
-						index[path] = { kind: "file", sha: before.sha, size: before.size, mode: before.mode, hash };
-						continue;
-					}
-					const stat = await fs.lstat(full);
-					if (stat.isSymbolicLink) index[path] = { kind: "symlink", target: await fs.readlink(full) };
-					else if (stat.isDirectory) index[path] = { kind: "dir" };
-					else {
-						const bytes = await fs.readFileBuffer(full);
-						index[path] = { kind: "file", data: chunks.add(bytes), size: bytes.byteLength, mode: stat.mode & 0o777 };
-					}
-				}
+				const index = await files.childIndex(chunks);
 				const stdin = chunks.add(fromLatin1(String(ctx.stdin ?? "")));
 				const env = ctx.exportedEnv ?? Object.fromEntries(ctx.env ?? []);
 				const runId = nextRun++;
@@ -193,23 +105,22 @@ export function createShell(ops, log) {
 				return { stdout: "", stderr: message(name), exitCode: 127 };
 			}),
 		);
+		const cwd = normalise(ROOT, request.cwd ?? ".");
 		const bash = new Bash({
 			fs,
-			cwd: normalise(ROOT, request.cwd ?? "."),
+			cwd,
 			env: { HOME: ROOT, ...request.env },
 			customCommands: [...unavailable, child("node"), child("python"), child("python3")],
 			executionLimits: { maxOutputSize: MAX_OUTPUT_BYTES },
 			// The host's egress proxy decides what may leave; curl and wget get a plain fetch with no allow-list of
 			// their own (as sandbox.ts does with workerd's globalOutbound).
-			fetch: (url, options = {}) => egressFetch(url, options),
+			fetch: (url, init = {}) => egressFetch(url, init),
 		});
 		const t1 = performance.now();
-		// Parse before running: a program the isolate doesn't have, whose failure would fail the whole command, stops
-		// it before any of it runs (guest/shell/prescan.js).
+		// Parse before running: a command that can't succeed past a program the isolate doesn't have stops before any
+		// of it runs (guest/shell/prescan.js). What the parse can't show: a PATH of the request's own, or a working
+		// directory outside the workspace, could make a name find a program the parse doesn't see.
 		let refused;
-		const cwd = normalise(ROOT, request.cwd ?? ".");
-		// What the parse can't show: a PATH of the request's own, or a working directory outside the workspace, could
-		// make a name find a program the parse doesn't see.
 		if (request.env?.PATH === undefined && (cwd === ROOT || cwd.startsWith(`${ROOT}/`))) {
 			try {
 				refused = prescan(bash.transform(request.command).ast, unavailableProgram);
@@ -218,102 +129,21 @@ export function createShell(ops, log) {
 			}
 		}
 		if (refused) {
+			const kept = files.unchanged();
 			return {
 				exitCode: 127,
 				stdout: "",
 				stderr: message(refused.command, "none"),
-				manifest,
-				changed: [],
-				timings: { fsMs: t1 - t0, execMs: 0, commitMs: 0, lazyReads },
+				manifest: kept.manifest,
+				changed: kept.changed,
+				timings: { fsMs: t1 - t0, execMs: 0, commitMs: 0, lazyReads: kept.lazyReads ?? 0 },
 				needsMicrovm: refused,
 				effects: "none",
 			};
 		}
 		const result = await bash.exec(request.command);
 		const t2 = performance.now();
-
-		// The command's changes, committed to the workspace (the filesystem provider) in one commit from the version
-		// the command started from: changed files are staged first, and the commit names them.
-		const commit = {
-			operationId: `exec-${nextCommit++}`,
-			base: request.base ?? "",
-			puts: [],
-			links: [],
-			dirs: [],
-			removes: [],
-		};
-		const next = {};
-		const changed = [];
-		for (const full of fs.getAllPaths()) {
-			const path = rel(full);
-			if (path === undefined || path === "") continue;
-			const before = manifest[path];
-			// An untouched file keeps its entry without a stat: stat on a lazy file loads its body, which would read
-			// the whole workspace on every commit.
-			if (before?.kind === "file" && !isDirty(full)) {
-				next[path] = before;
-				continue;
-			}
-			const stat = await fs.lstat(full);
-			if (stat.isSymbolicLink) {
-				const target = await fs.readlink(full);
-				next[path] = { kind: "symlink", target };
-				if (before?.kind !== "symlink" || before.target !== target) {
-					changed.push(path);
-					commit.links.push({ path, target });
-				}
-			} else if (stat.isDirectory) {
-				next[path] = { kind: "dir" };
-				// A workspace that keeps files only has its directories implied by its files' paths: a new one isn't a
-				// change, but what it replaced (a file, a link) is removed.
-				if (before?.kind !== "dir" && capabilities.directories) {
-					changed.push(path);
-					commit.dirs.push(path);
-				} else if (before && before.kind !== "dir") {
-					changed.push(path);
-					commit.removes.push(path);
-				}
-			} else {
-				const bytes = await fs.readFileBuffer(full);
-				const sha = sha256(bytes);
-				const mode = stat.mode & 0o777;
-				const same = before?.kind === "file" && before.mode === mode && (await originalDigest(path, before)) === sha;
-				if (!same) {
-					const staged = JSON.parse(await ops.op_kt_stage(path, bytes));
-					changed.push(path);
-					commit.puts.push({ path, blob: staged.blob, mode });
-				}
-				next[path] = { kind: "file", sha, size: bytes.byteLength, mode };
-			}
-		}
-		for (const path of Object.keys(manifest)) {
-			if (path in next) continue;
-			changed.push(path);
-			commit.removes.push(path);
-		}
-		// The files as the workspace holds them after a commit: the command's manifest with the catch-up applied (the
-		// workspace's own file ids, and anything the host changed too), and with the removals sent if they were taken.
-		const holds = (catchUp, removals) => {
-			const files = { ...manifest };
-			for (const path of [...removals, ...catchUp.removed]) delete files[path];
-			for (const [path, node] of Object.entries(catchUp.changed)) files[path] = entryOf(node);
-			const paths = new Set([...Object.keys(catchUp.changed), ...catchUp.removed]);
-			for (const path of removals) if (path in manifest) paths.add(path);
-			return { manifest: files, changed: [...paths] };
-		};
-		let saved = { manifest, changed: [] };
-		let unsaved;
-		if (changed.length > 0) {
-			const reply = JSON.parse(await ops.op_kt_commit(JSON.stringify(commit)));
-			if (reply.status === "committed") saved = holds(reply.catchUp, commit.removes);
-			else {
-				unsaved = { status: reply.status, error: reply.error };
-				// Unknown: the workspace holds what its catch-up says, which may or may not have the changes. Failed:
-				// nothing of this command's was saved, but the workspace may have changed since its base (the host's own
-				// writes). Fenced: no catch-up.
-				if (reply.catchUp) saved = holds(reply.catchUp, []);
-			}
-		}
+		const saved = await files.finish();
 		const t3 = performance.now();
 		const response = {
 			exitCode: result.exitCode,
@@ -321,12 +151,12 @@ export function createShell(ops, log) {
 			stderr: result.stderr,
 			manifest: saved.manifest,
 			changed: saved.changed,
-			timings: { fsMs: t1 - t0, execMs: t2 - t1, commitMs: t3 - t2, lazyReads },
+			timings: { fsMs: t1 - t0, execMs: t2 - t1, commitMs: t3 - t2, lazyReads: saved.lazyReads ?? 0 },
 		};
 		// A command whose changes weren't saved didn't succeed, whatever the shell said.
-		if (unsaved) {
-			response.commit = unsaved;
-			response.stderr += `${response.stderr && !response.stderr.endsWith("\n") ? "\n" : ""}kantel: the command's file changes ${unsaved.status === "unknown" ? "may not have been" : "weren't"} saved: ${unsaved.error}\n`;
+		if (saved.commit) {
+			response.commit = saved.commit;
+			response.stderr += `${response.stderr && !response.stderr.endsWith("\n") ? "\n" : ""}kantel: the command's file changes ${saved.commit.status === "unknown" ? "may not have been" : "weren't"} saved: ${saved.commit.error}\n`;
 			if (response.exitCode === 0) response.exitCode = 1;
 		}
 		// Only when the command failed: one that handled the missing program itself (`git --version || true`) ran.

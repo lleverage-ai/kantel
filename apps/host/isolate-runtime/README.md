@@ -20,7 +20,7 @@ It speaks kantel-host's existing isolate protocol (`GET /healthz`, `POST /warm`,
   (`git`, `tar`, `apt`, `docker`, `pip install`, …) answer exit 127 with `needsMicrovm` so Kantel can offer or make
   the microVM upgrade, and `effects`: `"none"` when the command was refused before any of it ran (its parse showed it
   can't succeed), `"possible"` when the program was reached while it ran. just-bash carries two patches,
-  shared with Lleverage's isolate: `patches/just-bash@3.6.0.patch` (bun applies it: a read that failed because the file
+  shared with Lleverage's isolate: `guest/patches/just-bash@3.6.0.patch` (bun applies it: a read that failed because the file
   is too large says so, and `<>` and `awk`'s append create a file only when it is missing, never over one they couldn't
   read) and `guest/just-bash-patches.ts` (the guest build applies it: a filesystem error a redirection meets fails
   only its own command, not the whole script).
