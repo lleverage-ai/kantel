@@ -245,6 +245,61 @@ describe("sandboxes", () => {
 		expect((await failure(tom.readFile(sandbox.id, { path: "a.txt", length: 1024 * 1024 + 1 }))).code).toBe("invalid");
 	});
 
+	it("writes a file in parts through a backend that takes them, and refuses where none does", async () => {
+		// The stub keeps files in the gateway's memory and takes no parts; a host's guest stages and checks them
+		// (apps/host/internal/guest/parts.go). This one records what the service asks of it.
+		const asked: unknown[][] = [];
+		const stub = createStubBackend();
+		const backend: SandboxBackend = {
+			...stub,
+			async writeFilePart(_sandboxId, path, upload, offset, body) {
+				const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+				asked.push(["part", path, upload, offset, new TextDecoder().decode(bytes)]);
+				return { size: bytes.byteLength };
+			},
+			async completeFileParts(_sandboxId, path, upload, size, sha256, mode) {
+				asked.push(["complete", path, upload, size, sha256, mode]);
+				return { name: "f.bin", path, kind: "file", size, modifiedAt: 1 };
+			},
+			async abortFileParts(_sandboxId, path, upload) {
+				asked.push(["abort", path, upload]);
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const content = new TextEncoder().encode("the first part");
+		const query = { path: "big/f.bin", upload: "upload-one", offset: 30 };
+		expect(await tom.writeFilePart(sandbox.id, content, query)).toEqual({
+			path: "/home/user/big/f.bin",
+			upload: "upload-one",
+			offset: 30,
+			size: 14,
+		});
+		const sha256 = "AB".repeat(32);
+		const done = { path: "big/f.bin", upload: "upload-one", size: 44, sha256, mode: "0640" };
+		expect(await tom.completeFileParts(sandbox.id, done)).toMatchObject({ path: "/home/user/big/f.bin", size: 44 });
+		await tom.abortFileParts(sandbox.id, { path: "/tmp/x", upload: "upload-two" });
+		expect(asked).toEqual([
+			["part", "/home/user/big/f.bin", "upload-one", 30, "the first part"],
+			["complete", "/home/user/big/f.bin", "upload-one", 44, "ab".repeat(32), 0o640],
+			["abort", "/tmp/x", "upload-two"],
+		]);
+
+		// No permissions at all is refused rather than read as none given; past the largest file, refused.
+		expect((await failure(tom.completeFileParts(sandbox.id, { ...done, mode: "0000" }))).code).toBe("invalid");
+		const past = { ...query, offset: 64 * 1024 * MiB - 2 };
+		expect((await failure(tom.writeFilePart(sandbox.id, content, past))).code).toBe("invalid");
+		expect(asked).toHaveLength(3);
+
+		// An isolate, and a deployment whose backend takes no parts (the stub's stand-ins): not_supported.
+		const isolate = await tom.createSandbox({ wait: true });
+		expect((await failure(tom.writeFilePart(isolate.id, content, query))).code).toBe("not_supported");
+		const plain = setup().tom;
+		const standIn = await plain.createSandbox({ type: "microvm", wait: true });
+		expect((await failure(plain.writeFilePart(standIn.id, content, query))).code).toBe("not_supported");
+		expect((await failure(plain.completeFileParts(standIn.id, done))).code).toBe("not_supported");
+	});
+
 	it("runs a detached command in the background and records how it ended", async () => {
 		const { api, tom } = setup();
 		const sandbox = await tom.createSandbox({ wait: true });

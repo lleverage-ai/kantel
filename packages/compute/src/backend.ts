@@ -1214,6 +1214,33 @@ export interface SandboxBackend {
 		mode?: number,
 	): Promise<{ readonly size: number }>;
 	/**
+	 * Writes `body` at `offset` into the staged file of upload `upload` of `path` (a file written in parts), making its
+	 * directories; nothing is at `path` until `completeFileParts`. Answers the bytes written. Absent, or `not_supported`
+	 * (the sandbox's host or image can't), files aren't written in parts there.
+	 */
+	writeFilePart?(
+		sandboxId: string,
+		path: string,
+		upload: string,
+		offset: number,
+		body: ReadableStream<Uint8Array>,
+	): Promise<{ readonly size: number }>;
+	/**
+	 * Moves upload `upload`'s staged file over `path` once it is `size` bytes with SHA-256 `sha256` (hex), with `mode`
+	 * (default 0o644), owned by the sandbox's user. A failed check is `invalid` and discards the upload; one unknown is
+	 * `conflict`, unless `path` already has that size and SHA-256 (a repeat).
+	 */
+	completeFileParts?(
+		sandboxId: string,
+		path: string,
+		upload: string,
+		size: number,
+		sha256: string,
+		mode?: number,
+	): Promise<BackendFileEntry>;
+	/** Discards upload `upload` of `path`; one unknown is fine. */
+	abortFileParts?(sandboxId: string, path: string, upload: string): Promise<void>;
+	/**
 	 * Extracts the tar at `archive` (already checked: see `TarCheck`) into the directory `target`, making it, then
 	 * deletes the tar. The sandbox's own programs, shell and environment have no part in it, so a caller with only
 	 * `files` runs nothing in the sandbox (`PUT /sandboxes/{id}/files/archive`). Absent, or `not_supported`, archives

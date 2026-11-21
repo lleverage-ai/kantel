@@ -281,6 +281,12 @@ export const HOST_FEATURES = {
 	 */
 	filesExtract: "files-extract",
 	/**
+	 * `sandbox.files.part`, `.complete` and `.abort` (`HostFilePart`): a file written a part at a time into a staged file
+	 * beside it, moved into place only once its size and SHA-256 are checked (microVMs whose image's guest agent takes
+	 * them; an older image's answers `unsupported`).
+	 */
+	fileParts: "file-parts",
+	/**
 	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
 	 * scratch), and an isolate's `memoryMiB` (enforced where the host's runtime says `memoryEnforced`).
 	 */
@@ -761,6 +767,21 @@ export const FILE_STREAM_ACK_BYTES = 1024 * 1024;
  * frame past this, or one sent once `FILE_STREAM_WINDOW_BYTES` are unacked, ends the read rather than being kept.
  */
 export const FILE_STREAM_FRAME_MAX_BYTES = 1024 * 1024;
+
+/** A file part call's (`sandbox.files.part`) most bytes, decoded: well inside a replica's relayed call (4 MiB). */
+export const FILE_PART_CALL_MAX_BYTES = 2 * 1024 * 1024;
+
+/** `sandbox.files.part`'s, `.complete`'s and `.abort`'s params (`HOST_FEATURES.fileParts`). */
+export interface HostFilePart {
+	readonly sandboxId: string;
+	readonly path: string;
+	readonly upload: string;
+	readonly offset?: number;
+	readonly data?: string;
+	readonly size?: number;
+	readonly sha256?: string;
+	readonly mode?: number;
+}
 
 /** The largest message a host reads from Kantel (`ws.SetReadLimit` in the host's `conn.go`): it drops the link past it. */
 export const HOST_MESSAGE_LIMIT_BYTES = 64 * 1024 * 1024;
@@ -1698,6 +1719,16 @@ export const HostMethods = {
 	 * requires that feature first (a create's `guestFeatures`, on a host with `HOST_FEATURES.guestFeatures`).
 	 */
 	fileExtract: "sandbox.files.extract",
+	/** Kantel to host, `HostFilePart` with `offset` and `data` (base64, at most `FILE_PART_CALL_MAX_BYTES`): answered `{ size }`. */
+	filePart: "sandbox.files.part",
+	/**
+	 * Kantel to host, `HostFilePart` with `size`, `sha256` and `mode`: the upload checked and moved over `path`, answered
+	 * `{ size, mode }` (mode in octal). A failed check is `invalid` and discards it; one unknown is `conflict` unless `path`
+	 * already has that size and SHA-256.
+	 */
+	fileComplete: "sandbox.files.complete",
+	/** Kantel to host, `HostFilePart`: the upload discarded, answered `{}`. */
+	fileAbort: "sandbox.files.abort",
 	/**
 	 * Host to Kantel: `{ sandboxId, bucketSourceId }`, answered with `HostBucketSource`, or `not_found` unless the
 	 * sandbox is on that host and mounts that bucket source.

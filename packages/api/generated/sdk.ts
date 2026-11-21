@@ -443,6 +443,19 @@ export type CommandState = "running" | "exited" | "killed" | "timed_out";
 /** In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`). */
 export type CommandTermination = "cpu" | "memory" | "wall";
 
+export interface CompleteFilePartsBody {
+	/** The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
+	readonly path: string;
+	/** Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. */
+	readonly upload: string;
+	/** The whole file's size in bytes. */
+	readonly size: number;
+	/** The whole file's SHA-256, in hex. */
+	readonly sha256: string;
+	/** Octal permissions, such as `0755` (default `0644`); not `0000`. */
+	readonly mode?: string;
+}
+
 export interface ComputePageQuery {
 	/** At most this many; default 50. */
 	readonly limit?: number;
@@ -1022,6 +1035,23 @@ export interface FileList {
 	readonly items: readonly FileEntry[];
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
+}
+
+/** A part written. Nothing is at `path` until the upload is completed. */
+export interface FilePart {
+	/** The file's absolute path. */
+	readonly path: string;
+	readonly upload: string;
+	readonly offset: number;
+	/** The bytes of this part written. */
+	readonly size: number;
+}
+
+export interface FilePartsQuery {
+	/** The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
+	readonly path: string;
+	/** Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. */
+	readonly upload: string;
 }
 
 export interface FilePathQuery {
@@ -3320,6 +3350,15 @@ export interface WriteFileBody {
 	readonly mode?: string;
 }
 
+export interface WriteFilePartQuery {
+	/** The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
+	readonly path: string;
+	/** Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. */
+	readonly upload: string;
+	/** The byte of the file this part starts at. */
+	readonly offset: number;
+}
+
 // Runtime
 
 // The SDK's runtime, copied into `generated/sdk.ts` as it is, so the SDK is one file with no imports. Keep it free of
@@ -3774,6 +3813,12 @@ export interface KantelClient {
 	deleteFile(sandboxId: string, query: FilePathQuery, options?: CallOptions): Promise<void>;
 	/** List a directory. A key needs `files`. `GET /sandboxes/{sandboxId}/files/list` */
 	listFiles(sandboxId: string, query?: ListFilesQuery, options?: CallOptions): Promise<FileList>;
+	/** Write a part of a file. A file goes up in parts, in any order and at once if you like, each the raw bytes from its `offset`, under an `upload` ID of yours; then one completion with its size and SHA-256. Nothing is at `path` until the completion has checked both, and then the file replaces what was there in one step. microVMs only. A part is the request's raw body, at most 64 MiB (67108864 bytes); the file is at most 64 GiB, and no more than the sandbox's disk has free (`exhausted`). Sending a part again writes it again. The parts are kept beside the file, on the sandbox's disk, until the upload is completed or aborted; an upload with no part for an hour, and every upload of a sandbox that stops without its memory, is discarded. A key needs `files`. `PUT /sandboxes/{sandboxId}/files/parts` */
+	writeFilePart(sandboxId: string, body: RawBody, query: WriteFilePartQuery, options?: CallOptions): Promise<FilePart>;
+	/** Complete a file written in parts. Checks that the parts written come to `size` bytes with the SHA-256 `sha256`, then moves the file into place with `mode` (default `0644`), owned by the sandbox's user, replacing what was at `path`. A check that fails is `invalid`, and the upload is discarded with nothing at `path`: send it again under a new `upload` ID. Completing again answers as the first time while `path` still has that size and SHA-256, so a lost answer can be asked for again; an upload that isn't known is `conflict`. A key needs `files`. `POST /sandboxes/{sandboxId}/files/parts/complete` */
+	completeFileParts(sandboxId: string, body: CompleteFilePartsBody, options?: CallOptions): Promise<FileEntry>;
+	/** Abort a file written in parts. Discards an upload's parts. What is at `path` is untouched. An upload that isn't known is fine too. A key needs `files`. `DELETE /sandboxes/{sandboxId}/files/parts` */
+	abortFileParts(sandboxId: string, query: FilePartsQuery, options?: CallOptions): Promise<void>;
 	/** Get an upload URL for a file. A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/files/upload-url` */
 	createUploadUrl(sandboxId: string, body: FileUrlBody, options?: CallOptions): Promise<FileUrl>;
 	/** Get a download URL for a file. A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization` header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/files/download-url` */
@@ -4241,6 +4286,29 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/list`, query },
+				callOptions,
+			),
+		writeFilePart: (sandboxId, body, query, callOptions) =>
+			send(
+				options,
+				{
+					method: "PUT",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/parts`,
+					query,
+					raw: { body, type: "application/octet-stream" },
+				},
+				callOptions,
+			),
+		completeFileParts: (sandboxId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/parts/complete`, body },
+				callOptions,
+			),
+		abortFileParts: (sandboxId, query, callOptions) =>
+			send(
+				options,
+				{ method: "DELETE", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/parts`, query },
 				callOptions,
 			),
 		createUploadUrl: (sandboxId, body, callOptions) =>

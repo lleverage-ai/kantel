@@ -77,7 +77,7 @@ Put each customer's credentials in an [environment](/sandboxes/environments/) in
 
 ## Files in and out
 
-The [files API](/sandboxes/commands-and-files/) reads and writes a sandbox's files without a command, up to 1 MiB a call, so your service can put a customer's inputs into a sandbox before the agent starts and read its outputs after. An isolate keeps its files in `/workspace`, and a relative path starts there; a microVM's start in `/home/user`, and an upgraded isolate's files are at `/home/user/workspace`, with `/workspace` a link to them.
+The [files API](/sandboxes/commands-and-files/) reads and writes a sandbox's files without a command, up to 1 MiB a call, or on a microVM a file of any size [in parts](/sandboxes/commands-and-files/#write-a-large-file-in-parts) of raw bytes, so your service can put a customer's inputs into a sandbox before the agent starts and read its outputs after. An isolate keeps its files in `/workspace`, and a relative path starts there; a microVM's start in `/home/user`, and an upgraded isolate's files are at `/home/user/workspace`, with `/workspace` a link to them.
 
 ## Hosts
 

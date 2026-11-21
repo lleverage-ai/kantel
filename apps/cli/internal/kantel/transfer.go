@@ -2,7 +2,8 @@ package kantel
 
 // Copying files between this computer and a sandbox for kantel scp and kantel push, over the files API only (no SSH,
 // so it works on isolates as well as microVMs). The API reads and writes at most 1 MiB a call. A larger file comes
-// down in 1 MiB ranged reads, and goes up in 768 KiB parts that one command joins, which needs a microVM's shell. A
+// down in 1 MiB ranged reads, and goes up in raw parts (files/parts) checked by their SHA-256 on the way in; where
+// those aren't taken, in 768 KiB base64 parts that one command joins, which needs a microVM's shell. A
 // directory is copied file by file, a few at a time, into an isolate; into a microVM it goes as one gzipped tar.
 
 import (
@@ -11,6 +12,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
@@ -167,10 +169,66 @@ func runIn(ctx context.Context, client *api.Client, sandboxID, command string, t
 	return result.Stdout, nil
 }
 
-// putBytes writes content to p in the sandbox, in parts when it is over 1 MiB.
+// rawPartSize is a part of a file written in parts (files/parts): raw bytes, at most 64 MiB a part. The first is
+// firstRawPartSize, which says whether parts are taken at all: small enough for a self-hosted gateway from before them,
+// which reads a body it doesn't stream whole, up to 4 MiB, before it answers the route unknown.
+const (
+	rawPartSize      = 16 * 1024 * 1024
+	firstRawPartSize = 1024 * 1024
+)
+
+// errPartsUnsupported is putParts' answer when the sandbox, its host or Kantel doesn't take files in parts.
+var errPartsUnsupported = errors.New("files in parts aren't supported here")
+
+// putParts writes content to p as raw parts (files/parts), four at a time, then completes it with its size and
+// SHA-256, so nothing is at p until all of it has arrived and been checked. errPartsUnsupported when the first part is
+// refused as not_supported (an isolate, an older host or image) or the route isn't there (an older Kantel).
+func putParts(ctx context.Context, client *api.Client, sandboxID, p string, content []byte, mode string) error {
+	upload := randomID()
+	write := func(offset, length int) error {
+		_, err := client.WriteFilePart(ctx, sandboxID, &api.WriteFilePartQuery{
+			Path: &p, Upload: &upload, Offset: api.Ptr(int64(offset)),
+		}, bytes.NewReader(content[offset:min(offset+length, len(content))]), "application/octet-stream")
+		return err
+	}
+	abort := func(err error) error {
+		_ = client.AbortFileParts(context.WithoutCancel(ctx), sandboxID, &api.AbortFilePartsQuery{Path: &p, Upload: &upload})
+		return err
+	}
+	if err := write(0, firstRawPartSize); err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) && (apiErr.Code == "not_supported" || apiErr.Status == 404 || apiErr.Status == 405 || apiErr.Status == 413) {
+			return errPartsUnsupported
+		}
+		// Some of it may be staged.
+		return abort(err)
+	}
+	var offsets []int
+	for offset := firstRawPartSize; offset < len(content); offset += rawPartSize {
+		offsets = append(offsets, offset)
+	}
+	if err := eachLimited(offsets, 4, func(offset int) error { return write(offset, rawPartSize) }); err != nil {
+		return abort(err)
+	}
+	sum := sha256.Sum256(content)
+	body := api.CompleteFilePartsBody{Path: p, Upload: upload, Size: int64(len(content)), SHA256: hex.EncodeToString(sum[:])}
+	if mode != "" {
+		body.Mode = &mode
+	}
+	if _, err := client.CompleteFileParts(ctx, sandboxID, body); err != nil {
+		return abort(err)
+	}
+	return nil
+}
+
+// putBytes writes content to p in the sandbox: in one call up to 1 MiB; above, in raw parts where the sandbox takes
+// them, else in base64 parts that one command joins.
 func putBytes(ctx context.Context, client *api.Client, sandboxID, p string, content []byte, mode string) error {
 	if len(content) <= maxFile {
 		_, err := client.WriteFile(ctx, sandboxID, writeBody(p, content, mode))
+		return err
+	}
+	if err := putParts(ctx, client, sandboxID, p, content, mode); !errors.Is(err, errPartsUnsupported) {
 		return err
 	}
 	var parts []string

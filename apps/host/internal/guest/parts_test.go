@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -222,6 +224,54 @@ func TestUploadsAbandoned(t *testing.T) {
 	}
 	if records, _ := os.ReadDir(state); len(records) != 0 {
 		t.Fatalf("records left: %d", len(records))
+	}
+
+	// One on a file system not mounted yet when the agent starts (a sticky disk): kept, and removed once it's there.
+	later := filepath.Join(t.TempDir(), "sticky")
+	staged := filepath.Join(later, ".d"+stagedInfix+"42")
+	if err := os.WriteFile(filepath.Join(state, "sticky"), []byte(staged), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted := &Server{UploadsDir: state}
+	restarted.RestoreUploads()
+	if _, err := os.Stat(filepath.Join(state, "sticky")); err != nil {
+		t.Fatalf("a record for a file system not mounted yet was dropped: %v", err)
+	}
+	if err := os.MkdirAll(later, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staged, []byte("left"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	restarted.sweepUploads(time.Now())
+	if _, err := os.Stat(staged); !os.IsNotExist(err) {
+		t.Fatalf("the staged file on the later file system is left: %v", err)
+	}
+	if records, _ := os.ReadDir(state); len(records) != 0 {
+		t.Fatalf("records left: %d", len(records))
+	}
+}
+
+// Completed uploads, kept a while to refuse late parts, don't count against MaxUploads.
+func TestUploadsLimitCountsOnlyThoseUnderWay(t *testing.T) {
+	server := &Server{}
+	for i := range MaxUploads {
+		u, err := server.upload("/f", fmt.Sprintf("upload-%04d", i), true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		server.forget(u, true)
+	}
+	if _, err := server.upload("/f", "upload-new", true); err != nil {
+		t.Fatalf("refused with none under way: %v", err)
+	}
+	for i := range MaxUploads - 1 {
+		if _, err := server.upload("/g", fmt.Sprintf("upload-%04d", i), true); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := server.upload("/g", "upload-over", true); !errors.Is(err, errTooManyUploads) {
+		t.Fatalf("the upload past the limit: %v", err)
 	}
 }
 

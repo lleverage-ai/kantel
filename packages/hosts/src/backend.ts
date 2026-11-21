@@ -65,6 +65,7 @@ import {
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
+	FILE_PART_CALL_MAX_BYTES,
 	FILE_STREAM_ACK_BYTES,
 	FILE_STREAM_FRAME_MAX_BYTES,
 	FILE_STREAM_WINDOW_BYTES,
@@ -77,6 +78,7 @@ import {
 	type HostExecRef,
 	type HostExecResult,
 	type HostExecStatus,
+	type HostFilePart,
 	type HostGuest,
 	type HostIsolateRuntime,
 	HostMethods,
@@ -883,6 +885,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const { hostId } = await tierOf(sandboxId);
 		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.fileStreams)) {
 			throw new KantelError("not_supported", "This sandbox's host can't stream files");
+		}
+	}
+
+	/** Refuses a sandbox whose host doesn't take files in parts: an older kantel-host would answer an unknown method. */
+	async function partsHost(sandboxId: string): Promise<void> {
+		const { hostId } = await tierOf(sandboxId);
+		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.fileParts)) {
+			throw new KantelError("not_supported", "This sandbox's host can't take files in parts; upgrade kantel-host");
 		}
 	}
 
@@ -1918,6 +1928,71 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (!finished)
 				throw new KantelError("unavailable", "The sandbox's host ended the write before all of it arrived");
 			return { size: end.size };
+		},
+		async writeFilePart(sandboxId, path, upload, offset, body) {
+			await partsHost(sandboxId);
+			// The body goes to the host in calls of at most FILE_PART_CALL_MAX_BYTES at their own offsets, one at a time:
+			// each is relayed between replicas as any call is, and no more than one is held here.
+			const buffer = new Uint8Array(FILE_PART_CALL_MAX_BYTES);
+			let filled = 0;
+			let written = 0;
+			const flush = async () => {
+				const params: HostFilePart = {
+					sandboxId,
+					path,
+					upload,
+					offset: offset + written,
+					data: toBase64(buffer.subarray(0, filled)),
+				};
+				const answer = await call<{ readonly size: number }>(sandboxId, HostMethods.filePart, params);
+				if (answer.size !== filled) {
+					throw new KantelError(
+						"unavailable",
+						`The sandbox's host wrote ${answer.size} bytes of a ${filled}-byte part`,
+					);
+				}
+				written += filled;
+				filled = 0;
+			};
+			const reader = body.getReader();
+			try {
+				for (;;) {
+					const { value, done } = await reader.read();
+					if (done) break;
+					let at = 0;
+					while (at < value.byteLength) {
+						const take = Math.min(value.byteLength - at, buffer.byteLength - filled);
+						buffer.set(value.subarray(at, at + take), filled);
+						filled += take;
+						at += take;
+						if (filled === buffer.byteLength) await flush();
+					}
+				}
+				// An empty part still makes the upload (an empty file).
+				if (filled > 0 || written === 0) await flush();
+			} catch (error) {
+				reader.cancel().catch(() => undefined);
+				throw error;
+			}
+			return { size: written };
+		},
+		async completeFileParts(sandboxId, path, upload, size, sha256, mode) {
+			await partsHost(sandboxId);
+			const params: HostFilePart = { sandboxId, path, upload, size, sha256, ...(mode === undefined ? {} : { mode }) };
+			// As long as reading a large file through for its SHA-256 takes.
+			const answer = await call<{ readonly size: number }>(
+				sandboxId,
+				HostMethods.fileComplete,
+				params,
+				undefined,
+				30 * 60_000,
+			);
+			return { name: path.split("/").pop() ?? path, path, kind: "file", size: answer.size, modifiedAt: now() };
+		},
+		async abortFileParts(sandboxId, path, upload) {
+			await partsHost(sandboxId);
+			const params: HostFilePart = { sandboxId, path, upload };
+			await call(sandboxId, HostMethods.fileAbort, params);
 		},
 		async deleteFile(sandboxId, path) {
 			await call(sandboxId, "sandbox.files.delete", { path, recursive: true });

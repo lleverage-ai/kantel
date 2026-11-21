@@ -33,14 +33,17 @@ const REQUEST_TIMEOUT_MS = 60_000;
 
 /**
  * The requests whose bodies are streamed to the handler rather than read first: a signed file URL's upload
- * (`PUT /v1/file-urls/{token}`), a bundle's tar (`POST /v1/bundles`) and an archive to extract
- * (`PUT /v1/sandboxes/{id}/files/archive`), any query. Each can be far larger than MAX_BODY_BYTES, and its route reads
+ * (`PUT /v1/file-urls/{token}`), a bundle's tar (`POST /v1/bundles`), an archive to extract
+ * (`PUT /v1/sandboxes/{id}/files/archive`) and a part of a file (`PUT /v1/sandboxes/{id}/files/parts`, up to 64 MiB), any
+ * query. Each can be far larger than MAX_BODY_BYTES, and its route reads
  * it as a stream (a `rawBody` route, or the file URL's), so holding it in memory would only cap and slow it.
  */
 export function streamsRequestBody(method: string | undefined, url: string | undefined): boolean {
 	const path = (url ?? "/").split("?", 1)[0] ?? "/";
 	if (method === "PUT") {
-		return /^\/v1\/file-urls\/[A-Za-z0-9_-]+$/.test(path) || /^\/v1\/sandboxes\/[^/]+\/files\/archive$/.test(path);
+		return (
+			/^\/v1\/file-urls\/[A-Za-z0-9_-]+$/.test(path) || /^\/v1\/sandboxes\/[^/]+\/files\/(?:archive|parts)$/.test(path)
+		);
 	}
 	return method === "POST" && path === "/v1/bundles";
 }
