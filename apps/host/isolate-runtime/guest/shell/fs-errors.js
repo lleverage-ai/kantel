@@ -12,6 +12,7 @@ const WORDING = {
 	EFBIG: "File too large",
 	ENOSPC: "No space left on device",
 	EROFS: "Read-only file system",
+	EIO: "Input/output error",
 };
 
 /** Bash's line for a filesystem error with a code it knows (`bash: <path>: <wording>`), or undefined for any other. */
@@ -24,13 +25,15 @@ export function describeFsError(error) {
 }
 
 /**
- * A lazy read's error as just-bash expects one: the workspace's "file too large" becomes EFBIG (with its explanation
- * as `reason`), which the patched just-bash reports as such rather than as a missing file. Others pass as they are.
+ * A lazy read's error as just-bash expects one. The file is in the manifest, so it exists: the workspace's "file too
+ * large" becomes EFBIG (with its explanation as `reason`), which the patched just-bash reports as such, and any other
+ * failure EIO, never one just-bash could take for a missing file (whose message it reads when there is no code) and
+ * create in its place, emptying it (`exec 3<> f`, awk's append).
  */
 export function readError(error) {
 	const message = error instanceof Error ? error.message : String(error);
 	if (/file too large/i.test(message)) {
 		return Object.assign(new Error(message), { code: "EFBIG", reason: message.replace(/^blob: /, "") });
 	}
-	return error;
+	return Object.assign(new Error(message), { code: "EIO" });
 }

@@ -42,43 +42,41 @@ function wordText(word) {
 	return isNode(word) ? staticText(word.parts) : undefined;
 }
 
-const basename = (name) => name.slice(name.lastIndexOf("/") + 1);
-
 /**
- * Commands that run the command in their arguments: options that take a value, how many words come before the
- * command, and options after which the command is only known at run time.
+ * Commands that run the command in their arguments: options that take a value, options that take none, and how many
+ * words come before the command. An option not listed (`--help`, `--version`, one this check doesn't model) means the
+ * command may do something else, so it isn't treated as running the program.
  */
 const WRAPPERS = new Map([
-	["command", { valueOptions: [] }],
-	["exec", { valueOptions: ["-a"] }],
-	["env", { valueOptions: ["-u", "-C"], assignments: true }],
-	["nohup", { valueOptions: [] }],
-	["nice", { valueOptions: ["-n"] }],
-	["time", { valueOptions: ["-f", "-o"] }],
-	["stdbuf", { valueOptions: ["-i", "-o", "-e"] }],
-	["timeout", { valueOptions: ["-s", "-k"], leading: 1 }],
-	[
-		"xargs",
-		{ valueOptions: ["-I", "-n", "-P", "-d", "-E", "-L", "-s", "-a"], dynamicOptions: /^(?:-I|-i|-J|--replace)/ },
-	],
+	["command", { valueOptions: [], flags: ["-p"] }],
+	["env", { valueOptions: ["-u", "-C"], flags: ["-i", "-0", "--ignore-environment"], assignments: true }],
+	["nohup", { valueOptions: [], flags: [] }],
+	["nice", { valueOptions: ["-n"], flags: [] }],
+	["time", { valueOptions: ["-f", "-o"], flags: ["-p", "-v"] }],
+	["stdbuf", { valueOptions: ["-i", "-o", "-e"], flags: [] }],
+	["timeout", { valueOptions: ["-s", "-k"], flags: ["--foreground", "--preserve-status", "-v"], leading: 1 }],
 ]);
+
+/** Commands that run another (possibly a builtin) but whose arguments this check doesn't follow. */
+const OPAQUE_WRAPPERS = new Set(["xargs", "exec", "builtin", "sudo"]);
 
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /**
- * The program a simple command runs, looking through wrappers (`env FOO=1 npm i`, `timeout 5 git x`). Undefined when
- * it runs none (`command -v git`), when the script's own function or alias runs instead, when it names a path, or
- * when the name is only known at run time. `xargs` runs it once per input line, which may be none, so it isn't
- * certain to fail: also undefined.
+ * The names a simple command runs, through its wrappers (`env FOO=1 timeout 5 npm i` runs env, timeout and npm), or
+ * undefined when that isn't known before it runs: a name or option built from an expansion, an option this check
+ * doesn't model, or a wrapper it doesn't follow.
  */
-function programOf(words, shadowed) {
+function chainOf(words) {
+	const names = [];
 	let index = 0;
 	while (index < words.length) {
 		const name = wordText(words[index]);
-		if (name === undefined || shadowed.has(name) || name.includes("/")) return undefined;
+		if (name === undefined) return undefined;
+		names.push(name);
+		if (OPAQUE_WRAPPERS.has(name)) return undefined;
 		const wrapper = WRAPPERS.get(name);
-		if (!wrapper) return name;
-		if (name === "xargs") return undefined;
+		if (!wrapper) return names;
 		index += 1;
 		let leading = wrapper.leading ?? 0;
 		for (; index < words.length; index += 1) {
@@ -89,13 +87,14 @@ function programOf(words, shadowed) {
 				break;
 			}
 			if (word.startsWith("-") && word.length > 1) {
-				// `command -v` and `-V` describe a program; they don't run it.
-				if (name === "command" && /^-[a-zA-Z]*[vV]/.test(word)) return undefined;
-				if (wrapper.dynamicOptions?.test(word)) return undefined;
 				if (wrapper.valueOptions.includes(word)) index += 1;
+				else if (!wrapper.flags.includes(word)) return undefined;
 				continue;
 			}
-			if (wrapper.assignments && ASSIGNMENT.test(word)) continue;
+			if (wrapper.assignments && ASSIGNMENT.test(word)) {
+				if (word.startsWith("PATH=")) return undefined;
+				continue;
+			}
 			if (leading > 0) {
 				leading -= 1;
 				continue;
@@ -103,12 +102,13 @@ function programOf(words, shadowed) {
 			break;
 		}
 	}
-	return undefined;
+	// A wrapper with nothing to run (`env`, `command`): it runs no program.
+	return [...names, undefined];
 }
 
 /**
  * Builtins and settings that can change whether, or which, a later program runs, or end the script before it:
- * a command using any of them isn't refused.
+ * a script using any of them (directly or through a wrapper) isn't refused.
  */
 const CHANGES_THE_RUN = new Set([
 	"exit",
@@ -129,7 +129,14 @@ const CHANGES_THE_RUN = new Set([
 	"continue",
 ]);
 
-/** What the whole script defines or does that the check has to know first: functions, and run-changing builtins. */
+/** Builtins that can assign variables, PATH among them. */
+const DECLARES = new Set(["export", "declare", "typeset", "readonly", "local"]);
+
+/**
+ * Whether anything in the script can stop it reaching its end, or change which program a name runs: a run-changing
+ * builtin (directly or through a wrapper), PATH assigned anywhere, a command name or wrapper chain only known at run
+ * time, or a syntax error the parse deferred. Also the functions the script defines, which shadow programs.
+ */
 function survey(script) {
 	const shadowed = new Set();
 	let changesTheRun = false;
@@ -141,11 +148,21 @@ function survey(script) {
 			continue;
 		}
 		if (!isNode(value)) continue;
+		if (value.type === "Statement" && value.deferredError) changesTheRun = true;
 		if (value.type === "FunctionDef" && typeof value.name === "string") shadowed.add(value.name);
 		if (value.type === "SimpleCommand") {
-			const name = value.name ? wordText(value.name) : undefined;
-			if (value.name && (name === undefined || CHANGES_THE_RUN.has(name))) changesTheRun = true;
 			for (const a of value.assignments ?? []) if (a?.name === "PATH") changesTheRun = true;
+			if (value.name) {
+				const words = [value.name, ...(value.args ?? [])];
+				const chain = chainOf(words);
+				if (!chain || chain.some((name) => name !== undefined && CHANGES_THE_RUN.has(name))) changesTheRun = true;
+				if (chain?.some((name) => name !== undefined && DECLARES.has(name))) {
+					for (const arg of value.args ?? []) {
+						const text = wordText(arg);
+						if (text === undefined || /^PATH(\+)?=/.test(text)) changesTheRun = true;
+					}
+				}
+			}
 		}
 		for (const child of Object.values(value)) if (typeof child === "object" && child !== null) stack.push(child);
 	}
@@ -153,29 +170,29 @@ function survey(script) {
 }
 
 /**
- * The unavailable program that ends `statements` with its failure, or undefined: the last statement's last
- * pipeline (any earlier one's failure is handled by `||`, or the statement goes on after `;`) when every operator
- * after the program is `&&`, the pipeline isn't negated and the program is its last command; looking into groups and
- * subshells in that position.
+ * The unavailable program that makes `statements` fail whatever else happens, or undefined. The last statement must
+ * be a chain of `&&` only (with any `||` a failure may be handled, or the program skipped), so it fails if any part
+ * of it fails; the program must be the last command of an un-negated pipeline in it (the pipeline's status is its
+ * last command's), or so inside a group or subshell there. Then the command can't succeed: refusing it changes only
+ * what would have run before the program failed.
  */
 function failingProgram(statements, shadowed, lookup) {
 	if (!Array.isArray(statements) || statements.length === 0) return undefined;
 	const statement = statements[statements.length - 1];
 	if (!isNode(statement) || statement.background) return undefined;
-	const pipelines = statement.pipelines ?? [];
 	const operators = statement.operators ?? [];
-	// From the end: each pipeline that only `&&` follows fails the statement when it fails.
-	for (let i = pipelines.length - 1; i >= 0; i -= 1) {
-		if (i < pipelines.length - 1 && operators[i] !== "&&") break;
-		const pipeline = pipelines[i];
+	if (operators.some((op) => op !== "&&")) return undefined;
+	for (const pipeline of statement.pipelines ?? []) {
 		if (!isNode(pipeline) || pipeline.negated) continue;
 		const commands = pipeline.commands ?? [];
 		const last = commands[commands.length - 1];
 		if (!isNode(last)) continue;
 		let found;
 		if (last.type === "SimpleCommand" && last.name) {
-			const program = programOf([last.name, ...(last.args ?? [])], shadowed);
-			found = program === undefined ? undefined : lookup(basename(program));
+			const chain = chainOf([last.name, ...(last.args ?? [])]);
+			const program = chain?.[chain.length - 1];
+			// `command -v git` and the like describe a program; `command git` runs it.
+			if (program !== undefined && !shadowed.has(program) && !program.includes("/")) found = lookup(program);
 		} else if (last.type === "Group" || last.type === "Subshell") {
 			found = failingProgram(last.body, shadowed, lookup);
 		}
@@ -183,7 +200,6 @@ function failingProgram(statements, shadowed, lookup) {
 	}
 	return undefined;
 }
-
 /**
  * The unavailable program a parsed command would fail on, which is safe to refuse before anything runs, or
  * undefined. `lookup(name)` answers the program's `{ command, reason }` if the isolate doesn't have it.

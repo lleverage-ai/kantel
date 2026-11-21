@@ -63,7 +63,16 @@ describe("parse before run", () => {
 			"eval git status",
 			'"$G" status',
 			"xargs git < list",
-			// Anything that can change what runs after it.
+			// A chain with `||` anywhere may skip the program, or handle its failure.
+			"true || git status",
+			"true || git status && echo ok",
+			"{ true || git status; }",
+			// Wrapper options this check doesn't model (help, version) may do something else.
+			"env --help git",
+			"timeout --help 5 git",
+			// Anything that can change what runs after it, directly or through a wrapper.
+			"command exit 0; git status",
+			"export PATH=/workspace/bin; git status",
 			"set -e; git status",
 			"alias g=git; g status",
 			"exit 0; git status",
@@ -90,8 +99,8 @@ describe("filesystem errors", () => {
 	it("turns the workspace's too-large read into EFBIG", () => {
 		const e = readError(new Error("blob: file too large (9 bytes; the isolate reads at most 1)"));
 		expect(e).toMatchObject({ code: "EFBIG", reason: "file too large (9 bytes; the isolate reads at most 1)" });
-		const other = new Error("blob: not in this sandbox's files");
-		expect(readError(other)).toBe(other);
+		// Any other failure of a file that exists is EIO, never one just-bash could take for a missing file.
+		expect(readError(new Error("blob: No such file or directory (os error 2)"))).toMatchObject({ code: "EIO" });
 	});
 });
 
@@ -114,6 +123,16 @@ describe("the patched just-bash", () => {
 		expect(r.stdout).toBe("after\n");
 		// `<>` opens a file read-write, creating it only when it is missing: one that failed to read isn't emptied.
 		await expect(fs.readFile("/w/kept")).rejects.toMatchObject({ code: "EFBIG" });
+	});
+	it("never empties a file whose read failed with a missing-file message from the store", async () => {
+		const storeDown = async () => {
+			throw readError(new Error("blob: No such file or directory (os error 2)"));
+		};
+		const fs = new InMemoryFs({ "/w/kept": storeDown });
+		await fs.mkdir("/w", { recursive: true });
+		const r = await new Bash({ fs, cwd: "/w" }).exec("exec 3<> kept; echo after");
+		expect(r.stdout).toBe("after\n");
+		await expect(fs.readFile("/w/kept")).rejects.toMatchObject({ code: "EIO" });
 	});
 	it("fails only the command whose redirection meets a filesystem error", async () => {
 		const fs = new InMemoryFs({});
