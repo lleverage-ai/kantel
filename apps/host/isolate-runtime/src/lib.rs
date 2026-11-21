@@ -25,6 +25,7 @@ pub mod embed;
 pub mod harden;
 #[path = "../hardening/mod.rs"]
 pub mod hardening;
+pub mod host_commands;
 pub mod hostbuf;
 pub mod isolate;
 pub mod limits;

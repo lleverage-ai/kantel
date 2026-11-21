@@ -63,7 +63,7 @@ embedder that wants it as it is.
 
 ## The embedding
 
-`Embedding { guest, extensions, filesystem }` (`filesystem` is [below](#the-filesystem-provider)):
+`Embedding { guest, extensions, filesystem, host_commands }` (`filesystem` and `host_commands` are below):
 
 - **`guest`**: the guest bundle, one classic script, evaluated once into the startup snapshot. It is the embedder's
   JavaScript: Kantel's is `guest/main.js` bundled to `guest/dist/guest.js`.
@@ -202,6 +202,33 @@ async fn our_provider_keeps_the_contract() {
     kantel_isolate::workspace::contract::persistent(&subject).await;
 }
 ```
+
+## Host commands
+
+`Embedding::with_host_command(name, command)` registers a program the embedder runs natively on the host for the
+guest's shell ([`src/host_commands.rs`](src/host_commands.rs)): an SQL engine over a large file, a search tool, an
+archive or document reader, whose bytes then never enter the isolate. The guest shell defines a command of that name
+(`op_kt_host_commands`); a name the isolate otherwise lacks (`unzip`, `duckdb`) is served, never refused before
+running nor reported as `needsMicrovm`.
+
+`HostCommand::run(request)` runs on the engine's I/O runtime, ended at the shell command's deadline (exit 124) and
+cancelled if the shell cancels it (`timeout`) or the command is stopped. The `HostRequest` has the arguments, working
+directory, environment and stdin, and `files`: the shell's files as they are at that moment (`read(path, cap)` reads
+one, a path absolute or relative to the working directory and inside `/workspace`, through the workspace or inline
+if the command changed it; symbolic links in a path are followed as the shell follows them, and one leading out of
+`/workspace` is refused). The `HostReply` has the exit code, stdout and stderr, and the files it writes and
+removes. A host command never commits: its changes become the shell command's own and are saved by its one commit,
+so a stopped or cancelled command, an unknown outcome and the next command are handled once for everything.
+
+- Small outputs come back inline (`HostWrite::Bytes`; at most 64 MiB inline per reply, stdout and stderr included).
+- A large output is staged first (`files.stage(path, bytes)`) and answered as `HostWrite::Staged`: the shell keeps
+  it as a file it reads only if the command does (`adoptStaged` in the shell filesystem), and its commit names the
+  staged blob, so the bytes never pass through the isolate. `files.stage` gives the bytes' SHA-256 as the staged
+  `hash`, so an output that is what the file already was (bytes and mode) is no change, as an inline one isn't. The
+  shell knows a staged output by its body, not its path: anything that replaces the body makes it an ordinary file.
+
+An error from `run` is the command's failure (exit 1, the error on stderr). `tests/host_commands.rs` runs these
+through Kantel's guest shell.
 
 ## Memory for an embedder's own isolates
 

@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use deno_core::Extension;
 
+use crate::host_commands::{HostCommand, HostCommands};
 use crate::workspace::FilesystemProvider;
 
 /// The parts of the runtime an embedder chooses, given to [`Engine::init`](crate::Engine::init) once per process.
@@ -19,11 +20,14 @@ use crate::workspace::FilesystemProvider;
 ///   own ops do.
 /// - `filesystem`: where sandboxes' files come from and where commands' changes go (see
 ///   [`workspace`](crate::workspace)). None is Kantel's manifest per command, over the blob store bridge.
+/// - `host_commands`: programs the embedder runs natively for the guest's shell, by name (see
+///   [`host_commands`](crate::host_commands)). Kantel's has none.
 #[derive(Clone)]
 pub struct Embedding {
     pub guest: &'static str,
     pub extensions: fn() -> Vec<Extension>,
     pub filesystem: Option<Arc<dyn FilesystemProvider>>,
+    pub host_commands: Arc<HostCommands>,
 }
 
 impl Embedding {
@@ -33,7 +37,19 @@ impl Embedding {
             guest,
             extensions: Vec::new,
             filesystem: None,
+            host_commands: Arc::default(),
         }
+    }
+
+    /// A host command the guest's shell runs under `name` (see the type's docs). A name the isolate otherwise
+    /// lacks (`unzip`, `duckdb`) is then served, not refused.
+    pub fn with_host_command(
+        mut self,
+        name: impl Into<String>,
+        command: Arc<dyn HostCommand>,
+    ) -> Embedding {
+        Arc::make_mut(&mut self.host_commands).insert(name.into(), command);
+        self
     }
 
     /// The embedder's filesystem provider (see the type's docs).
