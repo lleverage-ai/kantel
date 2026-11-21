@@ -56,6 +56,7 @@ type MountRoutes =
 	| "createBucketSource"
 	| "listBucketSources"
 	| "getBucketSource"
+	| "setBucketSourceCredentials"
 	| "deleteBucketSource";
 
 export type MountHandlers = Pick<RouteHandlers<SignedInComputeRoutes, Principal>, MountRoutes>;
@@ -149,7 +150,38 @@ const credentialsAad = (id: string) => sealedAt("bucketSources", id, "credential
 
 /** Why a host didn't answer for a mount it was given: it predates mounts, or that kind of them. */
 export const unanswered = (mount: computeSchema.Mount): string =>
-	mount.source.kind === "bundle" ? "This host can't mount bundles yet" : "This host can't mount buckets yet";
+	mount.source.kind === "bundle"
+		? "This host can't mount bundles yet"
+		: mount.source.kind === "manifest"
+			? "This host can't mount manifests yet"
+			: "This host can't mount buckets yet";
+
+/**
+ * Refuses credentials a bucket source of `provider` can't take: a service account key or an access token that isn't
+ * for Cloud Storage, a key that isn't JSON, or credentials that have already expired.
+ */
+function checkCredentials(
+	provider: computeSchema.BucketProvider,
+	credentials: computeSchema.BucketCredentials,
+	at: number,
+) {
+	if ("serviceAccountKey" in credentials) {
+		if (provider !== "gcs") {
+			throw new KantelError("invalid", "An S3 bucket source takes an access key, not a service account key");
+		}
+		try {
+			JSON.parse(credentials.serviceAccountKey);
+		} catch {
+			throw new KantelError("invalid", "serviceAccountKey must be the service account's JSON key");
+		}
+	}
+	if ("accessToken" in credentials && provider !== "gcs") {
+		throw new KantelError("invalid", "An access token reads only a gcs bucket source: give S3 an access key");
+	}
+	if ("expiresAt" in credentials && credentials.expiresAt !== undefined && credentials.expiresAt <= at) {
+		throw new KantelError("invalid", "These credentials have already expired (expiresAt)");
+	}
+}
 
 /**
  * A sandbox's mounts once its backend placed it: each the status the backend answered for its path, or `failed` when
@@ -297,8 +329,9 @@ export function createMounts(deps: MountsDeps) {
 
 	const bundleMatches = (digest: string) => (source: computeSchema.MountSource) =>
 		source.kind === "bundle" && source.digest === digest;
+	/** A bucket or manifest mount of the bucket source: either reads it with its credentials. */
 	const bucketMatches = (id: string) => (source: computeSchema.MountSource) =>
-		source.kind === "bucket" && source.bucketSourceId === id;
+		(source.kind === "bucket" || source.kind === "manifest") && source.bucketSourceId === id;
 
 	const bundleView = async (
 		bundle: StoredBundle,
@@ -633,6 +666,12 @@ export function createMounts(deps: MountsDeps) {
 						`The mount at ${path} is a bundle, which never changes: mount another digest for other files`,
 					);
 				}
+				if (mount.source.kind === "manifest") {
+					throw new KantelError(
+						"invalid",
+						`The mount at ${path} is a manifest, which never changes: mount another manifest for other files`,
+					);
+				}
 			}
 			const buckets = mounts.filter(
 				(mount) => mount.source.kind === "bucket" && (path === undefined || mount.path === path),
@@ -811,16 +850,7 @@ export function createMounts(deps: MountsDeps) {
 						throw new KantelError("invalid", "endpoint must be an http(s) URL");
 					}
 				}
-				if (body.provider === "gcs" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
-					try {
-						JSON.parse(body.credentials.serviceAccountKey);
-					} catch {
-						throw new KantelError("invalid", "serviceAccountKey must be the service account's JSON key");
-					}
-				}
-				if (body.provider === "s3" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
-					throw new KantelError("invalid", "An S3 bucket source takes an access key, not a service account key");
-				}
+				if (body.credentials !== undefined) checkCredentials(body.provider, body.credentials, now());
 				const id = randomId("bks", 8);
 				const credentials =
 					body.credentials === undefined
@@ -852,6 +882,16 @@ export function createMounts(deps: MountsDeps) {
 
 		getBucketSource: async (principal, { params }) =>
 			bucketView(await bucketSourceFor(principal, params.bucketSourceId, "account:read")),
+
+		setBucketSourceCredentials: async (principal, { params, body }) => {
+			const source = await bucketSourceFor(principal, params.bucketSourceId, "account:admin");
+			checkCredentials(source.provider, body.credentials, now());
+			const credentials = await deps.sealer().seal(JSON.stringify(body.credentials), credentialsAad(source.id));
+			// Only the credentials: a delete's claim, and everything else, stay as they are.
+			const updated = await store.bucketSources.update(source.id, (current) => ({ ...current, credentials }));
+			if (updated === undefined) throw new KantelError("not_found", "No such bucket source");
+			return bucketView(updated);
+		},
 
 		deleteBucketSource: async (principal, { params }) => {
 			const source = await bucketSourceFor(principal, params.bucketSourceId, "account:admin");
@@ -903,6 +943,11 @@ export function createMounts(deps: MountsDeps) {
 					if (bundle === undefined || claimed(bundle)) {
 						throw new KantelError("not_found", `No bundle ${mount.source.digest} in the account (upload it first)`);
 					}
+				} else if (mount.source.kind === "manifest") {
+					// Not taken yet: a gateway from before manifest mounts, sharing the deployment's database while it rolls
+					// out, would boot one as a bucket mount of the whole bucket, and delete its source as unmounted. Every
+					// gateway handles them from this release; the next takes them.
+					throw new KantelError("not_supported", "Manifest mounts aren't taken yet on this deployment");
 				} else {
 					const source = await store.bucketSources.get(mount.source.bucketSourceId);
 					if (source === undefined || source.accountId !== accountId || claimed(source)) {

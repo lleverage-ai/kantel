@@ -607,6 +607,14 @@ export type MountSource =
 			/** The bucket source's name and bucket, where the console knows them. */
 			readonly bucketSourceName?: string;
 			readonly bucket?: string;
+	  }
+	| {
+			/** Exactly the files a manifest object in the bucket source lists. */
+			readonly kind: "manifest";
+			readonly bucketSourceId: string;
+			readonly manifestKey: string;
+			readonly bucketSourceName?: string;
+			readonly bucket?: string;
 	  };
 
 export interface SandboxMount {

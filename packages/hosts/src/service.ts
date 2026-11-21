@@ -115,6 +115,7 @@ export const enforcesPolicy = (host: HostRecord): boolean =>
 const MOUNT_KINDS = {
 	bundle: { feature: HOST_FEATURES.mountsBundle, refusal: "This host can't mount bundles yet" },
 	bucket: { feature: HOST_FEATURES.mountsBucket, refusal: "This host can't mount buckets yet" },
+	manifest: { feature: HOST_FEATURES.mountsManifest, refusal: "This host can't mount manifests yet" },
 } as const;
 
 /** A boot's mounts as a host with some features takes them. */

@@ -296,11 +296,20 @@ const (
 	BrowserEmbedModeReplay BrowserEmbedMode = "replay"
 )
 
-// An S3 access key, or a GCS HMAC key.
+// An S3 access key (temporary ones with `sessionToken` and `expiresAt`), or a GCS HMAC key.
 type BucketAccessKey struct {
-	AccessKeyID     string  `json:"accessKeyId"`
+	AccessKeyID string `json:"accessKeyId"`
+	// When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced.
+	ExpiresAt       *int64  `json:"expiresAt,omitempty"`
 	SecretAccessKey string  `json:"secretAccessKey"`
 	SessionToken    *string `json:"sessionToken,omitempty"`
+}
+
+// A Cloud Storage OAuth access token, such as a down-scoped one for the objects the sandboxes may read (`gcs` only). Short-lived: replace it before `expiresAt`. Experimental, as mounts are.
+type BucketAccessToken struct {
+	AccessToken string `json:"accessToken"`
+	// When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced.
+	ExpiresAt int64 `json:"expiresAt"`
 }
 
 // Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered.
@@ -336,7 +345,7 @@ type BucketServiceAccountKey struct {
 	ServiceAccountKey string `json:"serviceAccountKey"`
 }
 
-// A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only.
+// A bucket an account's sandboxes may mount prefixes or manifests of, with the credentials that read it. The credentials are write-only.
 type BucketSource struct {
 	AccountID string `json:"accountId"`
 	// The bucket's name.
@@ -1894,6 +1903,23 @@ const (
 	LiveSandboxChangeTypeSandbox LiveSandboxChangeType = "sandbox"
 )
 
+// Exactly the files a manifest lists, from objects anywhere in a bucket source: for a set of files chosen per sandbox, which a prefix can't express. The manifest is a JSON object the account writes to the bucket, `{"version":1,"entries":[...]}`, one entry per file: `path` (relative to the mount), `key` (the object with its bytes), `size`, and the object's `generation` (Cloud Storage) or `etag`, or both, so a file never reads another version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never changes: mount another one for other files. Not taken by a create yet (`not_supported`): this release handles them, so every gateway of a deployment does before the next one takes them.
+type ManifestMountSource struct {
+	// A bucket source of the sandbox's account: it holds the manifest and every file's bytes.
+	BucketSourceID string                  `json:"bucketSourceId"`
+	Kind           ManifestMountSourceKind `json:"kind"`
+	// The manifest object's SHA-256, `sha256:` and 64 hex digits: a manifest that doesn't match isn't mounted.
+	ManifestDigest string `json:"manifestDigest"`
+	// The object holding the manifest, such as `manifests/session-42.json`.
+	ManifestKey string `json:"manifestKey"`
+}
+
+type ManifestMountSourceKind string
+
+const (
+	ManifestMountSourceKindManifest ManifestMountSourceKind = "manifest"
+)
+
 type Member struct {
 	Email *string `json:"email,omitempty"`
 	// Epoch milliseconds, UTC.
@@ -2850,6 +2876,10 @@ const (
 	ScanSeverityLow      ScanSeverity = "low"
 	ScanSeverityUnknown  ScanSeverity = "unknown"
 )
+
+type SetBucketSourceCredentialsBody struct {
+	Credentials BucketCredentials `json:"credentials"`
+}
 
 // `encoding` says how `content` is written: `utf8` (the default) or `base64`.
 type SetEnvironmentFileBody struct {

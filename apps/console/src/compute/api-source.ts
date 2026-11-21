@@ -499,7 +499,9 @@ function baseFieldOf(record: object): { readonly base?: UiSandboxBase } {
 async function learnBucketSources(context: Context, accountId: string, sandboxes: readonly Sandbox[]): Promise<void> {
 	const unknown = sandboxes.some((sandbox) =>
 		(sandbox.mounts ?? []).some(
-			(mount) => mount.source.kind === "bucket" && !context.bucketSources.has(mount.source.bucketSourceId),
+			(mount) =>
+				(mount.source.kind === "bucket" || mount.source.kind === "manifest") &&
+				!context.bucketSources.has(mount.source.bucketSourceId),
 		),
 	);
 	if (!unknown) return;
@@ -516,6 +518,14 @@ async function learnBucketSources(context: Context, accountId: string, sandboxes
 function mountSourceOf(source: ApiMountSource, context: Context): UiSandboxMount["source"] {
 	if (source.kind === "bundle") return { kind: "bundle", digest: source.digest };
 	const known = context.bucketSources.get(source.bucketSourceId);
+	if (source.kind === "manifest") {
+		return {
+			kind: "manifest",
+			bucketSourceId: source.bucketSourceId,
+			manifestKey: source.manifestKey,
+			...(known === undefined ? {} : { bucketSourceName: known.name, bucket: known.bucket }),
+		};
+	}
 	return {
 		kind: "bucket",
 		bucketSourceId: source.bucketSourceId,

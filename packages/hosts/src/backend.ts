@@ -476,13 +476,27 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 export function hostMount(mount: BackendMount): HostMount {
 	const { source } = mount;
 	if (source.kind === "bundle") return { path: mount.path, kind: "bundle", digest: source.digest };
-	return {
-		path: mount.path,
-		kind: "bucket",
-		bucketSourceId: source.bucketSourceId,
-		prefix: source.prefix,
-		...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
-	};
+	if (source.kind === "manifest") {
+		return {
+			path: mount.path,
+			kind: "manifest",
+			bucketSourceId: source.bucketSourceId,
+			manifestKey: source.manifestKey,
+			digest: source.manifestDigest,
+		};
+	}
+	if (source.kind === "bucket") {
+		return {
+			path: mount.path,
+			kind: "bucket",
+			bucketSourceId: source.bucketSourceId,
+			prefix: source.prefix,
+			...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
+		};
+	}
+	// A kind a later release stored, which this one can't hand on as it is: never as another kind.
+	const unknown: { readonly kind: string } = source;
+	throw new KantelError("not_supported", `This gateway can't mount ${unknown.kind} sources yet`);
 }
 
 /** A spec's or boot's mounts for the hosts service; absent when there are none. */

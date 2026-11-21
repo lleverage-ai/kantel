@@ -32,6 +32,7 @@ export const MOUNT_STATUS_LABELS: Readonly<Record<MountStatus, string>> = {
 export const MOUNT_KIND_LABELS: Readonly<Record<MountSource["kind"], string>> = {
 	bundle: "Bundle",
 	bucket: "Bucket",
+	manifest: "Manifest",
 };
 
 export const BUCKET_PROVIDER_LABELS: Readonly<Record<BucketProvider, string>> = {

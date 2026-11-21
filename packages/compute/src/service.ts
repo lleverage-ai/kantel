@@ -893,6 +893,7 @@ const MOUNTS_OFF_HANDLERS: MountHandlers = {
 	createBucketSource: mountsOff,
 	listBucketSources: mountsOff,
 	getBucketSource: mountsOff,
+	setBucketSourceCredentials: mountsOff,
 	deleteBucketSource: mountsOff,
 };
 

@@ -263,15 +263,24 @@ export interface BrowserEmbed {
 	readonly endMessage?: string;
 }
 
-/** An S3 access key, or a GCS HMAC key. */
+/** An S3 access key (temporary ones with `sessionToken` and `expiresAt`), or a GCS HMAC key. */
 export interface BucketAccessKey {
 	readonly accessKeyId: string;
 	readonly secretAccessKey: string;
 	readonly sessionToken?: string;
+	/** When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. */
+	readonly expiresAt?: number;
+}
+
+/** A Cloud Storage OAuth access token, such as a down-scoped one for the objects the sandboxes may read (`gcs` only). Short-lived: replace it before `expiresAt`. Experimental, as mounts are. */
+export interface BucketAccessToken {
+	readonly accessToken: string;
+	/** When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. */
+	readonly expiresAt: number;
 }
 
 /** Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered. */
-export type BucketCredentials = BucketAccessKey | BucketServiceAccountKey;
+export type BucketCredentials = BucketAccessKey | BucketAccessToken | BucketServiceAccountKey;
 
 /** An object-store prefix, through a bucket source the account holds. The host reads objects as they are opened; the bucket source's credentials stay on the host, never in the sandbox. */
 export interface BucketMountSource {
@@ -292,7 +301,7 @@ export interface BucketServiceAccountKey {
 	readonly serviceAccountKey: string;
 }
 
-/** A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only. */
+/** A bucket an account's sandboxes may mount prefixes or manifests of, with the credentials that read it. The credentials are write-only. */
 export interface BucketSource {
 	/** The bucket source's ID, such as `bks_4kq9x2mt`. */
 	readonly id: string;
@@ -1737,6 +1746,17 @@ export interface LiveSandboxChange {
 	readonly at: number;
 }
 
+/** Exactly the files a manifest lists, from objects anywhere in a bucket source: for a set of files chosen per sandbox, which a prefix can't express. The manifest is a JSON object the account writes to the bucket, `{"version":1,"entries":[...]}`, one entry per file: `path` (relative to the mount), `key` (the object with its bytes), `size`, and the object's `generation` (Cloud Storage) or `etag`, or both, so a file never reads another version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never changes: mount another one for other files. Not taken by a create yet (`not_supported`): this release handles them, so every gateway of a deployment does before the next one takes them. */
+export interface ManifestMountSource {
+	readonly kind: "manifest";
+	/** A bucket source of the sandbox's account: it holds the manifest and every file's bytes. */
+	readonly bucketSourceId: string;
+	/** The object holding the manifest, such as `manifests/session-42.json`. */
+	readonly manifestKey: string;
+	/** The manifest object's SHA-256, `sha256:` and 64 hex digits: a manifest that doesn't match isn't mounted. */
+	readonly manifestDigest: string;
+}
+
 export interface Member {
 	readonly userId: string;
 	readonly name: string;
@@ -1777,7 +1797,7 @@ export interface Mount {
 	readonly source: MountSource;
 }
 
-export type MountSource = BundleMountSource | BucketMountSource;
+export type MountSource = BundleMountSource | BucketMountSource | ManifestMountSource;
 
 /** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
 export type MountStatus = "pending" | "ready" | "failed";
@@ -2595,6 +2615,11 @@ export interface SaveSnapshotBody {
 }
 
 export type ScanSeverity = "critical" | "high" | "medium" | "low" | "unknown";
+
+export interface SetBucketSourceCredentialsBody {
+	/** Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered. */
+	readonly credentials: BucketCredentials;
+}
 
 /** `encoding` says how `content` is written: `utf8` (the default) or `base64`. */
 export interface SetEnvironmentFileBody {
@@ -4017,7 +4042,7 @@ export interface KantelClient {
 	updateAccountPool(poolId: string, body?: UpdatePoolBody, options?: CallOptions): Promise<Pool>;
 	/** Delete one of an account's pools. Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /pools/{poolId}` */
 	deleteAccountPool(poolId: string, options?: CallOptions): Promise<void>;
-	/** Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/mounts/refresh` */
+	/** Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle or manifest mount at `path` is `invalid` (it never changes: mount another digest or manifest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/mounts/refresh` */
 	refreshSandboxMounts(sandboxId: string, body?: RefreshMountsBody, options?: CallOptions): Promise<RefreshedMountList>;
 	/** Upload a bundle. Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bundles` */
 	uploadBundle(body: RawBody, query?: UploadBundleQuery, options?: CallOptions): Promise<Bundle>;
@@ -4027,12 +4052,18 @@ export interface KantelClient {
 	getBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<Bundle>;
 	/** Delete a bundle. Removes it from the account. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included, since they mount it again when they start: delete those sandboxes first. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bundles/{digest}` */
 	deleteBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
-	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). Idempotent with `options.idempotencyKey`. `POST /bucket-sources` */
+	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes or manifests of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). Idempotent with `options.idempotencyKey`. `POST /bucket-sources` */
 	createBucketSource(body: CreateBucketSourceBody, options?: CallOptions): Promise<BucketSource>;
 	/** List bucket sources. The account's bucket sources, oldest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources` */
 	listBucketSources(query?: AccountScopedQuery, options?: CallOptions): Promise<BucketSourceList>;
 	/** Get a bucket source. Never its credentials. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources/{bucketSourceId}` */
 	getBucketSource(bucketSourceId: string, options?: CallOptions): Promise<BucketSource>;
+	/** Replace a bucket source's credentials. Replaces the credentials that read the bucket, such as a short-lived token before it expires: hosts take the new ones the next time they ask for the source, which is within ten minutes, and from a minute before the old ones' `expiresAt`. Files already read stay in the host's cache. Credentials already past their `expiresAt` are `invalid`, and an access token is for a `gcs` source only. Needs the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `PUT /bucket-sources/{bucketSourceId}/credentials` */
+	setBucketSourceCredentials(
+		bucketSourceId: string,
+		body: SetBucketSourceCredentialsBody,
+		options?: CallOptions,
+	): Promise<BucketSource>;
 	/** Delete a bucket source. Removes it and its credentials. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included: delete those sandboxes first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bucket-sources/{bucketSourceId}` */
 	deleteBucketSource(bucketSourceId: string, options?: CallOptions): Promise<void>;
 }
@@ -4555,6 +4586,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: "/bucket-sources", query }, callOptions),
 		getBucketSource: (bucketSourceId, callOptions) =>
 			send(options, { method: "GET", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}` }, callOptions),
+		setBucketSourceCredentials: (bucketSourceId, body, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}/credentials`, body },
+				callOptions,
+			),
 		deleteBucketSource: (bucketSourceId, callOptions) =>
 			send(options, { method: "DELETE", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}` }, callOptions),
 	};

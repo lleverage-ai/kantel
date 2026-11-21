@@ -908,7 +908,41 @@ export const BucketMountSource = Type.Object(
 	},
 );
 
-export const MountSource = Type.Union([BundleMountSource, BucketMountSource], { title: "MountSource" });
+export const ManifestMountSource = Type.Object(
+	{
+		kind: Type.Literal("manifest"),
+		bucketSourceId: Type.String({
+			description: "A bucket source of the sandbox's account: it holds the manifest and every file's bytes.",
+		}),
+		manifestKey: Type.String({
+			minLength: 1,
+			maxLength: 1024,
+			description: "The object holding the manifest, such as `manifests/session-42.json`.",
+		}),
+		manifestDigest: Type.String({
+			pattern: BUNDLE_DIGEST_PATTERN,
+			description:
+				"The manifest object's SHA-256, `sha256:` and 64 hex digits: a manifest that doesn't match isn't mounted.",
+		}),
+	},
+	{
+		title: "ManifestMountSource",
+		description:
+			"Exactly the files a manifest lists, from objects anywhere in a bucket source: for a set of files chosen per " +
+			"sandbox, which a prefix can't express. The manifest is a JSON object the account writes to the bucket, " +
+			'`{"version":1,"entries":[...]}`, one entry per file: `path` (relative to the mount), `key` (the object with its ' +
+			"bytes), `size`, and the object's `generation` (Cloud Storage) or `etag`, or both, so a file never reads another " +
+			"version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 " +
+			"files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object " +
+			"changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never " +
+			"changes: mount another one for other files. Not taken by a create yet (`not_supported`): this release handles " +
+			"them, so every gateway of a deployment does before the next one takes them.",
+	},
+);
+
+export const MountSource = Type.Union([BundleMountSource, BucketMountSource, ManifestMountSource], {
+	title: "MountSource",
+});
 
 export const Mount = Type.Object(
 	{
@@ -4578,6 +4612,11 @@ export const BucketProvider = Type.Union([Type.Literal("s3"), Type.Literal("gcs"
 	description: "`s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage.",
 });
 
+const EXPIRES_AT =
+	"When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the " +
+	"source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of " +
+	"a file not already in the host's cache fails (EIO) until they are replaced.";
+
 export const BucketCredentials = Type.Union(
 	[
 		Type.Object(
@@ -4585,8 +4624,24 @@ export const BucketCredentials = Type.Union(
 				accessKeyId: Type.String({ minLength: 1, maxLength: 256 }),
 				secretAccessKey: Type.String({ minLength: 1, maxLength: 1024 }),
 				sessionToken: Type.Optional(Type.String({ maxLength: 8192 })),
+				expiresAt: Type.Optional(Type.Integer({ description: EXPIRES_AT })),
 			},
-			{ title: "BucketAccessKey", description: "An S3 access key, or a GCS HMAC key." },
+			{
+				title: "BucketAccessKey",
+				description: "An S3 access key (temporary ones with `sessionToken` and `expiresAt`), or a GCS HMAC key.",
+			},
+		),
+		Type.Object(
+			{
+				accessToken: Type.String({ minLength: 1, maxLength: 8192 }),
+				expiresAt: Type.Integer({ description: EXPIRES_AT }),
+			},
+			{
+				title: "BucketAccessToken",
+				description:
+					"A Cloud Storage OAuth access token, such as a down-scoped one for the objects the sandboxes may read " +
+					"(`gcs` only). Short-lived: replace it before `expiresAt`. Experimental, as mounts are.",
+			},
 		),
 		Type.Object(
 			{
@@ -4632,7 +4687,7 @@ export const BucketSource = Type.Object(
 	{
 		title: "BucketSource",
 		description:
-			"A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials " +
+			"A bucket an account's sandboxes may mount prefixes or manifests of, with the credentials that read it. The credentials " +
 			"are write-only.",
 	},
 );
@@ -4642,6 +4697,11 @@ export const BucketSourceList = Type.Object({ items: Type.Array(BucketSource) },
 export const BucketSourcePath = Type.Object(
 	{ bucketSourceId: id("The bucket source's ID.") },
 	{ title: "BucketSourcePath" },
+);
+
+export const SetBucketSourceCredentialsBody = Type.Object(
+	{ credentials: BucketCredentials },
+	{ title: "SetBucketSourceCredentialsBody" },
 );
 
 export const CreateBucketSourceBody = Type.Object(
@@ -4938,6 +4998,7 @@ export type SandboxMoveTarget = Static<typeof SandboxMoveTarget>;
 export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;
+export type ManifestMountSource = Static<typeof ManifestMountSource>;
 export type MountSource = Static<typeof MountSource>;
 export type Mount = Static<typeof Mount>;
 export type MountStatus = Static<typeof MountStatus>;
@@ -4950,6 +5011,7 @@ export type BucketProvider = Static<typeof BucketProvider>;
 export type BucketCredentials = Static<typeof BucketCredentials>;
 export type BucketSource = Static<typeof BucketSource>;
 export type CreateBucketSourceBody = Static<typeof CreateBucketSourceBody>;
+export type SetBucketSourceCredentialsBody = Static<typeof SetBucketSourceCredentialsBody>;
 export type FileUrl = Static<typeof FileUrl>;
 export type ExtractedArchive = Static<typeof ExtractedArchive>;
 export type Command = Static<typeof Command>;

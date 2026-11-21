@@ -9,7 +9,10 @@ import type { MountSource, SandboxMount } from "./compute-model.ts";
 import { bucketPathText, MOUNT_KIND_LABELS, MOUNT_STATUS_LABELS, MOUNT_STATUS_STATUS, shortDigest } from "./mounts.ts";
 import { SectionHeading } from "./parts.tsx";
 
-/** What a mount's files come from: a bundle's digest, to copy whole, or a bucket source and its bucket and prefix. */
+/**
+ * What a mount's files come from: a bundle's digest, to copy whole, or a bucket source and its bucket and prefix (or,
+ * for a manifest, the manifest's object).
+ */
 function MountSourceText({ source }: { source: MountSource }) {
 	if (source.kind === "bundle") {
 		return (
@@ -21,7 +24,8 @@ function MountSourceText({ source }: { source: MountSource }) {
 			</span>
 		);
 	}
-	const path = bucketPathText(source.bucket, source.prefix);
+	// A manifest's files are those its object lists: the object is what to name.
+	const path = bucketPathText(source.bucket, source.kind === "manifest" ? source.manifestKey : source.prefix);
 	return (
 		<>
 			<span className="min-w-0 truncate text-fg">{source.bucketSourceName ?? source.bucketSourceId}</span>
