@@ -46,6 +46,9 @@ type Server struct {
 	Trampoline string
 	// Mounts are the sandbox's read-only bucket mounts (POST /mounts); nil refuses them.
 	Mounts *Mounts
+	// UploadsDir is where uploads in parts are recorded (UploadsStateDir), so a later run of the agent removes their
+	// staged files (RestoreUploads); "" records none.
+	UploadsDir string
 
 	sshOnce    sync.Once
 	ssh        *SSHServer
@@ -60,6 +63,8 @@ type Server struct {
 	upstream atomic.Value
 	// commands are those run with an ID (commands.go).
 	commands commands
+	// uploads are files being written in parts (parts.go).
+	uploads uploads
 	// trimming is held while a trim of the disk runs (trimDisk): one at a time. stickyTrimming is held while a trim of a
 	// sticky disk runs (trimSticky), likewise.
 	trimming       sync.Mutex
@@ -89,6 +94,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /files", s.deleteFile)
 	mux.HandleFunc("GET /files/list", s.listFiles)
 	mux.HandleFunc("POST /files/extract", s.extractArchive)
+	mux.HandleFunc("PUT /files/part", s.writePart)
+	mux.HandleFunc("DELETE /files/part", s.abortUpload)
+	mux.HandleFunc("POST /files/complete", s.completeUpload)
 	mux.HandleFunc("GET /ports/{port}", s.port)
 	mux.HandleFunc("POST /mounts", s.mounts)
 	mux.HandleFunc("POST /bundles", s.mountBundles)
@@ -157,7 +165,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 }
 
 // Features is what this agent reports in Health.Features.
-var Features = []string{proto.GuestFeatureRealTarget}
+var Features = []string{proto.GuestFeatureRealTarget, proto.GuestFeatureFileParts}
 
 // expected is what an injected agent's image runs, from what it has, so a template of a plain image (no ReadyFile)
 // doesn't wait for a desktop it will never have. Always ssh: the agent's own, so never empty (which would mean "the
