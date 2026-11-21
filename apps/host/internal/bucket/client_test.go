@@ -180,7 +180,7 @@ func TestListAndGet(t *testing.T) {
 	if _, _, err := c.List(ctx, "p/", 3); err == nil {
 		t.Error("a listing over the limit: no error")
 	}
-	body, err := c.Get(ctx, "p/f1", "e1", 2, 4)
+	body, err := c.Get(ctx, "p/f1", Pin{ETag: "e1"}, 2, 4)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -190,7 +190,7 @@ func TestListAndGet(t *testing.T) {
 		t.Errorf("range: %q", got)
 	}
 	// The final part of an object, shorter than asked for, is its end.
-	if body, err := c.Get(ctx, "p/f1", "e1", 6, 10); err != nil {
+	if body, err := c.Get(ctx, "p/f1", Pin{ETag: "e1"}, 6, 10); err != nil {
 		t.Errorf("the object's end: %v", err)
 	} else {
 		got, _ := io.ReadAll(body)
@@ -201,23 +201,23 @@ func TestListAndGet(t *testing.T) {
 	}
 	// A store that ignores Range, or answers another one, isn't taken for the bytes asked for.
 	store.ignoreRange = true
-	if _, err := c.Get(ctx, "p/f1", "e1", 2, 4); err == nil {
+	if _, err := c.Get(ctx, "p/f1", Pin{ETag: "e1"}, 2, 4); err == nil {
 		t.Error("a whole object answered for a range from byte 2: no error")
 	}
-	if body, err := c.Get(ctx, "p/f1", "e1", 0, 4); err != nil {
+	if body, err := c.Get(ctx, "p/f1", Pin{ETag: "e1"}, 0, 4); err != nil {
 		t.Errorf("a whole object answered for a range from byte 0: %v", err)
 	} else {
 		body.Close()
 	}
 	store.ignoreRange, store.wrongRange = false, true
-	if _, err := c.Get(ctx, "p/f1", "e1", 2, 4); err == nil {
+	if _, err := c.Get(ctx, "p/f1", Pin{ETag: "e1"}, 2, 4); err == nil {
 		t.Error("another range than the one asked for: no error")
 	}
 	store.wrongRange = false
-	if _, err := c.Get(ctx, "p/f1", "stale", 0, 4); !errors.Is(err, ErrStale) {
+	if _, err := c.Get(ctx, "p/f1", Pin{ETag: "stale"}, 0, 4); !errors.Is(err, ErrStale) {
 		t.Errorf("a changed object: %v", err)
 	}
-	if _, err := c.Get(ctx, "p/nope", "", 0, 4); !errors.Is(err, ErrNotFound) {
+	if _, err := c.Get(ctx, "p/nope", Pin{ETag: ""}, 0, 4); !errors.Is(err, ErrNotFound) {
 		t.Errorf("a missing object: %v", err)
 	}
 	bad, _ := NewClient(Source{Provider: "s3", Bucket: "b", Endpoint: srv.URL, Credentials: Credentials{AccessKeyID: "OTHER", SecretAccessKey: secret}}, srv.Client())
@@ -306,6 +306,70 @@ func TestServiceAccountToken(t *testing.T) {
 		if _, err := NewClient(Source{Provider: "gcs", Bucket: "b", ServiceAccountKey: bad}, nil); err == nil {
 			t.Errorf("%q: no error", bad)
 		}
+	}
+}
+
+// An access token is sent as a bearer until it expires, and then no request is made with it; a generation pins the
+// read to that generation, and a store answering another is stale.
+func TestAccessTokenExpiryAndGeneration(t *testing.T) {
+	var requests atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		gen := r.URL.Query().Get("generation")
+		switch gen {
+		case "7":
+			w.Header().Set("x-goog-generation", "7")
+		case "8":
+			// A store that answers another generation than the one asked for.
+			w.Header().Set("x-goog-generation", "9")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		io.WriteString(w, "seven")
+	}))
+	defer srv.Close()
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	c, err := NewClient(Source{Provider: "gcs", Bucket: "b", Endpoint: srv.URL, AccessToken: "tok", ExpiresAt: now.Add(time.Hour)}, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	c.now = func() time.Time { return now }
+	body, err := c.Get(context.Background(), "k", Pin{Generation: "7"}, 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := io.ReadAll(body); string(got) != "seven" {
+		t.Fatalf("read %q", got)
+	}
+	body.Close()
+	if _, err := c.Get(context.Background(), "k", Pin{Generation: "8"}, 0, 0); !errors.Is(err, ErrStale) {
+		t.Errorf("another generation answered: %v", err)
+	}
+	if _, err := c.Get(context.Background(), "k", Pin{Generation: "6"}, 0, 0); !errors.Is(err, ErrNotFound) {
+		t.Errorf("a generation no longer kept: %v", err)
+	}
+	if c.Expired(0) || !c.Expired(2*time.Hour) {
+		t.Error("Expired is wrong about an hour left")
+	}
+	now = now.Add(time.Hour)
+	before := requests.Load()
+	if _, err := c.Get(context.Background(), "k", Pin{Generation: "7"}, 0, 0); !errors.Is(err, ErrExpired) || !errors.Is(err, ErrDenied) {
+		t.Errorf("expired: %v", err)
+	}
+	if requests.Load() != before {
+		t.Error("a request was made with expired credentials")
+	}
+	if _, err := NewClient(Source{Provider: "s3", Bucket: "b", AccessToken: "tok"}, nil); err == nil {
+		t.Error("an access token for s3")
+	}
+	s3, _ := NewClient(Source{Provider: "s3", Bucket: "b", Endpoint: srv.URL}, srv.Client())
+	if _, err := s3.Get(context.Background(), "k", Pin{Generation: "7"}, 0, 0); err == nil {
+		t.Error("a generation on s3")
 	}
 }
 
