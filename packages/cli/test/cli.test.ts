@@ -1,5 +1,6 @@
 // The kantel command line, through `run`, with a fake Kantel behind an injected fetch and a temporary config directory.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +25,8 @@ interface Call {
 	readonly path: string;
 	readonly query: URLSearchParams;
 	readonly body: unknown;
+	/** A raw body's bytes (a part of a file). */
+	readonly raw?: Uint8Array;
 	readonly authorization: string | null;
 }
 
@@ -45,7 +48,16 @@ function fakeKantel(routes: { readonly [route: string]: Route }) {
 		const method = init?.method ?? "GET";
 		const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
 		const authorization = new Headers(init?.headers).get("authorization");
-		const call: Call = { method, url: url.href, path: url.pathname, query: url.searchParams, body, authorization };
+		const raw = init?.body instanceof Uint8Array ? init.body : undefined;
+		const call: Call = {
+			method,
+			url: url.href,
+			path: url.pathname,
+			query: url.searchParams,
+			body,
+			...(raw === undefined ? {} : { raw }),
+			authorization,
+		};
 		calls.push(call);
 		keys.push(new Headers(init?.headers).get("idempotency-key"));
 		const route = routes[`${method} ${url.pathname}`];
@@ -2503,6 +2515,41 @@ describe("copying files", () => {
 		expect(dockerTop.code).toBe(0);
 		expect(dockerTop.written).toEqual([".docker/daemon.json"]);
 		expect(dockerTop.stderr).toContain("kantel: left out config.json (credentials)");
+	});
+
+	it("scp sends a large file in raw parts, completed with its size and SHA-256", async () => {
+		const big = Buffer.alloc(16 * 1024 * 1024 + 1024 * 1024 + 10);
+		for (let i = 0; i < big.length; i++) big[i] = (i * 31) & 0xff;
+		await writeFile(join(configDir, "big.bin"), big);
+		const got = Buffer.alloc(big.length);
+		const result = await kantel(["scp", "big.bin", "sbx_test1:/srv/big.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({ path: "/srv", items: [] }),
+				"PUT /v1/sandboxes/sbx_test1/files/parts": (call) => {
+					const offset = Number(call.query.get("offset"));
+					got.set(call.raw ?? new Uint8Array(0), offset);
+					return { path: "/srv/big.bin", upload: call.query.get("upload"), offset, size: call.raw?.length ?? 0 };
+				},
+				"POST /v1/sandboxes/sbx_test1/files/parts/complete": () => ({
+					name: "big.bin",
+					path: "/srv/big.bin",
+					kind: "file",
+					size: big.length,
+				}),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(got.equals(big)).toBe(true);
+		const uploads = new Set(
+			result.calls.filter((call) => call.method === "PUT").map((call) => call.query.get("upload")),
+		);
+		expect(uploads.size).toBe(1);
+		expect(result.calls.find((call) => call.path.endsWith("/complete"))?.body).toMatchObject({
+			path: "/srv/big.bin",
+			size: big.length,
+			sha256: createHash("sha256").update(big).digest("hex"),
+		});
+		expect(result.calls.some((call) => call.path.endsWith("/commands"))).toBe(false);
 	});
 
 	it("scp sends a file over 1 MiB in parts and joins them with one command", async () => {

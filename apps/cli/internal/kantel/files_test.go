@@ -2,7 +2,9 @@ package kantel
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -508,6 +510,63 @@ func TestScpSendsAFileOverOneMiBInParts(t *testing.T) {
 	}
 	eq(t, "join", joining, "cat "+p0+" "+p1+" > /srv/big.bin && rm -f "+p0+" "+p1)
 	contains(t, "stdout", r.Stdout, "Copied big.bin (1.0 MiB) to /srv/big.bin.")
+}
+
+func TestScpSendsALargeFileInRawParts(t *testing.T) {
+	dir := t.TempDir()
+	big := make([]byte, rawPartSize+1024*1024+10)
+	for i := range big {
+		big[i] = byte(i * 31)
+	}
+	_ = os.WriteFile(filepath.Join(dir, "big.bin"), big, 0o644)
+	var mu sync.Mutex
+	got := make([]byte, len(big))
+	uploads := map[string]bool{}
+	r := run(t, []string{"scp", "big.bin", "sbx_test1:/srv/big.bin"}, opts{configDir: dir, routes: routes{
+		"GET /v1/sandboxes/sbx_test1/files/list": func(call) any { return map[string]any{"path": "/srv", "items": []any{}} },
+		"PUT /v1/sandboxes/sbx_test1/files/parts": func(c call) any {
+			q := url.Values(c.Query)
+			offset, _ := strconv.Atoi(q.Get("offset"))
+			mu.Lock()
+			copy(got[offset:], c.Raw)
+			uploads[q.Get("upload")] = true
+			mu.Unlock()
+			return map[string]any{"path": q.Get("path"), "upload": q.Get("upload"), "offset": offset, "size": len(c.Raw)}
+		},
+		"POST /v1/sandboxes/sbx_test1/files/parts/complete": func(c call) any {
+			return map[string]any{"name": "big.bin", "path": "/srv/big.bin", "kind": "file", "size": len(big)}
+		},
+	}})
+	eq(t, "exit", r.Code, 0)
+	eq(t, "the parts make the file", bytes.Equal(got, big), true)
+	eq(t, "one upload", len(uploads), 1)
+	sum := sha256.Sum256(big)
+	for _, c := range r.Calls {
+		if strings.HasSuffix(c.Path, "/complete") {
+			eq[any](t, "size", c.Body["size"], float64(len(big)))
+			eq[any](t, "sha256", c.Body["sha256"], hex.EncodeToString(sum[:]))
+			eq[any](t, "path", c.Body["path"], "/srv/big.bin")
+		}
+		if c.Method == "PUT" && strings.HasSuffix(c.Path, "/files") {
+			t.Fatal("a base64 write was sent")
+		}
+	}
+
+	// A sandbox that doesn't take parts (an isolate, an older host): the base64 parts and a joining command instead.
+	var joined bool
+	old := run(t, []string{"scp", "big.bin", "sbx_test1:/srv/big.bin"}, opts{configDir: dir, routes: routes{
+		"GET /v1/sandboxes/sbx_test1/files/list": func(call) any { return map[string]any{"path": "/srv", "items": []any{}} },
+		"PUT /v1/sandboxes/sbx_test1/files/parts": func(call) any {
+			return kantelError(501, "not_supported", "This sandbox's host can't take files in parts")
+		},
+		"PUT /v1/sandboxes/sbx_test1/files": func(call) any { return map[string]any{"path": "x", "size": 1} },
+		commands: func(c call) any {
+			joined = strings.HasPrefix(c.Body["command"].(string), "cat ")
+			return command(nil)
+		},
+	}})
+	eq(t, "fallback exit", old.Code, 0)
+	eq(t, "joined by a command", joined, true)
 }
 
 func TestScpDownloadsAFileIntoADirectoryAndADirectoryWithR(t *testing.T) {

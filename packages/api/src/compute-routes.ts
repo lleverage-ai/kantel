@@ -33,6 +33,7 @@ import {
 	CommandPage,
 	CommandPath,
 	CommitStickyDiskPath,
+	CompleteFilePartsBody,
 	CreateAccountJoinTokenBody,
 	CreateAccountPoolBody,
 	CreateApiKeyBody,
@@ -69,6 +70,8 @@ import {
 	FileContent,
 	FileEntry,
 	FileList,
+	FilePart,
+	FilePartsQuery,
 	FilePathQuery,
 	FileUrl,
 	FileUrlBody,
@@ -186,6 +189,7 @@ import {
 	WebhookPath,
 	WebhookWithSecret,
 	WriteFileBody,
+	WriteFilePartQuery,
 } from "./compute-schema.ts";
 import { defineRoute } from "./route.ts";
 
@@ -973,12 +977,79 @@ export const extractArchive = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
 });
 
+// Files in parts: any size, without base64.
+
+const PARTS =
+	"A file goes up in parts, in any order and at once if you like, each the raw bytes from its `offset`, under an " +
+	"`upload` ID of yours; then one completion with its size and SHA-256. Nothing is at `path` until the completion " +
+	"has checked both, and then the file replaces what was there in one step. microVMs only.";
+
+export const writeFilePart = defineRoute({
+	operationId: "writeFilePart",
+	method: "PUT",
+	path: "/sandboxes/{sandboxId}/files/parts",
+	tag: "files",
+	summary: "Write a part of a file",
+	description: describe(
+		PARTS,
+		"A part is the request's raw body, at most 64 MiB (67108864 bytes); the file is at most 64 GiB, and no more than",
+		"the sandbox's disk has free (`exhausted`). Sending a part again writes it again. The parts are kept beside the",
+		"file, on the sandbox's disk, until the upload is completed or aborted; an upload with no part for an hour, and",
+		"every upload of a sandbox that stops without its memory, is discarded.",
+		scope("files"),
+	),
+	params: SandboxPath,
+	query: WriteFilePartQuery,
+	rawBody: { media: ["application/octet-stream"], description: "The part's bytes, at most 64 MiB." },
+	answer: { status: 200, description: "The part written.", schema: FilePart },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "exhausted", "not_supported", "unavailable"],
+});
+
+export const completeFileParts = defineRoute({
+	operationId: "completeFileParts",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/files/parts/complete",
+	tag: "files",
+	summary: "Complete a file written in parts",
+	description: describe(
+		"Checks that the parts written come to `size` bytes with the SHA-256 `sha256`, then moves the file into place",
+		"with `mode` (default `0644`), owned by the sandbox's user, replacing what was at `path`. A check that fails is",
+		"`invalid`, and the upload is discarded with nothing at `path`: send it again under a new `upload` ID. Completing",
+		"again answers as the first time while `path` still has that size and SHA-256, so a lost answer can be asked",
+		"for again; an upload that isn't known is `conflict`.",
+		scope("files"),
+	),
+	params: SandboxPath,
+	body: CompleteFilePartsBody,
+	answer: { status: 200, description: "The file written.", schema: FileEntry },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
+export const abortFileParts = defineRoute({
+	operationId: "abortFileParts",
+	method: "DELETE",
+	path: "/sandboxes/{sandboxId}/files/parts",
+	tag: "files",
+	summary: "Abort a file written in parts",
+	description: describe(
+		"Discards an upload's parts. What is at `path` is untouched. An upload that isn't known is fine too.",
+		scope("files"),
+	),
+	params: SandboxPath,
+	query: FilePartsQuery,
+	answer: { status: 204, description: "Discarded." },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
 export const commandRoutes = { runCommand, listCommands, getCommand, killCommand } as const;
 export const fileRoutes = {
 	readFile,
 	writeFile,
 	deleteFile,
 	listFiles,
+	writeFilePart,
+	completeFileParts,
+	abortFileParts,
 	createUploadUrl,
 	createDownloadUrl,
 	extractArchive,

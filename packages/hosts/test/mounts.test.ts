@@ -17,6 +17,7 @@ import {
 import {
 	decodeStreamFrame,
 	encodeStreamFrame,
+	FILE_PART_CALL_MAX_BYTES,
 	FILE_STREAM_ACK_BYTES,
 	FILE_STREAM_FRAME_MAX_BYTES,
 	FILE_STREAM_WINDOW_BYTES,
@@ -870,6 +871,43 @@ describe("the backend's file streams", () => {
 		// And the host a sandbox is placed on, as the scheduler recorded it.
 		expect(await backend.placedOn?.("sbx_one")).toBe(hostId);
 		expect(await backend.placedOn?.("sbx_none")).toBeUndefined();
+	});
+
+	it("send a file's part to its host in calls of at most 2 MiB, only to a host that takes parts", async () => {
+		const old = await setup([HOST_FEATURES.fileStreams]);
+		await old.connect();
+		await old.backend.create(spec("sbx_one", old.hostId));
+		const refused = await failure(
+			old.backend.writeFilePart?.("sbx_one", "/home/user/a", "upload-1", 0, streamOf("abc")) ?? Promise.resolve(),
+		);
+		expect(refused.code).toBe("not_supported");
+		expect(old.host.calls.some((call) => call.method.startsWith("sandbox.files.part"))).toBe(false);
+
+		const { host, hostId, backend, connect } = await setup([HOST_FEATURES.fileParts]);
+		await connect();
+		await backend.create(spec("sbx_one", hostId));
+		const piece = "x".repeat(1024 * 1024 + 1);
+		const written = await backend.writeFilePart?.(
+			"sbx_one",
+			"/home/user/a",
+			"upload-1",
+			10,
+			streamOf(piece, piece, piece, piece, piece),
+		);
+		expect(written).toEqual({ size: 5 * piece.length });
+		const max = FILE_PART_CALL_MAX_BYTES;
+		expect(host.parts).toEqual([
+			{ upload: "upload-1", offset: 10, length: max },
+			{ upload: "upload-1", offset: 10 + max, length: max },
+			{ upload: "upload-1", offset: 10 + 2 * max, length: 5 * piece.length - 2 * max },
+		]);
+		const entry = await backend.completeFileParts?.("sbx_one", "/home/user/a", "upload-1", 42, "ab".repeat(32));
+		expect(entry).toMatchObject({ path: "/home/user/a", size: 42 });
+		expect(host.calls.find((call) => call.method === "sandbox.files.complete")?.params).toMatchObject({
+			upload: "upload-1",
+			size: 42,
+			sha256: "ab".repeat(32),
+		});
 	});
 
 	it("write a body through, and answer the size the host says it wrote", async () => {

@@ -2225,6 +2225,62 @@ export const ExtractedArchive = Type.Object(
 	{ title: "ExtractedArchive" },
 );
 
+/** The most one part of a file written in parts carries: 64 MiB. */
+export const MAX_FILE_PART_BYTES = 64 * 1024 * 1024;
+/** The largest file written in parts: 64 GiB, and no more than the sandbox's disk has free. */
+export const MAX_FILE_PARTS_BYTES = 64 * 1024 * 1024 * 1024;
+
+const uploadId = Type.String({
+	pattern: "^[A-Za-z0-9_-]{8,64}$",
+	description:
+		"Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts " +
+		"and its completion. A new one for each upload.",
+});
+const filePartsPath = Type.String({
+	minLength: 1,
+	maxLength: 4096,
+	description: "The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.",
+});
+
+export const FilePartsQuery = Type.Object({ path: filePartsPath, upload: uploadId }, { title: "FilePartsQuery" });
+
+export const WriteFilePartQuery = Type.Object(
+	{
+		path: filePartsPath,
+		upload: uploadId,
+		offset: Type.Integer({
+			minimum: 0,
+			maximum: MAX_FILE_PARTS_BYTES,
+			description: "The byte of the file this part starts at.",
+		}),
+	},
+	{ title: "WriteFilePartQuery" },
+);
+
+export const FilePart = Type.Object(
+	{
+		path: Type.String({ description: "The file's absolute path." }),
+		upload: Type.String(),
+		offset: Type.Integer(),
+		size: Type.Integer({ description: "The bytes of this part written." }),
+	},
+	{ title: "FilePart", description: "A part written. Nothing is at `path` until the upload is completed." },
+);
+
+export const CompleteFilePartsBody = Type.Object(
+	{
+		path: filePartsPath,
+		upload: uploadId,
+		size: Type.Integer({ minimum: 0, maximum: MAX_FILE_PARTS_BYTES, description: "The whole file's size in bytes." }),
+		sha256: Type.String({
+			pattern: "^[0-9a-fA-F]{64}$",
+			description: "The whole file's SHA-256, in hex.",
+		}),
+		mode: Type.Optional(Type.String({ description: "Octal permissions, such as `0755` (default `0644`)." })),
+	},
+	{ title: "CompleteFilePartsBody" },
+);
+
 // Ports, desktop, browser and SSH.
 
 export const ExposePortBody = Type.Object(
@@ -5014,6 +5070,10 @@ export type CreateBucketSourceBody = Static<typeof CreateBucketSourceBody>;
 export type SetBucketSourceCredentialsBody = Static<typeof SetBucketSourceCredentialsBody>;
 export type FileUrl = Static<typeof FileUrl>;
 export type ExtractedArchive = Static<typeof ExtractedArchive>;
+export type FilePartsQuery = Static<typeof FilePartsQuery>;
+export type WriteFilePartQuery = Static<typeof WriteFilePartQuery>;
+export type FilePart = Static<typeof FilePart>;
+export type CompleteFilePartsBody = Static<typeof CompleteFilePartsBody>;
 export type Command = Static<typeof Command>;
 export type RunCommandBody = Static<typeof RunCommandBody>;
 export type FileEntry = Static<typeof FileEntry>;

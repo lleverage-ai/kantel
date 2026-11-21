@@ -14,6 +14,24 @@ var (
 	_ io.Reader
 )
 
+// AbortFilePartsQuery is AbortFileParts's query.
+type AbortFilePartsQuery struct {
+	// The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
+	Path *string
+	// Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload.
+	Upload *string
+}
+
+func (q *AbortFilePartsQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "path", q.Path)
+	setQuery(v, "upload", q.Upload)
+	return v
+}
+
 // DeleteBundleQuery is DeleteBundle's query.
 type DeleteBundleQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
@@ -639,6 +657,27 @@ func (q *WatchEventsQuery) values() url.Values {
 		return v
 	}
 	setQuery(v, "account", q.Account)
+	return v
+}
+
+// WriteFilePartQuery is WriteFilePart's query.
+type WriteFilePartQuery struct {
+	// The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
+	Path *string
+	// Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload.
+	Upload *string
+	// The byte of the file this part starts at.
+	Offset *int64
+}
+
+func (q *WriteFilePartQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "path", q.Path)
+	setQuery(v, "upload", q.Upload)
+	setQuery(v, "offset", q.Offset)
 	return v
 }
 
@@ -1597,6 +1636,29 @@ func (c *Client) CreateDownloadURL(ctx context.Context, sandboxID string, body F
 func (c *Client) ListFiles(ctx context.Context, sandboxID string, query *ListFilesQuery, opts ...CallOption) (*FileList, error) {
 	var out FileList
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/files/list", url.PathEscape(sandboxID)), Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// AbortFileParts DELETE /sandboxes/{sandboxId}/files/parts: Abort a file written in parts. Discards an upload's parts. What is at `path` is untouched. An upload that isn't known is fine too. A key needs `files`.
+func (c *Client) AbortFileParts(ctx context.Context, sandboxID string, query *AbortFilePartsQuery, opts ...CallOption) error {
+	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/sandboxes/%s/files/parts", url.PathEscape(sandboxID)), Query: query.values()}, opts...)
+}
+
+// WriteFilePart PUT /sandboxes/{sandboxId}/files/parts: Write a part of a file. A file goes up in parts, in any order and at once if you like, each the raw bytes from its `offset`, under an `upload` ID of yours; then one completion with its size and SHA-256. Nothing is at `path` until the completion has checked both, and then the file replaces what was there in one step. microVMs only. A part is the request's raw body, at most 64 MiB (67108864 bytes); the file is at most 64 GiB, and no more than the sandbox's disk has free (`exhausted`). Sending a part again writes it again. The parts are kept beside the file, on the sandbox's disk, until the upload is completed or aborted; an upload with no part for an hour, and every upload of a sandbox that stops without its memory, is discarded. A key needs `files`.
+func (c *Client) WriteFilePart(ctx context.Context, sandboxID string, query *WriteFilePartQuery, body io.Reader, contentType string, opts ...CallOption) (*FilePart, error) {
+	var out FilePart
+	if err := c.Do(ctx, Call{Method: "PUT", Path: fmt.Sprintf("/sandboxes/%s/files/parts", url.PathEscape(sandboxID)), Query: query.values(), Raw: body, ContentType: contentType, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CompleteFileParts POST /sandboxes/{sandboxId}/files/parts/complete: Complete a file written in parts. Checks that the parts written come to `size` bytes with the SHA-256 `sha256`, then moves the file into place with `mode` (default `0644`), owned by the sandbox's user, replacing what was at `path`. A check that fails is `invalid`, and the upload is discarded with nothing at `path`: send it again under a new `upload` ID. Completing again answers as the first time while `path` still has that size and SHA-256, so a lost answer can be asked for again; an upload that isn't known is `conflict`. A key needs `files`.
+func (c *Client) CompleteFileParts(ctx context.Context, sandboxID string, body CompleteFilePartsBody, opts ...CallOption) (*FileEntry, error) {
+	var out FileEntry
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/files/parts/complete", url.PathEscape(sandboxID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

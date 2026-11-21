@@ -106,6 +106,77 @@ A key needs `files`.
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Write a part of a file
+
+`PUT /v1/sandboxes/{sandboxId}/files/parts` (SDK method `writeFilePart`)
+
+A file goes up in parts, in any order and at once if you like, each the raw bytes from its `offset`, under an `upload` ID of yours; then one completion with its size and SHA-256. Nothing is at `path` until the completion has checked both, and then the file replaces what was there in one step. microVMs only. A part is the request's raw body, at most 64 MiB (67108864 bytes); the file is at most 64 GiB, and no more than the sandbox's disk has free (`exhausted`). Sending a part again writes it again. The parts are kept beside the file, on the sandbox's disk, until the upload is completed or aborted; an upload with no part for an hour, and every upload of a sandbox that stops without its memory, is discarded. A key needs `files`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. (at most 4096 characters) |
+| `upload` | string | yes | Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. |
+| `offset` | integer | yes | The byte of the file this part starts at. (minimum 0, maximum 68719476736) |
+
+**Answers**
+
+- `200`: [FilePart](/api/reference/types/#filepart) (`application/json`). The part written.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `429` exhausted, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Abort a file written in parts
+
+`DELETE /v1/sandboxes/{sandboxId}/files/parts` (SDK method `abortFileParts`)
+
+Discards an upload's parts. What is at `path` is untouched. An upload that isn't known is fine too. A key needs `files`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Query parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. (at most 4096 characters) |
+| `upload` | string | yes | Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. |
+
+**Answers**
+
+- `204`: no body. Discarded.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Complete a file written in parts
+
+`POST /v1/sandboxes/{sandboxId}/files/parts/complete` (SDK method `completeFileParts`)
+
+Checks that the parts written come to `size` bytes with the SHA-256 `sha256`, then moves the file into place with `mode` (default `0644`), owned by the sandbox's user, replacing what was at `path`. A check that fails is `invalid`, and the upload is discarded with nothing at `path`: send it again under a new `upload` ID. Completing again answers as the first time while `path` still has that size and SHA-256, so a lost answer can be asked for again; an upload that isn't known is `conflict`. A key needs `files`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `sandboxId` | string | yes | The sandbox's ID. |
+
+**Body**: [CompleteFilePartsBody](/api/reference/types/#completefilepartsbody)
+
+**Answers**
+
+- `200`: [FileEntry](/api/reference/types/#fileentry) (`application/json`). The file written.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported, `503` unavailable. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Get an upload URL for a file
 
 `POST /v1/sandboxes/{sandboxId}/files/upload-url` (SDK method `createUploadUrl`)

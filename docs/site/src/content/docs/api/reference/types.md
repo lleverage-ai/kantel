@@ -421,6 +421,16 @@ In an isolate: its runtime stopped the command for using too much CPU time (`cpu
 
 One of: `"cpu"` or `"memory"` or `"wall"`.
 
+### CompleteFilePartsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. (at most 4096 characters) |
+| `upload` | string | yes | Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. |
+| `size` | integer | yes | The whole file's size in bytes. (minimum 0, maximum 68719476736) |
+| `sha256` | string | yes | The whole file's SHA-256, in hex. |
+| `mode` | string | no | Octal permissions, such as `0755` (default `0644`). |
+
 ### Cost
 
 What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them.
@@ -915,6 +925,17 @@ One of: `"utf8"` or `"base64"`.
 | `path` | string | yes |  |
 | `items` | [FileEntry](/api/reference/types/#fileentry)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### FilePart
+
+A part written. Nothing is at `path` until the upload is completed.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The file's absolute path. |
+| `upload` | string | yes |  |
+| `offset` | integer | yes |  |
+| `size` | integer | yes | The bytes of this part written. |
 
 ### FileUrl
 

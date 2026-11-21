@@ -275,6 +275,11 @@ function entriesOf(tree: Tree, dir: string): BackendFileEntry[] {
 }
 
 /** A `SandboxBackend` in memory over just-bash, with one stub host. */
+async function bytesSha256(bytes: Uint8Array): Promise<string> {
+	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)));
+	return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 export function createStubBackend(options: StubBackendOptions = {}): SandboxBackend {
 	const types: readonly computeSchema.SandboxType[] = options.types ?? ["isolate", "microvm"];
 	const domain = options.sandboxDomain ?? "sandbox.localhost";
@@ -295,6 +300,9 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const upgrades = new Map<string, { operationId: string; placement?: UpgradedPlacement; reason?: string }>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
+	/** Files being written in parts, by sandbox, path and upload: the bytes so far, as a guest's staged file holds them. */
+	const uploads = new Map<string, { bytes: Uint8Array; length: number }>();
+	const uploadKey = (sandboxId: string, path: string, upload: string) => `${sandboxId}\u0000${path}\u0000${upload}`;
 
 	const host: BackendHost = {
 		id: STUB_HOST_ID,
@@ -812,6 +820,62 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			} catch (error) {
 				return fsError(error, path);
 			}
+		},
+
+		async writeFilePart(sandboxId, path, upload, offset, body) {
+			running(sandboxId);
+			const key = uploadKey(sandboxId, path, upload);
+			const staged = uploads.get(key) ?? { bytes: new Uint8Array(0), length: 0 };
+			let at = offset;
+			for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
+				if (at + chunk.byteLength > staged.bytes.byteLength) {
+					const grown = new Uint8Array(Math.max(at + chunk.byteLength, staged.bytes.byteLength * 2));
+					grown.set(staged.bytes);
+					staged.bytes = grown;
+				}
+				staged.bytes.set(chunk, at);
+				at += chunk.byteLength;
+				staged.length = Math.max(staged.length, at);
+			}
+			uploads.set(key, staged);
+			return { size: at - offset };
+		},
+
+		async completeFileParts(sandboxId, path, upload, size, sha256, mode): Promise<BackendFileEntry> {
+			const { fs } = running(sandboxId);
+			const key = uploadKey(sandboxId, path, upload);
+			const staged = uploads.get(key);
+			if (staged === undefined) {
+				const current = await fs.readFileBuffer(path).then(
+					(bytes) => new Uint8Array(bytes),
+					() => undefined,
+				);
+				if (current !== undefined && current.byteLength === size && (await bytesSha256(current)) === sha256) {
+					return { name: baseName(path), path, kind: "file", size, modifiedAt: now() };
+				}
+				throw new KantelError("conflict", `No upload ${upload} of ${path}`);
+			}
+			uploads.delete(key);
+			const bytes = staged.bytes.subarray(0, staged.length);
+			if (bytes.byteLength !== size) {
+				throw new KantelError(
+					"invalid",
+					`The parts written come to ${bytes.byteLength} bytes, not ${size}; the upload is discarded`,
+				);
+			}
+			const got = await bytesSha256(bytes);
+			if (got !== sha256) {
+				throw new KantelError(
+					"invalid",
+					`The parts written have SHA-256 ${got}, not ${sha256}; the upload is discarded`,
+				);
+			}
+			return this.writeFile(sandboxId, path, bytes, mode ?? 0o644);
+		},
+
+		async abortFileParts(sandboxId, path, upload) {
+			running(sandboxId);
+			uploads.delete(uploadKey(sandboxId, path, upload));
 		},
 
 		async deleteFile(sandboxId, path) {

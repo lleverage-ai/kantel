@@ -1,11 +1,11 @@
 /**
  * Copying files between this computer and a sandbox for `kantel scp` and `kantel push`, over the files API only (no
  * SSH, so it works on isolates as well as microVMs). The API reads and writes at most 1 MiB a call. A larger file comes
- * down in 1 MiB ranged reads, and goes up in 768 KiB parts that one command joins, which needs a microVM's shell.
- * A directory is copied file by file, a few at a time, into an isolate; into a microVM it goes as one gzipped tar.
+ * down in 1 MiB ranged reads, and goes up in raw parts (`files/parts`) checked by their SHA-256 on the way in; where
+ * those aren't taken, in 768 KiB base64 parts that one command joins, which needs a microVM's shell. A directory is copied file by file, a few at a time, into an isolate; into a microVM it goes as one gzipped tar.
  */
 import { spawn } from "node:child_process";
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, posix, relative, resolve, sep } from "node:path";
 import { createGzip } from "node:zlib";
@@ -21,6 +21,8 @@ export const PART = 768 * 1024;
  * base64 fits well inside a command's 1 MiB of output.
  */
 export const DOWNLOAD_PART = 512 * 1024;
+/** A raw part of a file written in parts (`files/parts`, at most 64 MiB a part). */
+export const RAW_PART = 16 * 1024 * 1024;
 /** How many files go at once. */
 const CONCURRENCY = 6;
 
@@ -80,7 +82,51 @@ async function run(client: KantelClient, sandboxId: string, command: string, tim
 	return result.stdout;
 }
 
-/** Writes `content` to `path` in the sandbox, in parts when it is over 1 MiB. */
+/**
+ * Writes `content` to `path` as raw parts (`files/parts`), four at a time, then completes it with its size and SHA-256,
+ * so nothing is at `path` until all of it has arrived and been checked. False, having written nothing, when the first
+ * part is refused as `not_supported` (an isolate, an older host or image) or the route isn't there (an older Kantel).
+ */
+async function putParts(
+	client: KantelClient,
+	sandboxId: string,
+	path: string,
+	content: Uint8Array,
+	mode?: string,
+): Promise<boolean> {
+	const upload = randomBytes(8).toString("hex");
+	const write = (offset: number) =>
+		client.writeFilePart(sandboxId, content.slice(offset, offset + RAW_PART), { path, upload, offset });
+	try {
+		await write(0);
+	} catch (error) {
+		if (
+			error instanceof KantelApiError &&
+			(error.code === "not_supported" || error.status === 404 || error.status === 405)
+		) {
+			return false;
+		}
+		throw error;
+	}
+	try {
+		const offsets: number[] = [];
+		for (let offset = RAW_PART; offset < content.length; offset += RAW_PART) offsets.push(offset);
+		await eachLimited(offsets, 4, async (offset) => {
+			await write(offset);
+		});
+		const sha256 = createHash("sha256").update(content).digest("hex");
+		await client.completeFileParts(sandboxId, { path, upload, size: content.length, sha256, mode });
+	} catch (error) {
+		await client.abortFileParts(sandboxId, { path, upload }).catch(() => undefined);
+		throw error;
+	}
+	return true;
+}
+
+/**
+ * Writes `content` to `path` in the sandbox: in one call up to 1 MiB; above, in raw parts where the sandbox takes them,
+ * else in base64 parts that one command joins.
+ */
 export async function putBytes(
 	client: KantelClient,
 	sandboxId: string,
@@ -98,6 +144,7 @@ export async function putBytes(
 		});
 		return;
 	}
+	if (await putParts(client, sandboxId, path, content, mode)) return;
 	const parts: string[] = [];
 	for (let offset = 0; offset < content.length; offset += PART) {
 		const part = `${path}.kantel-part-${parts.length}`;

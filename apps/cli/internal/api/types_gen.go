@@ -500,6 +500,19 @@ const (
 	CommandTerminationWall   CommandTermination = "wall"
 )
 
+type CompleteFilePartsBody struct {
+	// Octal permissions, such as `0755` (default `0644`).
+	Mode *string `json:"mode,omitempty"`
+	// The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
+	Path string `json:"path"`
+	// The whole file's SHA-256, in hex.
+	SHA256 string `json:"sha256"`
+	// The whole file's size in bytes.
+	Size int64 `json:"size"`
+	// Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload.
+	Upload string `json:"upload"`
+}
+
 // What a sandbox costs at the deployment's rates. A self-hosted install's rates are 0 unless its operator sets them.
 type Cost struct {
 	// ISO 4217, such as `USD`.
@@ -1161,6 +1174,16 @@ type FileList struct {
 	// Present when more items follow.
 	NextCursor *string `json:"nextCursor,omitempty"`
 	Path       string  `json:"path"`
+}
+
+// A part written. Nothing is at `path` until the upload is completed.
+type FilePart struct {
+	Offset int64 `json:"offset"`
+	// The file's absolute path.
+	Path string `json:"path"`
+	// The bytes of this part written.
+	Size   int64  `json:"size"`
+	Upload string `json:"upload"`
 }
 
 // A short-lived URL for one file of one sandbox, streamed to or from the sandbox's host, so a file of any size moves without base64.

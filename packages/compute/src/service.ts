@@ -876,6 +876,36 @@ async function mountsOff(): Promise<never> {
 }
 
 /** Refuses a write into one of the sandbox's mounts, which are read-only. */
+/** Why a sandbox's files aren't written in parts. */
+function partsUnsupported(sandbox: StoredSandbox): KantelError {
+	return new KantelError(
+		"not_supported",
+		sandbox.type === "isolate"
+			? "An isolate's files aren't written in parts: write each with a file write, or upgrade it to a microVM"
+			: "This deployment's sandboxes can't take files in parts",
+	);
+}
+
+/** Passes at most `limit` bytes on, failing the stream (`invalid`) past them. */
+function atMost(limit: number): TransformStream<Uint8Array, Uint8Array> {
+	let seen = 0;
+	return new TransformStream({
+		transform(chunk, controller) {
+			seen += chunk.byteLength;
+			if (seen > limit) {
+				controller.error(
+					new KantelError(
+						"invalid",
+						`A part is at most ${computeSchema.MAX_FILE_PART_BYTES} bytes, and a file written in parts at most ${computeSchema.MAX_FILE_PARTS_BYTES}`,
+					),
+				);
+				return;
+			}
+			controller.enqueue(chunk);
+		},
+	});
+}
+
 function refuseInMount(sandbox: StoredSandbox, path: string): void {
 	const mount = mountCovering(sandbox.mounts, path);
 	if (mount !== undefined) throw new KantelError("conflict", `${path} is in the read-only mount at ${mount.path}`);
@@ -5468,6 +5498,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		size: entry.size,
 		modifiedAt: entry.modifiedAt,
 	});
+
+	/** A file written in parts' sandbox, running, and its absolute path: a microVM's, not in a read-only mount. */
+	const filePartsTarget = async (principal: Principal, sandboxId: string, rawPath: string) => {
+		const { sandbox } = await sandboxFor(principal, sandboxId, "files");
+		if (sandbox.type !== "microvm") throw partsUnsupported(sandbox);
+		const running = await requireRunning(principal, sandbox.id);
+		const path = resolvePath(rawPath, homeFor(sandbox.type));
+		refuseInMount(sandbox, path);
+		return { sandbox, running, path };
+	};
 
 	const actorOf = (principal: Principal): Sandbox["createdBy"] =>
 		principal.kind === "key"
@@ -11721,6 +11761,43 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				mode = Number.parseInt(body.mode, 8);
 			}
 			return fileEntry(await backend.writeFile(sandbox.id, path, bytes, mode));
+		},
+
+		writeFilePart: async (principal, { params, query }, request) => {
+			const { sandbox, running, path } = await filePartsTarget(principal, params.sandboxId, query.path);
+			if (request.body === null) throw new KantelError("invalid", "Send the part as the request's body");
+			if (backend.writeFilePart === undefined) throw partsUnsupported(sandbox);
+			const limit = Math.min(computeSchema.MAX_FILE_PART_BYTES, computeSchema.MAX_FILE_PARTS_BYTES - query.offset);
+			const { size } = await backend.writeFilePart(
+				running.id,
+				path,
+				query.upload,
+				query.offset,
+				request.body.pipeThrough(atMost(limit)),
+			);
+			return { path, upload: query.upload, offset: query.offset, size };
+		},
+
+		completeFileParts: async (principal, { params, body }) => {
+			const { sandbox, running, path } = await filePartsTarget(principal, params.sandboxId, body.path);
+			if (backend.completeFileParts === undefined) throw partsUnsupported(sandbox);
+			let mode: number | undefined;
+			if (body.mode !== undefined) {
+				if (!/^0?[0-7]{3}$/.test(body.mode)) {
+					throw new KantelError("invalid", "mode must be octal permissions, such as 0755");
+				}
+				mode = Number.parseInt(body.mode, 8);
+			}
+			return fileEntry(
+				await backend.completeFileParts(running.id, path, body.upload, body.size, body.sha256.toLowerCase(), mode),
+			);
+		},
+
+		abortFileParts: async (principal, { params, query }) => {
+			const { sandbox, running, path } = await filePartsTarget(principal, params.sandboxId, query.path);
+			if (backend.abortFileParts === undefined) throw partsUnsupported(sandbox);
+			await backend.abortFileParts(running.id, path, query.upload);
+			return undefined;
 		},
 
 		deleteFile: async (principal, { params, query }) => {

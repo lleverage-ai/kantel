@@ -86,6 +86,8 @@ export class FakeHost {
 	readonly reads = new Map<number, { readonly data: Uint8Array; sent: number; acked: number }>();
 	/** `sandbox.files.extract` calls: the archive, the target. */
 	readonly extracts: { readonly archive: string; readonly target: string }[] = [];
+	/** `sandbox.files.part` calls: the upload, the offset and the bytes' length. */
+	readonly parts: { readonly upload: string; readonly offset: number; readonly length: number }[] = [];
 	/** How a create is answered as served (`HostSandbox.source`): `boot` for a template snapshot it couldn't restore. */
 	createSource = "pool";
 	/** For a test: the size a create is answered as made, instead of the one asked for (a restore's own size). */
@@ -394,6 +396,16 @@ export class FakeHost {
 				this.reads.set(open.stream, { data, sent: 0, acked: 0 });
 				return this.sendRead(open.stream);
 			}
+			case "sandbox.files.part": {
+				const part = message.params as { upload: string; offset: number; data: string };
+				const length = atob(part.data).length;
+				this.parts.push({ upload: part.upload, offset: part.offset ?? 0, length });
+				return answer({ size: length });
+			}
+			case "sandbox.files.complete":
+				return answer({ size: (message.params as { size?: number }).size ?? 0, mode: "644" });
+			case "sandbox.files.abort":
+				return answer({});
 			case "sandbox.files.extract": {
 				const extract = message.params as { archive: string; target: string };
 				this.extracts.push({ archive: extract.archive, target: extract.target });
