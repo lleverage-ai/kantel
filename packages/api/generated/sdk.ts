@@ -432,6 +432,26 @@ export interface CommandNeedsMicrovm {
 	readonly inferred?: boolean;
 }
 
+/** A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character. */
+export interface CommandOutput {
+	readonly commandId: string;
+	/** One of a command's output streams. Reading, `stdout` is the default. */
+	readonly stream: CommandStream;
+	readonly encoding: FileEncoding;
+	/** The part read: at most `length` bytes from `offset`. */
+	readonly content: string;
+	/** The byte `content` starts at. At `size`, it's empty. */
+	readonly offset: number;
+	/** How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` plus the part's length. */
+	readonly size: number;
+	/** The command has ended, so `size` is the whole of what is kept. */
+	readonly ended: boolean;
+	/** Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps in all), or the command ended with its machine, whose last output may not have reached the disk. */
+	readonly truncated: boolean;
+	/** The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and 1 MiB (the command's own `stdout` and `stderr`) elsewhere. */
+	readonly limit: number;
+}
+
 export interface CommandPage {
 	readonly items: readonly Command[];
 	/** Present when more items follow. */
@@ -439,6 +459,9 @@ export interface CommandPage {
 }
 
 export type CommandState = "running" | "exited" | "killed" | "timed_out";
+
+/** One of a command's output streams. Reading, `stdout` is the default. */
+export type CommandStream = "stdout" | "stderr";
 
 /** In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`). */
 export type CommandTermination = "cpu" | "memory" | "wall";
@@ -2021,6 +2044,16 @@ export interface PutTelemetryBody {
 		readonly [key: string]: string;
 	};
 	readonly signals?: readonly ("metrics" | "logs")[];
+}
+
+export interface ReadCommandOutputQuery {
+	/** One of a command's output streams. Reading, `stdout` is the default. */
+	readonly stream?: CommandStream;
+	readonly encoding?: FileEncoding;
+	/** Read from this byte (default 0). */
+	readonly offset?: number;
+	/** Read at most this many bytes: default, and at most, 1 MiB (1048576). */
+	readonly length?: number;
 }
 
 export interface ReadFileQuery {
@@ -3803,6 +3836,13 @@ export interface KantelClient {
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
 	/** Get a command. Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox reports it (a microVM on a current kantel-host), detached or not. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
+	/** Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}/output` */
+	readCommandOutput(
+		sandboxId: string,
+		commandId: string,
+		query?: ReadCommandOutputQuery,
+		options?: CallOptions,
+	): Promise<CommandOutput>;
 	/** Kill a command. Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
 	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a binary file, or of a text file cut mid-character. A key needs `files`. `GET /sandboxes/{sandboxId}/files` */
@@ -4260,6 +4300,16 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				{
 					method: "GET",
 					path: `/sandboxes/${encodeURIComponent(sandboxId)}/commands/${encodeURIComponent(commandId)}`,
+				},
+				callOptions,
+			),
+		readCommandOutput: (sandboxId, commandId, query, callOptions) =>
+			send(
+				options,
+				{
+					method: "GET",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/commands/${encodeURIComponent(commandId)}/output`,
+					query,
 				},
 				callOptions,
 			),

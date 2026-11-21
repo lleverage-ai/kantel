@@ -30,6 +30,7 @@ import {
 	BundlePath,
 	Caller,
 	Command,
+	CommandOutput,
 	CommandPage,
 	CommandPath,
 	CommitStickyDiskPath,
@@ -123,6 +124,7 @@ import {
 	PutEnvironmentReposBody,
 	PutProxySettingsBody,
 	PutTelemetryBody,
+	ReadCommandOutputQuery,
 	ReadFileQuery,
 	ReadSnapshotFileQuery,
 	RefreshedMountList,
@@ -835,6 +837,26 @@ export const getCommand = defineRoute({
 	errors: readErrors,
 });
 
+export const readCommandOutput = defineRoute({
+	operationId: "readCommandOutput",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/commands/{commandId}/output",
+	tag: "commands",
+	summary: "Read a command's output",
+	description: describe(
+		"Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after",
+		"it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its",
+		"machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a",
+		"`SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8).",
+		"Elsewhere it reads what the command holds: its first 1 MiB.",
+		scope("exec"),
+	),
+	params: CommandPath,
+	query: ReadCommandOutputQuery,
+	answer: { status: 200, description: "The part read.", schema: CommandOutput },
+	errors: ["invalid", "forbidden", "not_found", "conflict"],
+});
+
 export const killCommand = defineRoute({
 	operationId: "killCommand",
 	method: "DELETE",
@@ -1041,7 +1063,7 @@ export const abortFileParts = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
 });
 
-export const commandRoutes = { runCommand, listCommands, getCommand, killCommand } as const;
+export const commandRoutes = { runCommand, listCommands, getCommand, readCommandOutput, killCommand } as const;
 export const fileRoutes = {
 	readFile,
 	writeFile,

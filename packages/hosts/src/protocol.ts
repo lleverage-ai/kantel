@@ -331,6 +331,13 @@ export const HOST_FEATURES = {
 	 */
 	execControl: "exec-control",
 	/**
+	 * `sandbox.exec.output` (`HostExecOutputParams`): any part of a command's output as its sandbox keeps it, answered
+	 * `HostExecOutput`. A microVM's guest agent keeps each stream of a command run with an ID on the sandbox's disk, up to
+	 * `limit` bytes. A sandbox that keeps none (an isolate, a guest agent from before) is `unsupported`, and a command
+	 * whose output it doesn't keep is `not_found`. Without it, a command's output is its result's alone.
+	 */
+	execOutput: "exec-output",
+	/**
 	 * `sandbox.processes` (`HostProcessesParams`): a running microVM's busiest processes, from its guest agent, answered
 	 * `HostProcessList`. An isolate's, and a sandbox's whose guest agent is from before it could, are `unsupported`.
 	 * Without it Kantel asks no host for processes.
@@ -726,6 +733,31 @@ export interface HostExecRef {
 	readonly commandId: string;
 	/** For a get: hold the answer up to this long (at most `HOST_EXEC_MAX_WAIT_MS`) for a running command to end. */
 	readonly waitMs?: number;
+}
+
+/** `sandbox.exec.output`'s params: at most `length` bytes (at most `HOST_EXEC_OUTPUT_MAX_READ`) of a stream from `offset`. */
+export interface HostExecOutputParams {
+	readonly commandId: string;
+	readonly stream: "stdout" | "stderr";
+	readonly offset?: number;
+	readonly length?: number;
+}
+
+/** The most of a stream one `sandbox.exec.output` answers (the Go side's `ExecOutputMaxRead`). */
+export const HOST_EXEC_OUTPUT_MAX_READ = 1024 * 1024;
+
+/**
+ * `sandbox.exec.output`'s answer: `data` (base64) from `offset` (the offset asked for, or `size` when that is past it).
+ * `size` is how much of the stream is kept now, which only grows while the command runs; `ended` says it has ended;
+ * `truncated` says the stream went past `limit`, and the rest was dropped.
+ */
+export interface HostExecOutput {
+	readonly data: string;
+	readonly offset: number;
+	readonly size: number;
+	readonly ended?: boolean;
+	readonly truncated?: boolean;
+	readonly limit: number;
 }
 
 /** The longest a host holds a `sandbox.exec.get` for its command to end (the Go side's `ExecMaxWaitMs`). */
@@ -1654,6 +1686,8 @@ export const HostMethods = {
 	 * that had already ended.
 	 */
 	execKill: "sandbox.exec.kill",
+	/** `HostExecOutputParams` (`HOST_FEATURES.execOutput`): a part of a command's kept output, `HostExecOutput`. */
+	execOutput: "sandbox.exec.output",
 	fileRead: "sandbox.files.read",
 	fileWrite: "sandbox.files.write",
 	fileDelete: "sandbox.files.delete",

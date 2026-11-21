@@ -219,7 +219,8 @@ func TestFollowsAPlainExecByItsID(t *testing.T) {
 	eq(t, "stdout", r.Stdout, "Reading package lists...\nSetting up gcc\n")
 	// Nothing of kantel's own on a plain exec's stderr: only the command's.
 	eq(t, "stderr", r.Stderr, "E: broken\n")
-	eq(t, "calls", methods(r.Calls), "POST GET GET GET")
+	// A gateway with no readCommandOutput (this fake's 404) is asked once a stream, then its record is shown.
+	eq(t, "calls", methods(r.Calls), "POST GET GET GET GET GET")
 	// Looked at soon after its start, so a short command's end comes quickly.
 	if r.Slept[0] > 100*time.Millisecond {
 		t.Errorf("first wait %v", r.Slept[0])

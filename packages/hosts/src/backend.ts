@@ -69,11 +69,14 @@ import {
 	FILE_STREAM_ACK_BYTES,
 	FILE_STREAM_FRAME_MAX_BYTES,
 	FILE_STREAM_WINDOW_BYTES,
+	HOST_EXEC_OUTPUT_MAX_READ,
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
 	type HostDiskUsage,
 	type HostEgress,
 	type HostEnvParams,
+	type HostExecOutput,
+	type HostExecOutputParams,
 	type HostExecParams,
 	type HostExecRef,
 	type HostExecResult,
@@ -205,6 +208,8 @@ function execResult(result: HostExecResult): ExecResult {
 		stdout: result.stdout,
 		stderr: result.stderr,
 		timedOut: result.timedOut === true,
+		// The host's guest cut a stream: kept as cut, though what is left fits the compute API's own cap.
+		...(result.truncated === true ? { truncated: true } : {}),
 		// From an isolate, as its host said: what it needed a microVM for, and why its runtime stopped it. One the host only
 		// inferred from the shell's answer stays inferred: a hint, which autoUpgrade never acts on.
 		...(needs !== undefined && typeof needs.command === "string" && typeof needs.reason === "string"
@@ -758,7 +763,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	async function callForCommand<T>(
 		sandboxId: string,
 		method: string,
-		params: HostExecRef,
+		params: HostExecRef | HostExecOutputParams,
 		signal?: AbortSignal,
 		timeoutMs?: number,
 	): Promise<T> {
@@ -1731,6 +1736,26 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				stderr: status.stderr ?? "",
 				...(status.truncated === true ? { truncated: true } : {}),
 			} satisfies CommandProgress;
+		},
+		async commandOutput(sandboxId, commandId, stream, range) {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.execOutput)) {
+				throw new KantelError("not_supported", "This sandbox's host keeps no command output past its result");
+			}
+			const answer = await callForCommand<HostExecOutput>(sandboxId, HostMethods.execOutput, {
+				commandId,
+				stream,
+				offset: range.offset,
+				length: Math.min(range.length, HOST_EXEC_OUTPUT_MAX_READ),
+			});
+			return {
+				bytes: fromBase64(answer.data),
+				offset: answer.offset,
+				size: answer.size,
+				ended: answer.ended === true,
+				truncated: answer.truncated === true,
+				limit: answer.limit,
+			};
 		},
 		async readFile(sandboxId, path, range) {
 			const answer = await call<{ data: string; fileSize?: number }>(

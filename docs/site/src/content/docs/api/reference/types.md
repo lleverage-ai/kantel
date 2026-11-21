@@ -404,6 +404,22 @@ In an isolate: the command failed because it ran something an isolate doesn't ha
 | `reason` | string | yes | Why, in one sentence. |
 | `inferred` | boolean | no | Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it. |
 
+### CommandOutput
+
+A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `commandId` | string | yes |  |
+| `stream` | [CommandStream](/api/reference/types/#commandstream) | yes |  |
+| `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | yes |  |
+| `content` | string | yes | The part read: at most `length` bytes from `offset`. |
+| `offset` | integer | yes | The byte `content` starts at. At `size`, it's empty. |
+| `size` | integer | yes | How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` plus the part's length. |
+| `ended` | boolean | yes | The command has ended, so `size` is the whole of what is kept. |
+| `truncated` | boolean | yes | Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps in all), or the command ended with its machine, whose last output may not have reached the disk. |
+| `limit` | integer | yes | The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and 1 MiB (the command's own `stdout` and `stderr`) elsewhere. |
+
 ### CommandPage
 
 | Field | Type | Required | Description |
@@ -414,6 +430,12 @@ In an isolate: the command failed because it ran something an isolate doesn't ha
 ### CommandState
 
 One of: `"running"` or `"exited"` or `"killed"` or `"timed_out"`.
+
+### CommandStream
+
+One of a command's output streams. Reading, `stdout` is the default.
+
+One of: `"stdout"` or `"stderr"`.
 
 ### CommandTermination
 

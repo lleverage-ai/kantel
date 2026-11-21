@@ -3665,6 +3665,134 @@
 				}
 			}
 		},
+		"/sandboxes/{sandboxId}/commands/{commandId}/output": {
+			"get": {
+				"operationId": "readCommandOutput",
+				"summary": "Read a command's output",
+				"description": "Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`.",
+				"tags": ["commands"],
+				"parameters": [
+					{
+						"name": "sandboxId",
+						"in": "path",
+						"required": true,
+						"description": "The sandbox's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "commandId",
+						"in": "path",
+						"required": true,
+						"description": "The command's ID.",
+						"schema": {
+							"type": "string"
+						}
+					},
+					{
+						"name": "stream",
+						"in": "query",
+						"required": false,
+						"description": "One of a command's output streams. Reading, `stdout` is the default.",
+						"schema": {
+							"$ref": "#/components/schemas/CommandStream"
+						}
+					},
+					{
+						"name": "encoding",
+						"in": "query",
+						"required": false,
+						"schema": {
+							"$ref": "#/components/schemas/FileEncoding"
+						}
+					},
+					{
+						"name": "offset",
+						"in": "query",
+						"required": false,
+						"description": "Read from this byte (default 0).",
+						"schema": {
+							"type": "integer",
+							"minimum": 0
+						}
+					},
+					{
+						"name": "length",
+						"in": "query",
+						"required": false,
+						"description": "Read at most this many bytes: default, and at most, 1 MiB (1048576).",
+						"schema": {
+							"type": "integer",
+							"minimum": 1,
+							"maximum": 1048576
+						}
+					}
+				],
+				"responses": {
+					"200": {
+						"description": "The part read.",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/CommandOutput"
+								}
+							}
+						}
+					},
+					"400": {
+						"description": "`invalid`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"401": {
+						"description": "The request needs a valid credential (`unauthenticated`).",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"403": {
+						"description": "`forbidden`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"404": {
+						"description": "`not_found`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					},
+					"409": {
+						"description": "`conflict`",
+						"content": {
+							"application/json": {
+								"schema": {
+									"$ref": "#/components/schemas/ErrorBody"
+								}
+							}
+						}
+					}
+				}
+			}
+		},
 		"/sandboxes/{sandboxId}/files": {
 			"get": {
 				"operationId": "readFile",
@@ -15959,6 +16087,47 @@
 				"title": "CommandNeedsMicrovm",
 				"description": "In an isolate: the command failed because it ran something an isolate doesn't have. Upgrade the sandbox (`upgradeSandbox`) and run it again, or give the sandbox `autoUpgrade`."
 			},
+			"CommandOutput": {
+				"type": "object",
+				"required": ["commandId", "stream", "encoding", "content", "offset", "size", "ended", "truncated", "limit"],
+				"properties": {
+					"commandId": {
+						"type": "string"
+					},
+					"stream": {
+						"$ref": "#/components/schemas/CommandStream"
+					},
+					"encoding": {
+						"$ref": "#/components/schemas/FileEncoding"
+					},
+					"content": {
+						"type": "string",
+						"description": "The part read: at most `length` bytes from `offset`."
+					},
+					"offset": {
+						"type": "integer",
+						"description": "The byte `content` starts at. At `size`, it's empty."
+					},
+					"size": {
+						"type": "integer",
+						"description": "How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` plus the part's length."
+					},
+					"ended": {
+						"type": "boolean",
+						"description": "The command has ended, so `size` is the whole of what is kept."
+					},
+					"truncated": {
+						"type": "boolean",
+						"description": "Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps in all), or the command ended with its machine, whose last output may not have reached the disk."
+					},
+					"limit": {
+						"type": "integer",
+						"description": "The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and 1 MiB (the command's own `stdout` and `stderr`) elsewhere."
+					}
+				},
+				"title": "CommandOutput",
+				"description": "A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character."
+			},
 			"CommandPage": {
 				"type": "object",
 				"required": ["items"],
@@ -15996,6 +16165,20 @@
 					}
 				],
 				"title": "CommandState"
+			},
+			"CommandStream": {
+				"anyOf": [
+					{
+						"type": "string",
+						"const": "stdout"
+					},
+					{
+						"type": "string",
+						"const": "stderr"
+					}
+				],
+				"title": "CommandStream",
+				"description": "One of a command's output streams. Reading, `stdout` is the default."
 			},
 			"CommandTermination": {
 				"anyOf": [
