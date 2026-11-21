@@ -22,21 +22,49 @@ pub trait Subject: Sync {
     fn next<'a>(&'a self, sandbox: &'a str, view: &'a View) -> BoxFuture<'a, Arc<dyn Workspace>>;
 }
 
+/// How a persistent provider answers a commit whose record write lost its reply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Resolution {
+    /// Always `unknown`, with the record as read back after the write (the reference provider's way).
+    Unknown,
+    /// It reads the record back and, where nothing else wrote the record meanwhile, tells what its write did: it
+    /// answers `committed` with the changes in (having sent them again, once, if they hadn't landed), or `unknown`.
+    /// Where the record moved on meanwhile it can't tell, and answers `unknown`.
+    ReadBack,
+}
+
 /// A persistent provider under test: its record writes can be made to fail or lose their reply, and another owner
 /// can take a sandbox over.
 pub trait Persistent: Subject {
     /// The sandbox's next record write is refused, writing nothing.
     fn fail_next_write(&self, sandbox: &str);
-    /// The sandbox's next record write loses its reply, having `landed` or not.
+    /// The sandbox's next record write loses its reply, having `landed` or not. For a [`Resolution::ReadBack`]
+    /// provider, nothing else writes the record before it reads it back.
     fn lose_next_reply(&self, sandbox: &str, landed: bool);
     /// Another owner takes the sandbox's record over and writes to it.
     fn take_over(&self, sandbox: &str);
+
+    /// How the provider answers a lost reply: [`Resolution::Unknown`] unless it says otherwise.
+    fn lost_reply_resolution(&self) -> Resolution {
+        Resolution::Unknown
+    }
+
+    /// The sandbox's next record write loses its reply, having `landed` or not, and before the provider reads the
+    /// record back another writer that isn't a new owner (the platform, say) writes it, without touching the paths
+    /// the checks use (`a.txt`, `b.txt`, `c.txt`). `false` if the subject can't arrange that: the check is then
+    /// skipped, which only a [`Resolution::Unknown`] provider may do.
+    fn lose_next_reply_and_move_on(&self, sandbox: &str, landed: bool) -> bool {
+        let _ = (sandbox, landed);
+        false
+    }
 }
 
 /// Every check that holds for any provider.
 pub async fn common(subject: &dyn Subject) {
     views_list_files_and_reads_get_their_bytes(subject).await;
     a_read_is_refused_past_the_cap_and_for_files_not_given(subject).await;
+    host_reads_get_the_same_files(subject).await;
+    ranges_are_of_one_version_of_a_file(subject).await;
     a_commit_puts_replaces_and_removes(subject).await;
     an_empty_commit_changes_nothing(subject).await;
     a_commit_from_a_base_never_given_is_fenced(subject).await;
@@ -48,8 +76,10 @@ pub async fn common(subject: &dyn Subject) {
 /// Every check for a persistent provider (after [`common`]).
 pub async fn persistent(subject: &dyn Persistent) {
     a_refused_write_leaves_the_changes_standing(subject).await;
-    a_lost_reply_is_unknown_with_the_record_as_it_is(subject, true).await;
-    a_lost_reply_is_unknown_with_the_record_as_it_is(subject, false).await;
+    for landed in [true, false] {
+        a_lost_reply_leaves_the_record_as_it_is(subject, landed).await;
+        a_lost_reply_is_unknown_when_the_record_moved_on(subject, landed).await;
+    }
     a_base_behind_the_record_commits_and_catches_up(subject).await;
     another_owner_fences_the_workspace(subject).await;
 }
@@ -153,6 +183,88 @@ async fn a_read_is_refused_past_the_cap_and_for_files_not_given(s: &dyn Subject)
             "reading {id}, which this workspace never named"
         );
     }
+}
+
+async fn host_reads_get_the_same_files(s: &dyn Subject) {
+    let (_, ws) = s.sandbox(&[("b.txt", B)]).await;
+    let view = ws.view().await.expect("view");
+    let b = file_of(&view, "b.txt");
+    assert_eq!(ws.host_read(&b, B.len()).await.expect("at the cap"), B);
+    match ws.host_read(&b, B.len() - 1).await {
+        Err(ReadError::TooLarge { size, cap }) => {
+            assert_eq!((size, cap), (B.len() as u64, B.len() as u64 - 1))
+        }
+        other => panic!("a host read past its cap: {other:?}"),
+    }
+    // A staged file is readable too, as for the guest.
+    let staged = put(&ws, "c.txt", A).await;
+    assert_eq!(
+        ws.host_read(&staged.blob, usize::MAX)
+            .await
+            .expect("staged"),
+        A
+    );
+    let (_, other) = s.sandbox(&[("secret.txt", b"another sandbox's\n")]).await;
+    let theirs = file_of(&other.view().await.expect("view"), "secret.txt");
+    if theirs != b {
+        assert_eq!(
+            ws.host_read(&theirs, usize::MAX).await,
+            Err(ReadError::NotFound),
+            "a host read of another sandbox's file"
+        );
+        assert_eq!(
+            ws.read_range(&theirs, 0, 4).await,
+            Err(ReadError::NotFound),
+            "a range of another sandbox's file"
+        );
+    }
+}
+
+async fn ranges_are_of_one_version_of_a_file(s: &dyn Subject) {
+    let (_, ws) = s.sandbox(&[("b.txt", B)]).await;
+    let base = ws.view().await.expect("view");
+    let b = file_of(&base, "b.txt");
+    let size = B.len() as u64;
+    let range = |start: u64, len: usize| {
+        let (ws, b) = (ws.clone(), b.clone());
+        async move {
+            ws.read_range(&b, start, len)
+                .await
+                .unwrap_or_else(|e| panic!("range {start}+{len}: {e}"))
+        }
+    };
+    assert_eq!(range(0, B.len()).await, B, "the whole file");
+    assert_eq!(range(0, usize::MAX).await, B, "more than the whole file");
+    assert_eq!(range(2, 5).await, &B[2..7]);
+    assert_eq!(range(size - 3, 10).await, &B[B.len() - 3..], "to the end");
+    assert_eq!(range(size, 4).await, b"", "at the end");
+    assert_eq!(range(size + 100, 4).await, b"", "past the end");
+    assert_eq!(range(u64::MAX, 4).await, b"", "far past the end");
+    assert_eq!(range(3, 0).await, b"", "zero length");
+    // The file changes between two ranges: the id still names the bytes it named (or none, if the provider no
+    // longer has them), never the new ones or a mix; the new version has an id of its own.
+    let first = range(0, 6).await;
+    let p = put(&ws, "b.txt", b"charlie charlie charlie\n").await;
+    committed(
+        ws.commit(commit(&base.generation, vec![p], &[]))
+            .await
+            .expect("commit"),
+    );
+    match ws.read_range(&b, 6, 6).await {
+        Ok(rest) => assert_eq!(
+            [first, rest].concat(),
+            &B[..12],
+            "a range after the file changed"
+        ),
+        Err(ReadError::NotFound) => {}
+        Err(e) => panic!("a range of the old version: {e}"),
+    }
+    let now = file_of(&ws.view().await.expect("view"), "b.txt");
+    assert_ne!(now, b, "a changed file has a new id");
+    assert_eq!(
+        ws.read_range(&now, 0, 7).await.expect("the new version"),
+        b"charlie"
+    );
 }
 
 async fn a_commit_puts_replaces_and_removes(s: &dyn Subject) {
@@ -421,32 +533,78 @@ async fn a_refused_write_leaves_the_changes_standing(s: &dyn Persistent) {
     assert!(catch_up.changed.contains_key("b.txt"));
 }
 
-async fn a_lost_reply_is_unknown_with_the_record_as_it_is(s: &dyn Persistent, landed: bool) {
+/// A lost reply is `unknown` with the record as it is, or, from a provider that reads the record back
+/// ([`Resolution::ReadBack`]), `committed` with the change in. Never half, never replayed.
+async fn a_lost_reply_leaves_the_record_as_it_is(s: &dyn Persistent, landed: bool) {
     let (id, ws) = s.sandbox(&[("a.txt", A)]).await;
     let base = ws.view().await.expect("view");
     let p = put(&ws, "b.txt", B).await;
     s.lose_next_reply(&id, landed);
-    let catch_up = match ws
+    let reply = ws
+        .commit(commit(&base.generation, vec![p], &["a.txt"]))
+        .await
+        .expect("commit");
+    match (s.lost_reply_resolution(), reply) {
+        (_, CommitReply::Unknown { error, catch_up }) => {
+            assert!(!error.is_empty());
+            the_record_as_it_is(&ws, &base, &catch_up, landed).await;
+        }
+        // It told what its write did: the change is in, whether it had landed or was sent again.
+        (Resolution::ReadBack, CommitReply::Committed { catch_up }) => {
+            the_record_as_it_is(&ws, &base, &catch_up, true).await;
+        }
+        (resolution, other) => {
+            panic!("a lost reply (landed: {landed}, {resolution:?}): {other:?}")
+        }
+    }
+}
+
+/// A lost reply whose record another writer moved on before it was read back is `unknown`, whatever the provider:
+/// it can't tell what its own write did.
+async fn a_lost_reply_is_unknown_when_the_record_moved_on(s: &dyn Persistent, landed: bool) {
+    let (id, ws) = s.sandbox(&[("a.txt", A)]).await;
+    let base = ws.view().await.expect("view");
+    let p = put(&ws, "b.txt", B).await;
+    if !s.lose_next_reply_and_move_on(&id, landed) {
+        assert_eq!(
+            s.lost_reply_resolution(),
+            Resolution::Unknown,
+            "a provider that reads a lost reply back shows it answers unknown when the record moved on \
+             (Persistent::lose_next_reply_and_move_on)"
+        );
+        return;
+    }
+    match ws
         .commit(commit(&base.generation, vec![p], &["a.txt"]))
         .await
         .expect("commit")
     {
         CommitReply::Unknown { error, catch_up } => {
             assert!(!error.is_empty());
-            catch_up
+            the_record_as_it_is(&ws, &base, &catch_up, landed).await;
         }
-        other => panic!("a lost reply (landed: {landed}): {other:?}"),
-    };
-    // The catch-up is the record as it is: with the change if it landed, without it if not. Never half.
+        other => panic!("a lost reply over a record that moved on (landed: {landed}): {other:?}"),
+    }
+}
+
+/// After a commit of `b.txt` (and removing `a.txt`) from `base` whose reply was lost: the catch-up is the record as
+/// it is, with the change if `present`, without it if not, never half; and nothing replays it, so the next commit,
+/// from the catch-up's version, leaves it as it is.
+async fn the_record_as_it_is(
+    ws: &Arc<dyn Workspace>,
+    base: &View,
+    catch_up: &CatchUp,
+    present: bool,
+) {
     assert_eq!(catch_up.from, base.generation);
     assert_eq!(
         catch_up.changed.contains_key("b.txt"),
-        landed,
+        present,
         "{catch_up:?}"
     );
     assert_eq!(
         catch_up.removed.contains(&"a.txt".to_string()),
-        landed,
+        present,
         "{catch_up:?}"
     );
     let now = ws.view().await.expect("view");
@@ -454,9 +612,8 @@ async fn a_lost_reply_is_unknown_with_the_record_as_it_is(s: &dyn Persistent, la
         now.generation, catch_up.generation,
         "the catch-up is to the record's version"
     );
-    assert_eq!(now.entries.contains_key("b.txt"), landed);
-    // Nothing replays it: the guest dropped its change, and the next commit is from the catch-up's version.
-    let c = put(&ws, "c.txt", A).await;
+    assert_eq!(now.entries.contains_key("b.txt"), present);
+    let c = put(ws, "c.txt", A).await;
     let next = committed(
         ws.commit(commit(&catch_up.generation, vec![c], &[]))
             .await
@@ -466,9 +623,10 @@ async fn a_lost_reply_is_unknown_with_the_record_as_it_is(s: &dyn Persistent, la
     assert_eq!(view.generation, next.generation);
     assert_eq!(
         view.entries.contains_key("b.txt"),
-        landed,
-        "an unknown commit was replayed"
+        present,
+        "a commit whose reply was lost was replayed"
     );
+    assert_eq!(view.entries.contains_key("a.txt"), !present);
 }
 
 async fn a_base_behind_the_record_commits_and_catches_up(s: &dyn Persistent) {
@@ -659,6 +817,11 @@ pub mod subjects {
         }
         fn lose_next_reply(&self, sandbox: &str, landed: bool) {
             self.provider.inject(sandbox, Fault::Unknown { landed });
+        }
+        fn lose_next_reply_and_move_on(&self, sandbox: &str, landed: bool) -> bool {
+            self.provider.inject(sandbox, Fault::Unknown { landed });
+            self.provider.move_on_after_lost_reply(sandbox);
+            true
         }
         fn take_over(&self, sandbox: &str) {
             self.provider.take_over(sandbox);

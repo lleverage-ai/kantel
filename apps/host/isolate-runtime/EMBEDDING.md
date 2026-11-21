@@ -39,7 +39,8 @@ history rather than by a version number.
   serde_v8 = { path = "vendor/serde_v8-0.321.0" }
   ```
 
-`consumer/` is the smallest embedder there is, and CI builds and runs it against each commit as a git dependency on
+`consumer/` is the smallest embedder there is (its own guest bundle and op, a filesystem provider it runs the
+contract tests against, and a host command), and CI builds and runs it against each commit as a git dependency on
 both V8s (`consumer/check.sh`, run in the build container by `apps/host/guest/isolate-runtime.sh consumer`): copy its
 setup.
 
@@ -144,7 +145,8 @@ makes one; a persistent one gives the sandbox's own). `ShellHandle::exec` takes 
 | Step | `Workspace` method | Op (shell only) | What it promises |
 | --- | --- | --- | --- |
 | Start | `view()`, `manifest(view)` | (in the request) | Every path and an opaque generation, and the files the guest starts from as a manifest: the view's own, so the files and the base are one version (Kantel's gives the request's manifest). |
-| Read | `read(file, cap, charge)` | `op_kt_blob_read(file)` | Only a file a view or `stage` gave this workspace (`NotFound` otherwise). Over `cap` is `TooLarge`, refused before it is read; the bytes are charged to the isolate as they arrive. |
+| Read | `read(file, cap, charge)` | `op_kt_blob_read(file)` | Only a file a view or `stage` gave this workspace (`NotFound` otherwise). Over `cap` is `TooLarge`, refused before it is read; the bytes are charged to the isolate as they arrive. Only ever the guest's read. |
+| Read for the host | `host_read(file, cap)`, `read_range(file, start, len)` | (a host command's `files`) | The same files, read for a host command: charged to no isolate and not held to a cap the provider keeps for the isolate, only to the host's `cap`. A range is exactly `len` bytes from `start`, fewer only at the file's end, none at or past it. Both have defaults (`read(file, cap, None)`, and that whole read sliced), so a provider that overrides neither reads for the host as for the guest. |
 | Stage | `stage(path, bytes)` | `op_kt_stage(path, bytes)` | A blob id a commit may name. Nothing refers to it until then. |
 | Commit | `commit(commit)` | `op_kt_commit(json)` | The command's changes from its `base`, applied whole or not at all: removals, then directories, links and files. |
 | Catch up | `sync(base)` | `op_kt_sync(base)` | The changes from a version the guest holds to the current one (after the host changed the workspace itself). |
@@ -167,6 +169,9 @@ command's base (the host's writes), from the catch-up. It commits only what the 
 a file or link a directory replaced is removed. A command commits once at a time (a second `op_kt_commit` while one is
 running is refused).
 
+A file id always names the same bytes: a changed file gets a new id, and a read of the old one gives the old bytes
+or `NotFound`, never the new ones (so every range of one id is of one version of the file).
+
 A file the command didn't change isn't in its commit, whatever the provider's ids are. Where they are the bytes'
 SHA-256 (`Capabilities::content_addressed`, as Kantel's are) the guest compares ids; otherwise it compares the bytes'
 digest with what the command read (or, for a file written over unread, reads the original to compare).
@@ -188,8 +193,17 @@ commits through the same workspace, and the guest catches up with `sync`. Warmin
 
 ### The contract tests
 
-`workspace::contract` is the contract as tests: `common` for every provider, `persistent` for the faults a persistent
-one meets (a refused write, a lost reply that landed or didn't, a base behind the record, another owner taking over).
+`workspace::contract` is the contract as tests: `common` for every provider (reads for the guest and for the host,
+ranges included), `persistent` for the faults a persistent one meets (a refused write, a lost reply that landed or
+didn't, a base behind the record, another owner taking over).
+
+A lost reply is `unknown`, with the record as read back, unless the provider can tell what its write did. One that
+reads the record back and finds its write there (or finds it didn't land, and sends it once more) may answer
+`committed` with the changes in: it says so with `Persistent::lost_reply_resolution` returning `Resolution::ReadBack`,
+and implements `Persistent::lose_next_reply_and_move_on`, a lost reply after which another writer (not a new owner)
+moves the record on before it is read back. There the provider can't tell, and the contract requires `unknown`. Either
+way the record is as it is, never half, and nothing replays a change the guest dropped. Both methods have defaults
+(`Resolution::Unknown`, and no moved-on check), so a provider that answers `unknown` needs neither.
 `tests/workspace_contract.rs` runs them against both of the crate's providers, and `tests/guest_workspace.rs` runs
 Kantel's guest shell over the persistent one. An embedder runs them against its own provider by implementing
 `contract::Subject` (and `contract::Persistent`), as `contract::subjects` does:
@@ -216,7 +230,11 @@ cancelled if the shell cancels it (`timeout`) or the command is stopped. The `Ho
 directory, environment and stdin, and `files`: the shell's files as they are at that moment (`read(path, cap)` reads
 one, a path absolute or relative to the working directory and inside `/workspace`, through the workspace or inline
 if the command changed it; symbolic links in a path are followed as the shell follows them, and one leading out of
-`/workspace` is refused). The `HostReply` has the exit code, stdout and stderr, and the files it writes and
+`/workspace` is refused). A host command reads for the host (`Workspace::host_read`), so the isolate's read cap
+doesn't hold it back; its own `cap` does. A file too large to take whole is read in ranges (`read_range(path, start,
+len)`), each of the file as it was when the command started; `file(path)` gives its size and, when its bytes are the
+workspace's (untouched, or a staged output), the workspace's id for it (`HostFile { id, size }`, `id: None` for a
+file the command wrote in the shell), for an embedder whose own child process reads the file from its storage. The `HostReply` has the exit code, stdout and stderr, and the files it writes and
 removes. A host command never commits: its changes become the shell command's own and are saved by its one commit,
 so a stopped or cancelled command, an unknown outcome and the next command are handled once for everything.
 

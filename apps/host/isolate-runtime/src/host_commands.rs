@@ -58,6 +58,16 @@ enum Indexed {
     Inline(usize, usize),
 }
 
+/// A file in the shell's files, as [`HostFiles::file`] gives it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HostFile {
+    /// The workspace's file id when the file's bytes are the workspace's: the id its view named an untouched file by,
+    /// or the blob a host command staged for it. `None` when the command wrote the file in the shell, and its bytes
+    /// are the shell's own.
+    pub id: Option<String>,
+    pub size: u64,
+}
+
 /// The shell's files at the moment the host command runs, by path relative to `/workspace`.
 pub struct HostFiles {
     cwd: String,
@@ -154,34 +164,78 @@ impl HostFiles {
         }
     }
 
+    /// A file, if `path` is one (symbolic links followed): its workspace file id when its bytes are the workspace's
+    /// (`None` when the command wrote it in the shell), and its size. The id is for an embedder that reads the file
+    /// from its own storage; [`read_range`](Self::read_range) reads it either way.
+    pub fn file(&self, path: &str) -> Option<HostFile> {
+        match self.files.get(&self.resolve(path)?)? {
+            Indexed::Workspace { file, size } => Some(HostFile {
+                id: Some(file.clone()),
+                size: *size,
+            }),
+            Indexed::Inline(_, len) => Some(HostFile {
+                id: None,
+                size: *len as u64,
+            }),
+        }
+    }
+
     /// A file's bytes, at most `cap`: `path` absolute, or relative to the shell's working directory, and in
-    /// `/workspace`.
+    /// `/workspace`. Read for the host ([`Workspace::host_read`]), so the isolate's read cap doesn't apply; `cap`
+    /// does.
     pub async fn read(&self, path: &str, cap: usize) -> Result<Vec<u8>> {
-        let rel = self
-            .resolve(path)
-            .ok_or_else(|| anyhow!("{path}: not in the workspace"))?;
-        match self.files.get(&rel) {
-            None => bail!("{path}: no such file"),
-            Some(Indexed::Inline(off, len)) => {
+        match self.indexed(path)? {
+            Indexed::Inline(off, len) => {
                 if *len > cap {
                     bail!("{path}: file too large ({len} bytes; at most {cap})");
                 }
-                self.payload
-                    .get(*off..off + len)
-                    .map(<[u8]>::to_vec)
-                    .ok_or_else(|| anyhow!("{path}: bad inline file"))
+                self.inline(path, *off, *len)
             }
-            Some(Indexed::Workspace { file, .. }) => {
-                let workspace = self
-                    .workspace
-                    .as_ref()
-                    .ok_or_else(|| anyhow!("{path}: no workspace to read it from"))?;
-                workspace
-                    .read(file, cap, None)
-                    .await
-                    .map_err(|e| anyhow!("{path}: {e}"))
-            }
+            Indexed::Workspace { file, .. } => self
+                .workspace(path)?
+                .host_read(file, cap)
+                .await
+                .map_err(|e| anyhow!("{path}: {e}")),
         }
+    }
+
+    /// Up to `len` bytes of a file from byte `start` ([`Workspace::read_range`]'s rules: fewer only at its end, none
+    /// at or past it), so a large file can be streamed. The file is as it was when the host command started, for
+    /// every range.
+    pub async fn read_range(&self, path: &str, start: u64, len: usize) -> Result<Vec<u8>> {
+        match self.indexed(path)? {
+            Indexed::Inline(off, size) => {
+                let bytes = self.inline(path, *off, *size)?;
+                Ok(crate::workspace::range_of(&bytes, start, len).to_vec())
+            }
+            Indexed::Workspace { file, .. } => self
+                .workspace(path)?
+                .read_range(file, start, len)
+                .await
+                .map_err(|e| anyhow!("{path}: {e}")),
+        }
+    }
+
+    fn indexed(&self, path: &str) -> Result<&Indexed> {
+        let rel = self
+            .resolve(path)
+            .ok_or_else(|| anyhow!("{path}: not in the workspace"))?;
+        self.files
+            .get(&rel)
+            .ok_or_else(|| anyhow!("{path}: no such file"))
+    }
+
+    fn inline(&self, path: &str, off: usize, len: usize) -> Result<Vec<u8>> {
+        self.payload
+            .get(off..off + len)
+            .map(<[u8]>::to_vec)
+            .ok_or_else(|| anyhow!("{path}: bad inline file"))
+    }
+
+    fn workspace(&self, path: &str) -> Result<&Arc<dyn Workspace>> {
+        self.workspace
+            .as_ref()
+            .ok_or_else(|| anyhow!("{path}: no workspace to read it from"))
     }
 
     /// Upload an output's bytes to the workspace, for a [`HostWrite::Staged`]: nothing refers to them until the

@@ -89,6 +89,43 @@ impl HostCommand for Slow {
     }
 }
 
+/// `peek FILE START LEN`: where the file's bytes are (the workspace's or the shell's), its size, that range of it,
+/// and the size of the whole of it as a host read gets it.
+struct Peek;
+impl HostCommand for Peek {
+    fn run<'a>(&'a self, request: HostRequest) -> BoxFuture<'a, Result<HostReply>> {
+        Box::pin(async move {
+            let [path, start, len] = &request.args[..] else {
+                anyhow::bail!("usage: peek FILE START LEN");
+            };
+            let file = request
+                .files
+                .file(path)
+                .ok_or_else(|| anyhow::anyhow!("{path}: no such file"))?;
+            let range = request
+                .files
+                .read_range(path, start.parse()?, len.parse()?)
+                .await?;
+            let whole = request.files.read(path, 1 << 20).await?;
+            let at = if file.id.is_some() {
+                "workspace"
+            } else {
+                "shell"
+            };
+            Ok(HostReply {
+                stdout: format!(
+                    "{at} {} {} {}\n",
+                    file.size,
+                    String::from_utf8_lossy(&range),
+                    whole.len()
+                )
+                .into_bytes(),
+                ..Default::default()
+            })
+        })
+    }
+}
+
 /// `unzip`: a name the isolate's shell would otherwise refuse as unavailable.
 struct Served;
 impl HostCommand for Served {
@@ -160,6 +197,7 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
         .with_host_command("stash", Arc::new(Stash))
         .with_host_command("put", Arc::new(Put))
         .with_host_command("slow", Arc::new(Slow))
+        .with_host_command("peek", Arc::new(Peek))
         .with_host_command("unzip", Arc::new(Served));
     Engine::init(cfg, embedding, io.handle().clone(), false).unwrap();
     let shell = spawn_shell("h".into(), 256, false);
@@ -272,6 +310,27 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
     assert_eq!(reply["changed"], json!(["stash.txt"]), "{reply}");
     assert_eq!(reply["manifest"]["stash.txt"]["mode"], 0o644, "{reply}");
     assert_eq!(records.files("r")["stash.txt"], b"hello\n");
+
+    // A host command reads a file larger than the guest may (the provider's isolate read cap), whole or by range,
+    // and knows the workspace's id of an untouched file; one the command wrote has none, and is read from the shell.
+    let capped = Arc::new(RecordProvider::new(8));
+    capped.seed("c", &[("big.txt", b"0123456789abcdef")]);
+    let open = || capped.open("c", &Value::Null).expect("open");
+    let reply = io.block_on(run_on(&shell, open(), "peek big.txt 4 6"));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["stdout"], "workspace 16 456789 16\n", "{reply}");
+    let reply = io.block_on(run_on(&shell, open(), "cat big.txt"));
+    assert_ne!(
+        reply["exitCode"], 0,
+        "the guest's read is still capped: {reply}"
+    );
+    let reply = io.block_on(run_on(
+        &shell,
+        open(),
+        "echo hello > new.txt && peek new.txt 1 3",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["stdout"], "shell 6 ell 6\n", "{reply}");
 
     // The shell's `timeout` cancels a host command on the host too.
     let started = Instant::now();
