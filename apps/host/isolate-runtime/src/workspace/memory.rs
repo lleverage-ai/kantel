@@ -12,10 +12,11 @@
 //! - the record moved on under another owner ([`RecordProvider::take_over`]) or a stale base: `fenced`, for good.
 //!
 //! It keeps files only (directories are implied by paths, as in a record of blobs), and reads at most
-//! [`RecordProvider::read_cap`] bytes into an isolate.
+//! [`RecordProvider::new`]'s `read_cap` bytes into an isolate; reads for the host (`host_read`, `read_range`) aren't
+//! held to it.
 
 use std::collections::{BTreeMap, HashMap, VecDeque};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use anyhow::{Result, bail};
@@ -23,7 +24,7 @@ use serde_json::Value;
 
 use super::{
     BoxFuture, Capabilities, CatchUp, Commit, CommitReply, FilesystemProvider, Node, Put,
-    ReadError, Staged, View, Workspace, apply, check_paths, diff,
+    ReadError, Staged, View, Workspace, apply, check_paths, diff, range_of,
 };
 use crate::bridges::Charge;
 
@@ -46,6 +47,8 @@ struct Shared {
     record: Mutex<Record>,
     blobs: Mutex<HashMap<String, Arc<Vec<u8>>>>,
     faults: Mutex<VecDeque<Fault>>,
+    /// Another writer writes the record after the next write whose reply is lost.
+    move_on: AtomicBool,
     next_blob: AtomicU64,
 }
 
@@ -94,6 +97,7 @@ impl RecordProvider {
                     }),
                     blobs: Mutex::new(HashMap::new()),
                     faults: Mutex::new(VecDeque::new()),
+                    move_on: AtomicBool::new(false),
                     next_blob: AtomicU64::new(1),
                 });
                 let workspace = RecordWorkspace::new(shared.clone(), owner, self.read_cap);
@@ -123,6 +127,15 @@ impl RecordProvider {
             .lock()
             .unwrap()
             .push_back(fault);
+    }
+
+    /// Another writer that isn't a new owner (the platform, say) writes the sandbox's record right after the
+    /// sandbox's next record write whose reply is lost ([`Fault::Unknown`]), before the workspace reads the record
+    /// back: the record has moved on, by a file of that writer's (`moved-on.txt`).
+    pub fn move_on_after_lost_reply(&self, sandbox_id: &str) {
+        self.shared(sandbox_id)
+            .move_on
+            .store(true, Ordering::SeqCst);
     }
 
     /// Another owner takes the sandbox's record over (as another replica re-acquiring the session would) and writes
@@ -227,6 +240,38 @@ impl RecordWorkspace {
         held.fenced = Some(error.clone());
         CommitReply::Fenced { error }
     }
+
+    /// The bytes of a file this workspace gave (a view's or a staged one), if they are at most `cap`.
+    fn given(&self, file: &str, cap: usize) -> Result<Arc<Vec<u8>>, ReadError> {
+        let size = {
+            let held = self.held.lock().unwrap();
+            let given = held
+                .versions
+                .iter()
+                .flat_map(|(_, files)| files.values())
+                .find_map(|node| match node {
+                    Node::File { file: f, size, .. } if f == file => Some(*size),
+                    _ => None,
+                });
+            match given.or_else(|| held.staged.get(file).copied()) {
+                Some(size) => size,
+                None => return Err(ReadError::NotFound),
+            }
+        };
+        if size > cap as u64 {
+            return Err(ReadError::TooLarge {
+                size,
+                cap: cap as u64,
+            });
+        }
+        self.shared
+            .blobs
+            .lock()
+            .unwrap()
+            .get(file)
+            .cloned()
+            .ok_or(ReadError::NotFound)
+    }
 }
 
 impl Workspace for RecordWorkspace {
@@ -268,42 +313,34 @@ impl Workspace for RecordWorkspace {
         charge: Option<&'a mut Charge>,
     ) -> BoxFuture<'a, Result<Vec<u8>, ReadError>> {
         Box::pin(async move {
-            let size = {
-                let held = self.held.lock().unwrap();
-                let given = held
-                    .versions
-                    .iter()
-                    .flat_map(|(_, files)| files.values())
-                    .find_map(|node| match node {
-                        Node::File { file: f, size, .. } if f == file => Some(*size),
-                        _ => None,
-                    });
-                match given.or_else(|| held.staged.get(file).copied()) {
-                    Some(size) => size,
-                    None => return Err(ReadError::NotFound),
-                }
-            };
-            let cap = cap.min(self.read_cap);
-            if size > cap as u64 {
-                return Err(ReadError::TooLarge {
-                    size,
-                    cap: cap as u64,
-                });
-            }
-            let bytes = self
-                .shared
-                .blobs
-                .lock()
-                .unwrap()
-                .get(file)
-                .cloned()
-                .ok_or(ReadError::NotFound)?;
+            let bytes = self.given(file, cap.min(self.read_cap))?;
             if let Some(charge) = charge {
                 charge
                     .add(bytes.len())
                     .map_err(|e| ReadError::Failed(e.to_string()))?;
             }
             Ok(bytes.as_ref().clone())
+        })
+    }
+
+    /// Not held to the provider's `read_cap`, which is for reads into an isolate.
+    fn host_read<'a>(
+        &'a self,
+        file: &'a str,
+        cap: usize,
+    ) -> BoxFuture<'a, Result<Vec<u8>, ReadError>> {
+        Box::pin(async move { Ok(self.given(file, cap)?.as_ref().clone()) })
+    }
+
+    fn read_range<'a>(
+        &'a self,
+        file: &'a str,
+        start: u64,
+        len: usize,
+    ) -> BoxFuture<'a, Result<Vec<u8>, ReadError>> {
+        Box::pin(async move {
+            let bytes = self.given(file, usize::MAX)?;
+            Ok(range_of(&bytes, start, len).to_vec())
         })
     }
 
@@ -393,6 +430,15 @@ impl Workspace for RecordWorkspace {
                 Some(Fault::Unknown { landed }) => {
                     if landed {
                         write(&mut record);
+                    }
+                    if self.shared.move_on.swap(false, Ordering::SeqCst) {
+                        let bytes = b"another writer's\n".to_vec();
+                        let size = bytes.len() as u64;
+                        let blob = self.shared.new_blob(bytes);
+                        record
+                            .files
+                            .insert("moved-on.txt".into(), Node::file(blob, size, 0o644));
+                        record.generation += 1;
                     }
                     // Read back: what the record holds is what the guest takes.
                     let now = generation(record.generation);

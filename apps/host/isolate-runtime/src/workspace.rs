@@ -17,6 +17,8 @@
 //! 1. [`FilesystemProvider::open`] gives the command's [`Workspace`], and [`Workspace::view`] its starting [`View`]:
 //!    every path, and the opaque generation the view is of.
 //! 2. The guest reads files by id ([`Workspace::read`]), only ones a view it was given or [`Workspace::stage`] named.
+//!    A host command reads the same files for the host ([`Workspace::host_read`], [`Workspace::read_range`]), not
+//!    held to what an isolate may take.
 //! 3. At the end it stages each changed file's bytes ([`Workspace::stage`]) and sends one [`Commit`]: the base it
 //!    started from and its changes. The [`CommitReply`] carries a [`CatchUp`] from that base to what the workspace
 //!    now holds, whatever the outcome short of `fenced`.
@@ -244,6 +246,41 @@ pub trait Workspace: Send + Sync {
         charge: Option<&'a mut Charge>,
     ) -> BoxFuture<'a, Result<Vec<u8>, ReadError>>;
 
+    /// A file's bytes for the host (a [host command](crate::host_commands)), not for an isolate: the same files as
+    /// [`read`](Self::read), at most `cap` bytes (the host's cap, which the caller chooses; a larger file is
+    /// [`ReadError::TooLarge`], refused before it is read), charged to no isolate and not held to a cap the provider
+    /// keeps for reads into an isolate. [`read`](Self::read) is only ever the guest's.
+    ///
+    /// The default is `read(file, cap, None)`: a provider that doesn't override it reads for the host as it reads for
+    /// the guest, its own isolate cap included.
+    fn host_read<'a>(
+        &'a self,
+        file: &'a str,
+        cap: usize,
+    ) -> BoxFuture<'a, Result<Vec<u8>, ReadError>> {
+        self.read(file, cap, None)
+    }
+
+    /// Up to `len` bytes of a file from byte `start`, for the host, as [`host_read`](Self::host_read) reads (the same
+    /// files, charged to no isolate), so a host command can stream a file larger than it would take whole. Exactly
+    /// `len` bytes, fewer only where the file ends first; none at or past its end, or for `len` 0. A file id always
+    /// names the same bytes, so every range of one id is of one version of the file, whatever has happened at its
+    /// path since; a provider that no longer has those bytes answers [`ReadError::NotFound`], never another version's.
+    ///
+    /// The default reads the whole file with [`host_read`](Self::host_read) (no cap) and slices it; a provider over
+    /// storage that reads ranges should override it.
+    fn read_range<'a>(
+        &'a self,
+        file: &'a str,
+        start: u64,
+        len: usize,
+    ) -> BoxFuture<'a, Result<Vec<u8>, ReadError>> {
+        Box::pin(async move {
+            let bytes = self.host_read(file, usize::MAX).await?;
+            Ok(range_of(&bytes, start, len).to_vec())
+        })
+    }
+
     /// Upload a file's bytes for a commit to name.
     fn stage<'a>(&'a self, path: &'a str, bytes: Vec<u8>) -> BoxFuture<'a, Result<Staged>>;
 
@@ -262,6 +299,16 @@ pub trait FilesystemProvider: Send + Sync {
     /// (Kantel's: the /exec body, whose `manifest` is the sandbox's files). A per-command provider makes a new one; a
     /// persistent one gives the sandbox's own.
     fn open(&self, sandbox_id: &str, request: &Value) -> Result<Arc<dyn Workspace>>;
+}
+
+/// The part of `bytes` a [`Workspace::read_range`] of `start` and `len` gives: empty at or past the end.
+pub fn range_of(bytes: &[u8], start: u64, len: usize) -> &[u8] {
+    let Ok(start) = usize::try_from(start) else {
+        return &[];
+    };
+    let start = start.min(bytes.len());
+    let end = start.saturating_add(len).min(bytes.len());
+    &bytes[start..end]
 }
 
 /// `entries` with a commit's changes applied (removals, then directories, links and files). For providers that keep
