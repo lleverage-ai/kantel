@@ -18,7 +18,12 @@ It speaks kantel-host's existing isolate protocol (`GET /healthz`, `POST /warm`,
   host's blob store (`--store`) only when a command reads them; changed files are uploaded at the end of each command
   and returned as the next manifest. `/workspace` is the root, `HOME=/workspace`. Commands that need a real machine
   (`git`, `tar`, `apt`, `docker`, `pip install`, …) answer exit 127 with `needsMicrovm` so Kantel can offer or make
-  the microVM upgrade.
+  the microVM upgrade, and `effects`: `"none"` when the command was refused before any of it ran (its parse showed the
+  program would fail it), `"possible"` when the program was reached while it ran. just-bash carries two patches,
+  shared with Lleverage's isolate: `patches/just-bash@3.6.0.patch` (bun applies it: a read that failed because the file
+  is too large says so, and `<>` and `awk`'s append create a file only when it is missing, never over one they couldn't
+  read) and `guest/just-bash-patches.ts` (the guest build applies it: a filesystem error a redirection meets fails
+  only its own command, not the whole script).
 - **node:** agent JavaScript (and `.ts` with types stripped) in a fresh isolate per run — `node -e`/`-p`/a
   script/`-`/`-v`, `console`, `process`, a `node:fs` over the sandbox's files, `path`/`util`/`os`/`events`/`buffer`/
   `crypto`/`stream`/`readline`/`url`/`assert`/`timers`/`zlib`, relative CommonJS and ESM imports, `fetch` and timers

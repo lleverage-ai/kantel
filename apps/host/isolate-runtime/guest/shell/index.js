@@ -5,7 +5,17 @@
 import { Bash, defineCommand, InMemoryFs } from "just-bash/browser";
 import { latin1 } from "../common/text.js";
 import { Chunks, egressFetch, unpack } from "../common/web.js";
+import { describeFsError, readError } from "./fs-errors.js";
+import { prescan } from "./prescan.js";
 import { message, UNAVAILABLE } from "./unavailable.js";
+
+// A filesystem error a redirection meets fails only its command (guest/just-bash-patches.ts's hook).
+globalThis.__justBashFsError = describeFsError;
+
+const UNAVAILABLE_BY_NAME = new Map(UNAVAILABLE);
+/** The program's `{ command, reason }` if the isolate doesn't have it. */
+const unavailableProgram = (name) =>
+	UNAVAILABLE_BY_NAME.has(name) ? { command: name, reason: `${UNAVAILABLE_BY_NAME.get(name)}.` } : undefined;
 
 const ROOT = "/workspace";
 /** The most output one command may make (parity with sandbox.ts: zlib's 128 MiB output cap). */
@@ -75,7 +85,12 @@ export function createShell(ops, log) {
 			if (entry.kind !== "file") continue;
 			files[abs(path)] = async () => {
 				lazyReads++;
-				const bytes = await ops.op_kt_blob_read(entry.sha);
+				let bytes;
+				try {
+					bytes = await ops.op_kt_blob_read(entry.sha);
+				} catch (error) {
+					throw readError(error);
+				}
 				if (!capabilities.contentAddressed) originals.set(path, sha256(bytes));
 				return bytes;
 			};
@@ -189,6 +204,26 @@ export function createShell(ops, log) {
 			fetch: (url, options = {}) => egressFetch(url, options),
 		});
 		const t1 = performance.now();
+		// Parse before running: a program the isolate doesn't have, whose failure would fail the whole command, stops
+		// it before any of it runs (guest/shell/prescan.js).
+		let refused;
+		try {
+			refused = prescan(bash.transform(request.command).ast, unavailableProgram);
+		} catch {
+			// A command the parser refuses fails as it always has, when it runs.
+		}
+		if (refused) {
+			return {
+				exitCode: 127,
+				stdout: "",
+				stderr: message(refused.command, "none"),
+				manifest,
+				changed: [],
+				timings: { fsMs: t1 - t0, execMs: 0, commitMs: 0, lazyReads },
+				needsMicrovm: refused,
+				effects: "none",
+			};
+		}
 		const result = await bash.exec(request.command);
 		const t2 = performance.now();
 
@@ -290,7 +325,11 @@ export function createShell(ops, log) {
 			if (response.exitCode === 0) response.exitCode = 1;
 		}
 		// Only when the command failed: one that handled the missing program itself (`git --version || true`) ran.
-		if (needsMicrovm && result.exitCode !== 0) response.needsMicrovm = needsMicrovm;
+		// Reached while running, so what came before it in the command may have run.
+		if (needsMicrovm && result.exitCode !== 0) {
+			response.needsMicrovm = needsMicrovm;
+			response.effects = "possible";
+		}
 		if (terminated) response.terminated = terminated;
 		if (log) log(1, `exec ${JSON.stringify(request.command).slice(0, 200)} -> ${result.exitCode}`);
 		return response;
