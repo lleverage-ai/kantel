@@ -108,8 +108,8 @@ func parseManifest(raw []byte, digest string, maxObjects int) (*manifest, error)
 			return nil, bad("has a negative size")
 		case e.Generation == "" && e.ETag == "":
 			return nil, bad("pins no version: give its generation or its ETag")
-		case strings.ContainsAny(e.ETag, `"`) || len(e.ETag) > 256 || len(e.Generation) > 64:
-			return nil, bad("has a bad generation or ETag")
+		case strings.ContainsAny(e.ETag, `"`) || len(e.ETag) > 256 || !validGeneration(e.Generation):
+			return nil, bad("has a bad generation (a GCS generation is a decimal number) or ETag")
 		}
 		if files++; maxObjects > 0 && files > maxObjects {
 			return nil, fmt.Errorf("%w: it lists more than %d files", errManifest, maxObjects)
@@ -170,6 +170,20 @@ func readManifestObject(ctx context.Context, c *bucket.Client, key string) ([]by
 		return nil, fmt.Errorf("%w: it is over %d MiB", errManifest, MaxManifestBytes>>20)
 	}
 	return raw, nil
+}
+
+// validGeneration is a GCS generation (a positive decimal number of at most 20 digits), or none. Only digits, so a
+// version tag made of it and an ETag ("g<generation>e<etag>") names one pin only.
+func validGeneration(g string) bool {
+	if len(g) > 20 || strings.HasPrefix(g, "0") {
+		return false
+	}
+	for _, r := range g {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func truncate(s string, n int) string {

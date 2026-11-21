@@ -373,6 +373,33 @@ func TestAccessTokenExpiryAndGeneration(t *testing.T) {
 	}
 }
 
+// Credentials that expire while a service account's token is traded for make no request with it.
+func TestExpiryIsCheckedAfterTheToken(t *testing.T) {
+	key, _ := rsa.GenerateKey(rand.Reader, 2048)
+	pemKey := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: must(x509.MarshalPKCS8PrivateKey(key))})
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var objects atomic.Int64
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/token" {
+			// The exchange takes until after the credentials' expiry.
+			now = now.Add(2 * time.Minute)
+			json.NewEncoder(w).Encode(map[string]any{"access_token": "tok", "expires_in": 3600})
+			return
+		}
+		objects.Add(1)
+		io.WriteString(w, "x")
+	}))
+	defer srv.Close()
+	sa, _ := json.Marshal(map[string]string{"type": "service_account", "client_email": "r@p.iam.gserviceaccount.com", "private_key": string(pemKey), "token_uri": srv.URL + "/token"})
+	c, err := NewClient(Source{Provider: "gcs", Bucket: "b", Endpoint: srv.URL, ServiceAccountKey: string(sa), ExpiresAt: now.Add(time.Minute), Now: func() time.Time { return now }}, srv.Client())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(context.Background(), "k", Pin{}, 0, 0); !errors.Is(err, ErrExpired) || objects.Load() != 0 {
+		t.Errorf("%v, %d object requests", err, objects.Load())
+	}
+}
+
 func must[T any](v T, err error) T {
 	if err != nil {
 		panic(err)

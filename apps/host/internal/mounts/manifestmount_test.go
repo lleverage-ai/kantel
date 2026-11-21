@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,16 +61,18 @@ func TestParseManifest(t *testing.T) {
 	}
 	// Unlike a listing, a manifest that can't be shown exactly as written is refused, never trimmed.
 	for name, entries := range map[string][]ManifestFileEntry{
-		"dot":       {{Path: "a/../b", Key: "k", ETag: "e"}},
-		"absolute":  {{Path: "/a", Key: "k", ETag: "e"}},
-		"twice":     {{Path: "a", Key: "k", ETag: "e"}, {Path: "a", Key: "k2", ETag: "e"}},
-		"no key":    {{Path: "a", ETag: "e"}},
-		"unpinned":  {{Path: "a", Key: "k"}},
-		"negative":  {{Path: "a", Key: "k", ETag: "e", Size: -1}},
-		"file dir":  {{Path: "a", Key: "k", ETag: "e"}, {Path: "a/b", Key: "k", ETag: "e"}},
-		"dir file":  {{Path: "a", Dir: true, Key: "k"}},
-		"bad etag":  {{Path: "a", Key: "k", ETag: `"e"`}},
-		"long name": {{Path: strings.Repeat("n", 256), Key: "k", ETag: "e"}},
+		"dot":      {{Path: "a/../b", Key: "k", ETag: "e"}},
+		"absolute": {{Path: "/a", Key: "k", ETag: "e"}},
+		"twice":    {{Path: "a", Key: "k", ETag: "e"}, {Path: "a", Key: "k2", ETag: "e"}},
+		"no key":   {{Path: "a", ETag: "e"}},
+		"unpinned": {{Path: "a", Key: "k"}},
+		"negative": {{Path: "a", Key: "k", ETag: "e", Size: -1}},
+		"file dir": {{Path: "a", Key: "k", ETag: "e"}, {Path: "a/b", Key: "k", ETag: "e"}},
+		"dir file": {{Path: "a", Dir: true, Key: "k"}},
+		"bad etag": {{Path: "a", Key: "k", ETag: `"e"`}},
+		// Not a number: with an ETag, "7" and "abc" would make the same tag as this.
+		"generation": {{Path: "a", Key: "k", Generation: "7eabc"}},
+		"long name":  {{Path: strings.Repeat("n", 256), Key: "k", ETag: "e"}},
 	} {
 		raw, d := manifestBytes(t, entries...)
 		if _, err := parseManifest([]byte(raw), d, 10); !errors.Is(err, errManifest) {
@@ -115,8 +118,9 @@ func newManifestBed(t *testing.T, objects map[string]string) *manifestBed {
 		if !ok {
 			return proto.BucketSource{}, &proto.Error{Code: proto.ErrNotFound, Message: "no such source"}
 		}
-		// Every source reads the one bucket with the same key; only the source (and so the account) differs.
-		return proto.BucketSource{ID: sourceID, Provider: "s3", Bucket: "b", Endpoint: b.srv.URL,
+		// Every source reads the one bucket with the same key; only the source (and so the account) differs. No ID in
+		// the answer: the host names the source by the one it asked for.
+		return proto.BucketSource{Provider: "s3", Bucket: "b", Endpoint: b.srv.URL,
 			Credentials: &proto.BucketCredentials{AccessKeyID: "k", SecretAccessKey: "s", SessionToken: exp.String(), ExpiresAt: exp.UnixMilli()}}, nil
 	}})
 	b.m.clock = b.clock
@@ -273,6 +277,62 @@ func TestManifestMountChangedObjectIsStale(t *testing.T) {
 	b.store.mu.Unlock()
 	if rec := readRange(h, shown["b.txt"], "bytes=0-4"); rec.Code != http.StatusGone {
 		t.Errorf("b.txt, gone: %d", rec.Code)
+	}
+}
+
+// An entry that understates its object's size fails as stale, and caches nothing another mount would read short.
+func TestManifestMountSizeIsPinned(t *testing.T) {
+	short, shortDigest := manifestBytes(t, ManifestFileEntry{Path: "a.txt", Key: "blobs/a", Size: 1, ETag: etag("hello")})
+	right, rightDigest := manifestBytes(t, ManifestFileEntry{Path: "a.txt", Key: "blobs/a", Size: 5, ETag: etag("hello")})
+	b := newManifestBed(t, map[string]string{"manifests/short.json": short, "manifests/right.json": right, "blobs/a": "hello"})
+	b.source("bks_a", time.Hour)
+	h := b.mount("sbx_1", "bks_a", "manifests/short.json", shortDigest).handler()
+	if rec := readRange(h, manifestOf(t, h)["a.txt"], "bytes=0-0"); rec.Code != http.StatusGone {
+		t.Errorf("an understated size: %d %q", rec.Code, rec.Body.String())
+	}
+	h = b.mount("sbx_2", "bks_a", "manifests/right.json", rightDigest).handler()
+	if rec := readRange(h, manifestOf(t, h)["a.txt"], "bytes=0-4"); rec.Code != 200 || rec.Body.String() != "hello" {
+		t.Errorf("the right size, after: %d %q", rec.Code, rec.Body.String())
+	}
+}
+
+// While Kantel can't be asked, a mount whose credentials expired asks it at most once per backoff, not on each read.
+func TestExpiredSourceBacksOffWhenKantelIsDown(t *testing.T) {
+	raw, digest := manifestBytes(t,
+		ManifestFileEntry{Path: "a.txt", Key: "blobs/a", Size: 5, ETag: etag("hello")},
+		ManifestFileEntry{Path: "b.txt", Key: "blobs/b", Size: 5, ETag: etag("world")},
+	)
+	b := newManifestBed(t, map[string]string{"manifests/1.json": raw, "blobs/a": "hello", "blobs/b": "world"})
+	b.source("bks_a", 10*time.Minute)
+	b.m.resolveBackoff = resolveBackoff
+	var calls atomic.Int64
+	resolve := b.m.cfg.Resolve
+	var down atomic.Bool
+	b.m.cfg.Resolve = func(ctx context.Context, sandboxID, sourceID string) (proto.BucketSource, error) {
+		calls.Add(1)
+		if down.Load() {
+			return proto.BucketSource{}, errors.New("kantel is unreachable")
+		}
+		return resolve(ctx, sandboxID, sourceID)
+	}
+	h := b.mount("sbx", "bks_a", "manifests/1.json", digest).handler()
+	shown := manifestOf(t, h)
+	down.Store(true)
+	b.advance(11 * time.Minute)
+	before := calls.Load()
+	for range 3 {
+		if rec := readRange(h, shown["a.txt"], "bytes=0-4"); rec.Code != http.StatusBadGateway {
+			t.Fatalf("expired, Kantel down: %d %q", rec.Code, rec.Body.String())
+		}
+	}
+	if n := calls.Load() - before; n != 1 {
+		t.Errorf("%d calls to Kantel for three reads within the backoff (want 1)", n)
+	}
+	down.Store(false)
+	b.source("bks_a", 10*time.Minute)
+	b.advance(resolveBackoff)
+	if rec := readRange(h, shown["b.txt"], "bytes=0-4"); rec.Body.String() != "world" {
+		t.Errorf("Kantel back, refreshed: %d %q", rec.Code, rec.Body.String())
 	}
 }
 

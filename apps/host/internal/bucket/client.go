@@ -199,6 +199,10 @@ func (c *Client) send(ctx context.Context, method string, u *url.URL, header htt
 		if err != nil {
 			return nil, err
 		}
+		if c.Expired(0) {
+			// They expired while the token was traded for.
+			return nil, ErrExpired
+		}
 		req.Header.Set("Authorization", "Bearer "+token)
 	case !c.src.Credentials.empty():
 		sign(req, c.src.Credentials, c.region, "s3", c.now())
@@ -390,10 +394,12 @@ func checkContentRange(h string, off, length int64) error {
 }
 
 // Pin is the version of an object a read must get: its ETag (If-Match), its GCS generation (that generation is
-// read, whatever is current), both, or neither (whatever the object holds now).
+// read, whatever is current), both, or neither (whatever the object holds now); and, when Size is above 0, its size,
+// which the store's answer must say the object has.
 type Pin struct {
 	ETag       string
 	Generation string
+	Size       int64
 }
 
 // Get reads length bytes of an object from off, as pin names it: a different ETag is ErrStale, and a generation
@@ -431,6 +437,10 @@ func (c *Client) Get(ctx context.Context, key string, pin Pin, off, length int64
 			resp.Body.Close()
 			return nil, fmt.Errorf("get %s: the store ignored the range and answered the whole object", key)
 		}
+		if pin.Size > 0 && resp.ContentLength >= 0 && resp.ContentLength != pin.Size {
+			resp.Body.Close()
+			return nil, fmt.Errorf("get %s: %w (%d bytes, not %d)", key, ErrStale, resp.ContentLength, pin.Size)
+		}
 		return resp.Body, nil
 	case http.StatusPartialContent:
 		if length > 0 {
@@ -438,6 +448,10 @@ func (c *Client) Get(ctx context.Context, key string, pin Pin, off, length int64
 				resp.Body.Close()
 				return nil, fmt.Errorf("get %s: %w", key, err)
 			}
+		}
+		if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok && pin.Size > 0 && total != "*" && total != strconv.FormatInt(pin.Size, 10) {
+			resp.Body.Close()
+			return nil, fmt.Errorf("get %s: %w (%s bytes, not %d)", key, ErrStale, total, pin.Size)
 		}
 		return resp.Body, nil
 	case http.StatusRequestedRangeNotSatisfiable:

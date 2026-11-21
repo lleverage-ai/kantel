@@ -791,7 +791,9 @@ func (mt *mount) getChunk(src *source, obj object, chunk int64) func(ctx context
 	return func(ctx context.Context) (io.ReadCloser, error) {
 		off := chunk * ChunkSize
 		n := min(ChunkSize, obj.size-off)
-		pin := bucket.Pin{ETag: obj.etag, Generation: obj.generation}
+		// The size too: a chunk is kept for whoever reads that version next, so it must be the object's, never cut short
+		// by a manifest entry that understates it.
+		pin := bucket.Pin{ETag: obj.etag, Generation: obj.generation, Size: obj.size}
 		body, err := src.client.Get(ctx, obj.key, pin, off, n)
 		if errors.Is(err, bucket.ErrDenied) {
 			// Rotated or expired: ask for the source again (at most once per resolveBackoff while it stays expired).

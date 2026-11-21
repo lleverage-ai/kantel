@@ -111,6 +111,9 @@ type source struct {
 	client  *bucket.Client
 	src     proto.BucketSource
 	fetched time.Time
+	// tried is when the host last asked for the source and Kantel didn't answer (with m.mu): the backoff on expired
+	// credentials counts from it too, so an outage doesn't have every read ask again.
+	tried time.Time
 }
 
 func New(cfg Config) *Manager {
@@ -259,12 +262,17 @@ func (m *Manager) client(ctx context.Context, sandboxID, sourceID string, fresh 
 	s, ok := m.sources[key]
 	m.mu.Unlock()
 	if ok {
-		expiring := s.client.Expired(expiryMargin)
-		age := m.clock().Sub(s.fetched)
-		if !fresh && !expiring && age < sourceTTL {
+		now := m.clock()
+		if !fresh && !s.client.Expired(expiryMargin) && now.Sub(s.fetched) < sourceTTL {
 			return s, nil
 		}
-		if s.client.Expired(0) && age < m.resolveBackoff {
+		m.mu.Lock()
+		asked := s.fetched
+		if s.tried.After(asked) {
+			asked = s.tried
+		}
+		m.mu.Unlock()
+		if s.client.Expired(0) && now.Sub(asked) < m.resolveBackoff {
 			return s, nil
 		}
 	}
@@ -276,10 +284,15 @@ func (m *Manager) client(ctx context.Context, sandboxID, sourceID string, fresh 
 		if ok {
 			// The control plane can't be asked now: keep using what the host has.
 			m.log.Warn("bucket source re-resolve failed; keeping the one held", "sandbox", sandboxID, "error", err)
+			m.mu.Lock()
+			s.tried = m.clock()
+			m.mu.Unlock()
 			return s, nil
 		}
 		return nil, fmt.Errorf("bucket source %s: %w", sourceID, err)
 	}
+	// The source the host asked for, whatever the answer says: its cache's principal may be named by it (principal).
+	src.ID = sourceID
 	bs := bucket.Source{Provider: src.Provider, Bucket: src.Bucket, Endpoint: src.Endpoint, Region: src.Region, Now: m.clock}
 	if c := src.Credentials; c != nil {
 		bs.Credentials = bucket.Credentials{AccessKeyID: c.AccessKeyID, SecretAccessKey: c.SecretAccessKey, SessionToken: c.SessionToken}
