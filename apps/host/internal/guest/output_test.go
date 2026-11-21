@@ -149,7 +149,8 @@ func TestKeptOutputIsCutAtItsLimitAndTheOldestDropped(t *testing.T) {
 	if err := os.Remove(filepath.Join(dir, "cmd_1", outputEndFile)); err != nil {
 		t.Fatal(err)
 	}
-	if _, last := readAll(t, client, "cmd_1", StreamStdout, 100); !last.Cut || !last.Ended {
+	// Read by an agent that restarted, from the disk alone.
+	if _, last := readAll(t, clientFor(t, (&Server{OutputDir: dir}).Handler()), "cmd_1", StreamStdout, 100); !last.Cut || !last.Ended {
 		t.Fatalf("with no end file: %+v", last)
 	}
 	// A running command's output is kept as a later one's start makes room; the oldest ended one's goes.
@@ -283,5 +284,77 @@ func TestACutStreamStaysCutWhenItsEndFileCantBeWritten(t *testing.T) {
 	}
 	if _, last := readAll(t, client, "cmd_a", StreamStdout, 100); !last.Cut || !last.Ended {
 		t.Fatalf("with no end file: %+v", last)
+	}
+}
+
+func TestACutStreamKeepsNothingMoreAndSaysSoAfterARestart(t *testing.T) {
+	dir := t.TempDir()
+	server := &Server{OutputDir: dir}
+	server.outputs.stream, server.outputs.total = 10, 25
+	client := clientFor(t, server.Handler())
+	ctx := context.Background()
+	gates := t.TempDir()
+	gate := func(name string) string { return filepath.Join(gates, name) }
+	wait := func(name string) string { return "while [ ! -e " + gate(name) + " ]; do sleep 0.02; done" }
+	// Run by sh, not a login shell, so nothing but what they print takes room. b's stderr takes 10 of the 25, then a's
+	// stdout 10; b's stdout gets the 5 left of its 10, cut below its stream's limit.
+	sh := func(script string) []string { return []string{"sh", "-c", script} }
+	if _, err := client.StartCommand(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_a", Argv: sh(wait("a") + "; printf 0123456789")}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := client.StartCommand(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_b", Argv: sh("printf 0123456789 >&2; " + wait("b1") + "; printf 0123456789; " + wait("b2") + "; printf more")}); err != nil {
+		t.Fatal(err)
+	}
+	waitStream := func(id, stream string, size int64) {
+		t.Helper()
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if out, err := client.CommandOutput(ctx, id, stream, 0, 1); err == nil && out.Size >= size {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s's %s never reached %d bytes", id, stream, size)
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+	waitStream("cmd_b", StreamStderr, 10)
+	_ = os.WriteFile(gate("a"), nil, 0o600)
+	waitEnded(t, client, "cmd_a")
+	waitStream("cmd_a", StreamStdout, 10)
+	_ = os.WriteFile(gate("b1"), nil, 0o600)
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		out, err := client.CommandOutput(ctx, "cmd_b", StreamStdout, 0, 100)
+		if err == nil && out.Cut {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("cmd_b's stdout was never cut: %+v, %v", out, err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// c's start drops a's output, which frees room; b's stdout, cut, takes none of it.
+	if _, err := client.Exec(ctx, ExecRequest{Cwd: os.TempDir(), ID: "cmd_c", Argv: sh("printf 0123456789")}); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := client.CommandOutput(ctx, "cmd_a", StreamStdout, 0, 100); err != nil || out.Known {
+		t.Fatalf("cmd_a's output was kept: %+v, %v", out, err)
+	}
+	if got, _ := readAll(t, client, "cmd_c", StreamStdout, 100); string(got) != "0123456789" {
+		t.Fatalf("cmd_c, in the room a's output left: %q", got)
+	}
+	_ = os.WriteFile(gate("b2"), nil, 0o600)
+	waitEnded(t, client, "cmd_b")
+	got, last := readAll(t, client, "cmd_b", StreamStdout, 100)
+	if string(got) != "01234" || !last.Cut {
+		t.Fatalf("cmd_b's stdout, cut: %q, %+v", got, last)
+	}
+	// Ended with its machine (no end file), read after a restart: still cut, below its stream's limit.
+	if err := os.Remove(filepath.Join(dir, "cmd_b", outputEndFile)); err != nil {
+		t.Fatal(err)
+	}
+	if _, last := readAll(t, clientFor(t, (&Server{OutputDir: dir}).Handler()), "cmd_b", StreamStdout, 100); !last.Cut || last.Size != 5 {
+		t.Fatalf("after a restart: %+v", last)
 	}
 }

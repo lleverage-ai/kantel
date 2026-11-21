@@ -81,10 +81,13 @@ type CommandOutput struct {
 	Limit int64 `json:"limit"`
 }
 
-// outputLog is one stream of a command, appended to its file as it comes, up to max. It never fails a write: a disk
-// that refuses one stops the log, marked cut, and the command carries on.
+// outputLog is one stream of a command, appended to its file as it comes, up to max. It never fails a write: past its
+// limit, past what all commands may keep, or with a disk that refuses a write or a sync, the log stops for good, marked
+// cut (on the disk too, cutSuffix), so what it kept is always the start of the stream; the command carries on.
 type outputLog struct {
-	mu     sync.Mutex
+	mu sync.Mutex
+	// path is the stream's file.
+	path   string
 	f      *os.File
 	n      int64
 	max    int64
@@ -98,24 +101,26 @@ type outputLog struct {
 	later *time.Timer
 }
 
+// cutSuffix names the file beside a stream's that says it was cut: what a read finds after a crash, before its command's
+// end file was written.
+const cutSuffix = ".cut"
+
 func (l *outputLog) Write(p []byte) (int, error) {
 	if l == nil {
 		return len(p), nil
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.f == nil {
+	// Cut, it keeps nothing more, whatever room comes later: what it kept stays the start of the stream.
+	if l.f == nil || l.cut {
 		return len(p), nil
 	}
-	room := l.max - l.n
-	write := p
-	if int64(len(write)) > room {
-		write = write[:max(room, 0)]
-		l.cut = true
+	write, cutting := p, false
+	if room := l.max - l.n; int64(len(write)) > room {
+		write, cutting = write[:max(room, 0)], true
 	}
 	if taken := l.take(int64(len(write))); taken < int64(len(write)) {
-		write = write[:taken]
-		l.cut = true
+		write, cutting = write[:taken], true
 	}
 	if len(write) > 0 {
 		n, err := l.f.Write(write)
@@ -123,11 +128,11 @@ func (l *outputLog) Write(p []byte) (int, error) {
 		if n < len(write) && l.used != nil {
 			l.used.Add(int64(n - len(write)))
 		}
-		if err != nil {
-			l.cut = true
-			l.closeLocked()
-			return len(p), nil
-		}
+		cutting = cutting || err != nil
+	}
+	if cutting {
+		l.cutLocked()
+		return len(p), nil
 	}
 	if since := time.Since(l.synced); since >= OutputSyncEvery {
 		l.syncLocked()
@@ -159,12 +164,27 @@ func (l *outputLog) take(n int64) int64 {
 	}
 }
 
-// syncLocked syncs the file, if it is open; l.mu is held.
+// syncLocked syncs the file, if it is open; one the disk won't sync is cut. l.mu is held.
 func (l *outputLog) syncLocked() {
-	if l.f != nil {
-		_ = l.f.Sync()
+	if l.f != nil && l.f.Sync() != nil {
+		l.cutLocked()
+		return
 	}
 	l.synced = time.Now()
+}
+
+// cutLocked marks the stream cut, on the disk too, and closes it: it keeps nothing more. l.mu is held.
+func (l *outputLog) cutLocked() {
+	if !l.cut {
+		l.cut = true
+		if l.path != "" {
+			if f, err := os.OpenFile(l.path+cutSuffix, os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
+				_ = f.Sync()
+				_ = f.Close()
+			}
+		}
+	}
+	l.closeLocked()
 }
 
 // isCut says the stream went past its limit, or its disk refused it.
@@ -186,15 +206,21 @@ func (l *outputLog) close() {
 	l.closeLocked()
 }
 
+// closeLocked syncs and closes the file; one the disk won't sync is cut. l.mu is held.
 func (l *outputLog) closeLocked() {
 	if l.later != nil {
 		l.later.Stop()
 		l.later = nil
 	}
-	if l.f != nil {
-		_ = l.f.Sync()
-		_ = l.f.Close()
-		l.f = nil
+	if l.f == nil {
+		return
+	}
+	f := l.f
+	l.f = nil
+	failed := f.Sync() != nil
+	_ = f.Close()
+	if failed {
+		l.cutLocked()
 	}
 }
 
@@ -331,7 +357,7 @@ func (s *Server) openOutput(id string) *commandOutput {
 		if err != nil {
 			return nil
 		}
-		return &outputLog{f: f, max: stream, synced: time.Now(), used: &o.used, total: total}
+		return &outputLog{path: filepath.Join(dir, name), f: f, max: stream, synced: time.Now(), used: &o.used, total: total}
 	}
 	out := &commandOutput{id: id, dir: dir, stdout: open(StreamStdout), stderr: open(StreamStderr), kept: o}
 	if out.stdout == nil || out.stderr == nil {
@@ -510,8 +536,10 @@ func (s *Server) commandOutput(w http.ResponseWriter, r *http.Request) {
 	case end != nil:
 		answer.Cut = end.StderrCut
 	case !running:
-		// No end: it ended with its machine (a reboot, a crash), or as the agent restarted; cut if it filled the stream.
-		answer.Cut = answer.Size >= limit
+		// No end: it ended with its machine (a reboot, a crash), or as the agent restarted. Cut if it was marked so before,
+		// or filled the stream.
+		_, marked := os.Stat(filepath.Join(dir, stream+cutSuffix))
+		answer.Cut = marked == nil || answer.Size >= limit
 	}
 	writeJSON(w, 200, answer)
 }
