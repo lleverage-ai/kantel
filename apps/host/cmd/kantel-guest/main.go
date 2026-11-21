@@ -88,7 +88,7 @@ func main() {
 		Dial:      func(context.Context) (net.Conn, error) { return vsock.DialHost(guest.MountPort) },
 		StateFile: guest.MountsStateFile,
 	}
-	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1, Mounts: mounts}
+	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1, Mounts: mounts, OutputDir: guest.OutputDir}
 	if self, err := os.Executable(); err == nil && guest.UsableTrampoline(self) {
 		server.Trampoline = self
 	} else {

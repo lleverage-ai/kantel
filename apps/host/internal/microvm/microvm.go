@@ -4434,6 +4434,27 @@ func (m *Manager) CommandStatus(ctx context.Context, sandboxID, commandID string
 	return out, nil
 }
 
+// CommandOutput is a part of a command's output as the guest keeps it on the sandbox's disk (guest.OutputDir). One whose
+// output the guest doesn't keep is not_found; a guest from before kept output is unsupported.
+func (m *Manager) CommandOutput(ctx context.Context, p proto.ExecOutputParams) (proto.ExecOutput, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return proto.ExecOutput{}, err
+	}
+	out, err := client.CommandOutput(ctx, p.CommandID, p.Stream, p.Offset, p.Length)
+	switch {
+	case guest.IsUnknownRoute(err):
+		return proto.ExecOutput{}, &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's guest agent keeps no command output; it is kept from its next boot on a current image"}
+	case guest.IsRefused(err):
+		return proto.ExecOutput{}, &proto.Error{Code: proto.ErrInvalid, Message: guest.RefusalMessage(err)}
+	case err != nil:
+		return proto.ExecOutput{}, err
+	case !out.Known:
+		return proto.ExecOutput{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s keeps no output of command %s", p.SandboxID, p.CommandID)}
+	}
+	return proto.ExecOutput{Data: out.Data, Offset: out.Offset, Size: out.Size, Ended: out.Ended, Truncated: out.Cut, Limit: out.Limit}, nil
+}
+
 // KillCommand kills a command the guest knows by its ID, and its process group, saying whether it was running. One the
 // guest doesn't know, or a guest from before, is not killed.
 func (m *Manager) KillCommand(ctx context.Context, sandboxID, commandID string) (bool, error) {

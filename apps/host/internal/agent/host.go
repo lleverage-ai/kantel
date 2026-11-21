@@ -325,7 +325,7 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 	total := hostinfo.MemoryMiB()
 	reserve := h.cfg.reserveMemoryMiB(total)
-	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep, proto.FeatureSandboxEnv}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureExecOutput, proto.FeatureSnapshotKeep, proto.FeatureSandboxEnv}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -1056,6 +1056,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return h.killCommand(ctx, p)
+	case proto.MethodExecOutput:
+		p, err := decode[proto.ExecOutputParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.commandOutput(ctx, p)
 	case proto.MethodFileRead:
 		p, err := decode[proto.FileParams](params)
 		if err != nil {
