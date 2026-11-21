@@ -101,6 +101,7 @@ impl HostCommand for Peek {
             let file = request
                 .files
                 .file(path)
+                .await?
                 .ok_or_else(|| anyhow::anyhow!("{path}: no such file"))?;
             let range = request
                 .files

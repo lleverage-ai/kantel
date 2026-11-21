@@ -234,7 +234,9 @@ if the command changed it; symbolic links in a path are followed as the shell fo
 doesn't hold it back; its own `cap` does. A file too large to take whole is read in ranges (`read_range(path, start,
 len)`), each of the file as it was when the command started; `file(path)` gives its size and, when its bytes are the
 workspace's (untouched, or a staged output), the workspace's id for it (`HostFile { id, size }`, `id: None` for a
-file the command wrote in the shell), for an embedder whose own child process reads the file from its storage. The `HostReply` has the exit code, stdout and stderr, and the files it writes and
+file the command wrote in the shell), for an embedder whose own child process reads the file from its storage. The
+guest's index names the file, so `file` checks the id with the workspace (`host_read(id, 0)`) and gives the
+workspace's size: an id the workspace never gave this command is an error, never handed out. The `HostReply` has the exit code, stdout and stderr, and the files it writes and
 removes. A host command never commits: its changes become the shell command's own and are saved by its one commit,
 so a stopped or cancelled command, an unknown outcome and the next command are handled once for everything.
 

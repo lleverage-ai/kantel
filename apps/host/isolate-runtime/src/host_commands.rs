@@ -22,7 +22,7 @@ use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 
-use crate::workspace::{BoxFuture, Staged, Workspace};
+use crate::workspace::{BoxFuture, ReadError, Staged, Workspace};
 
 /// One host command, registered under a name. `run` may be called for several sandboxes at once.
 pub trait HostCommand: Send + Sync {
@@ -167,17 +167,33 @@ impl HostFiles {
     /// A file, if `path` is one (symbolic links followed): its workspace file id when its bytes are the workspace's
     /// (`None` when the command wrote it in the shell), and its size. The id is for an embedder that reads the file
     /// from its own storage; [`read_range`](Self::read_range) reads it either way.
-    pub fn file(&self, path: &str) -> Option<HostFile> {
-        match self.files.get(&self.resolve(path)?)? {
-            Indexed::Workspace { file, size } => Some(HostFile {
-                id: Some(file.clone()),
-                size: *size,
-            }),
-            Indexed::Inline(_, len) => Some(HostFile {
-                id: None,
-                size: *len as u64,
-            }),
-        }
+    ///
+    /// The id comes from the guest's index, so it is checked with the workspace first: a file the workspace never
+    /// gave this command (another sandbox's, or made up) is an error, never an id, and the size is the workspace's.
+    pub async fn file(&self, path: &str) -> Result<Option<HostFile>> {
+        let Some(indexed) = self.resolve(path).and_then(|rel| self.files.get(&rel)) else {
+            return Ok(None);
+        };
+        let file = match indexed {
+            Indexed::Inline(_, len) => {
+                return Ok(Some(HostFile {
+                    id: None,
+                    size: *len as u64,
+                }));
+            }
+            Indexed::Workspace { file, .. } => file,
+        };
+        // A read of at most nothing: refused before it is read with the file's size, or empty for an empty file,
+        // only for a file this workspace gave.
+        let size = match self.workspace(path)?.host_read(file, 0).await {
+            Ok(bytes) => bytes.len() as u64,
+            Err(ReadError::TooLarge { size, .. }) => size,
+            Err(e) => bail!("{path}: {e}"),
+        };
+        Ok(Some(HostFile {
+            id: Some(file.clone()),
+            size,
+        }))
     }
 
     /// A file's bytes, at most `cap`: `path` absolute, or relative to the shell's working directory, and in
@@ -189,7 +205,7 @@ impl HostFiles {
                 if *len > cap {
                     bail!("{path}: file too large ({len} bytes; at most {cap})");
                 }
-                self.inline(path, *off, *len)
+                self.inline(path, *off, *len).map(<[u8]>::to_vec)
             }
             Indexed::Workspace { file, .. } => self
                 .workspace(path)?
@@ -206,7 +222,7 @@ impl HostFiles {
         match self.indexed(path)? {
             Indexed::Inline(off, size) => {
                 let bytes = self.inline(path, *off, *size)?;
-                Ok(crate::workspace::range_of(&bytes, start, len).to_vec())
+                Ok(crate::workspace::range_of(bytes, start, len).to_vec())
             }
             Indexed::Workspace { file, .. } => self
                 .workspace(path)?
@@ -225,10 +241,9 @@ impl HostFiles {
             .ok_or_else(|| anyhow!("{path}: no such file"))
     }
 
-    fn inline(&self, path: &str, off: usize, len: usize) -> Result<Vec<u8>> {
+    fn inline(&self, path: &str, off: usize, len: usize) -> Result<&[u8]> {
         self.payload
             .get(off..off + len)
-            .map(<[u8]>::to_vec)
             .ok_or_else(|| anyhow!("{path}: bad inline file"))
     }
 
@@ -431,8 +446,59 @@ pub(crate) fn pack_reply(cwd: &str, reply: &HostReply) -> Result<Vec<u8>> {
 #[cfg(test)]
 mod tests {
     use std::collections::HashMap;
+    use std::time::Instant;
 
-    use super::{follow_links, workspace_path};
+    use serde_json::{Value, json};
+
+    use super::{HostFile, follow_links, request, workspace_path};
+    use crate::workspace::memory::RecordProvider;
+    use crate::workspace::{FilesystemProvider, Node};
+
+    /// The ids a host command is given come from the guest's index, so they are checked with the workspace: only a
+    /// file it gave (a view's, or one staged in it) has an id, with the workspace's size.
+    #[tokio::test]
+    async fn only_ids_the_workspace_gave_are_given_out() {
+        let provider = RecordProvider::default();
+        provider.seed("s", &[("a.txt", b"alpha\n")]);
+        let ws = provider.open("s", &Value::Null).unwrap();
+        let issued = match ws.view().await.unwrap().entries.get("a.txt") {
+            Some(Node::File { file, .. }) => file.clone(),
+            other => panic!("{other:?}"),
+        };
+        let staged = ws.stage("out.txt", b"staged\n".to_vec()).await.unwrap();
+        let file = |sha: &str, size: u64| json!({ "kind": "file", "sha": sha, "size": size });
+        let meta = json!({
+            "name": "t",
+            "cwd": "/workspace",
+            "index": {
+                // The guest's size is ignored for an issued file: the workspace's is given.
+                "a.txt": file(&issued, 999),
+                "out.txt": file(&staged.blob, 7),
+                "made-up.txt": file("blob-999", 1),
+                "zeros.txt": file(&"0".repeat(64), 1),
+                "inline.txt": { "kind": "file", "data": [0, 3] },
+            },
+        });
+        let files = request("s".into(), Instant::now(), Some(ws), &meta, b"abc".to_vec())
+            .unwrap()
+            .files;
+        let given = |id: &str, size: u64| {
+            Some(HostFile {
+                id: Some(id.into()),
+                size,
+            })
+        };
+        assert_eq!(files.file("a.txt").await.unwrap(), given(&issued, 6));
+        assert_eq!(files.file("out.txt").await.unwrap(), given(&staged.blob, 7));
+        assert_eq!(
+            files.file("inline.txt").await.unwrap(),
+            Some(HostFile { id: None, size: 3 })
+        );
+        assert_eq!(files.file("missing.txt").await.unwrap(), None);
+        for forged in ["made-up.txt", "zeros.txt"] {
+            assert!(files.file(forged).await.is_err(), "{forged}");
+        }
+    }
 
     #[test]
     fn links_are_followed_inside_the_workspace_only() {
