@@ -21,7 +21,7 @@ import { Bash, defineCommand } from "just-bash/browser";
 import { latin1 } from "../common/text.js";
 import { Chunks, egressFetch, unpack } from "../common/web.js";
 import { describeFsError } from "./fs-errors.js";
-import { abs, manifestFilesystem, normalise, ROOT } from "./manifest-fs.js";
+import { abs, manifestFilesystem, normalise, ROOT, rel } from "./manifest-fs.js";
 import { prescan } from "./prescan.js";
 import { message, UNAVAILABLE } from "./unavailable.js";
 
@@ -68,17 +68,38 @@ export function createShell(ops, options = {}) {
 		let needsMicrovm;
 		let terminated;
 
+		/** Where a file at `full` goes: in its directory as the shell resolves it (through symbolic links), what of it
+		 * is missing made below the part that is there. */
+		async function within(full) {
+			const name = full.slice(full.lastIndexOf("/") + 1);
+			const missing = [];
+			let dir = full.slice(0, full.lastIndexOf("/")) || "/";
+			for (;;) {
+				try {
+					const real = await fs.realpath(dir);
+					const target = [real === "/" ? "" : real, ...missing].join("/");
+					if (missing.length > 0) await fs.mkdir(target, { recursive: true });
+					return `${target}/${name}`;
+				} catch (error) {
+					if (dir === "/") throw error;
+					missing.unshift(dir.slice(dir.lastIndexOf("/") + 1));
+					dir = dir.slice(0, dir.lastIndexOf("/")) || "/";
+				}
+			}
+		}
+
 		/** Apply a node/python run's or a host command's file changes (removals, directories, writes, links). */
 		async function apply(result, slice) {
 			for (const path of result.removes ?? []) await fs.rm(abs(path), { recursive: true, force: true });
 			for (const path of result.mkdirs ?? []) await fs.mkdir(abs(path), { recursive: true });
 			for (const w of result.writes ?? []) {
-				const full = abs(w.path);
-				await fs.mkdir(full.slice(0, full.lastIndexOf("/")) || "/", { recursive: true });
+				const full = await within(abs(w.path));
 				if (w.staged) {
 					if (!files.adoptStaged) throw new Error(`${w.path}: this shell's filesystem can't keep a staged output`);
 					await fs.rm(full, { recursive: true, force: true });
-					files.adoptStaged(w.path, w.staged, w.mode);
+					// Through a link out of the workspace, it isn't kept: nothing there is committed.
+					const at = rel(full);
+					if (at !== undefined && at !== "") files.adoptStaged(at, w.staged, w.mode);
 					continue;
 				}
 				await fs.writeFile(full, slice(w.data).slice());

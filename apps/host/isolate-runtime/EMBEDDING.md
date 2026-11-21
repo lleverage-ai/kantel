@@ -215,14 +215,17 @@ running nor reported as `needsMicrovm`.
 cancelled if the shell cancels it (`timeout`) or the command is stopped. The `HostRequest` has the arguments, working
 directory, environment and stdin, and `files`: the shell's files as they are at that moment (`read(path, cap)` reads
 one, a path absolute or relative to the working directory and inside `/workspace`, through the workspace or inline
-if the command changed it). The `HostReply` has the exit code, stdout and stderr, and the files it writes and
+if the command changed it; symbolic links in a path are followed as the shell follows them, and one leading out of
+`/workspace` is refused). The `HostReply` has the exit code, stdout and stderr, and the files it writes and
 removes. A host command never commits: its changes become the shell command's own and are saved by its one commit,
 so a stopped or cancelled command, an unknown outcome and the next command are handled once for everything.
 
 - Small outputs come back inline (`HostWrite::Bytes`; at most 64 MiB inline per reply, stdout and stderr included).
 - A large output is staged first (`files.stage(path, bytes)`) and answered as `HostWrite::Staged`: the shell keeps
   it as a file it reads only if the command does (`adoptStaged` in the shell filesystem), and its commit names the
-  staged blob, so the bytes never pass through the isolate.
+  staged blob, so the bytes never pass through the isolate. `files.stage` gives the bytes' SHA-256 as the staged
+  `hash`, so an output that is what the file already was (bytes and mode) is no change, as an inline one isn't. The
+  shell knows a staged output by its body, not its path: anything that replaces the body makes it an ordinary file.
 
 An error from `run` is the command's failure (exit 1, the error on stderr). `tests/host_commands.rs` runs these
 through Kantel's guest shell.

@@ -20,6 +20,7 @@ use std::time::Instant;
 
 use anyhow::{Result, anyhow, bail};
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::workspace::{BoxFuture, Staged, Workspace};
 
@@ -62,6 +63,8 @@ pub struct HostFiles {
     cwd: String,
     files: HashMap<String, Indexed>,
     dirs: Vec<String>,
+    /// Symbolic links, by path, to their targets as the shell has them.
+    links: HashMap<String, String>,
     payload: Arc<Vec<u8>>,
     workspace: Option<Arc<dyn Workspace>>,
 }
@@ -90,15 +93,51 @@ fn workspace_path(cwd: &str, path: &str) -> Option<String> {
     Some(parts[1..].join("/"))
 }
 
+/// The most links followed resolving one path, as the shell's filesystem allows.
+const MAX_LINK_HOPS: usize = 40;
+
+/// `path` as [`workspace_path`] gives it, with the shell's symbolic links in it followed (each of its components,
+/// the last too) as the shell follows them; None if it, or a link on the way, leads outside `/workspace`, or the
+/// links loop.
+fn follow_links(links: &HashMap<String, String>, cwd: &str, path: &str) -> Option<String> {
+    let mut rel = workspace_path(cwd, path)?;
+    let mut hops = 0;
+    'again: loop {
+        let parts: Vec<&str> = rel.split('/').filter(|p| !p.is_empty()).collect();
+        for at in 0..parts.len() {
+            let here = parts[..=at].join("/");
+            let Some(target) = links.get(&here) else {
+                continue;
+            };
+            hops += 1;
+            if hops > MAX_LINK_HOPS {
+                return None;
+            }
+            // A relative target is from the link's directory; the rest of the path follows it.
+            let dir = format!("/workspace/{}", parts[..at].join("/"));
+            let rest = parts[at + 1..].join("/");
+            let joined = if rest.is_empty() {
+                target.clone()
+            } else {
+                format!("{}/{rest}", target.trim_end_matches('/'))
+            };
+            rel = workspace_path(&dir, &joined)?;
+            continue 'again;
+        }
+        return Some(rel);
+    }
+}
+
 impl HostFiles {
     /// The files' paths, relative to `/workspace` (directories not included).
     pub fn paths(&self) -> impl Iterator<Item = &str> {
         self.files.keys().map(String::as_str)
     }
 
-    /// `path` (absolute, or relative to the shell's working directory) relative to `/workspace`, if it is in it.
+    /// `path` (absolute, or relative to the shell's working directory) relative to `/workspace`, with symbolic links
+    /// in it followed as the shell follows them, if it is in it.
     pub fn resolve(&self, path: &str) -> Option<String> {
-        workspace_path(&self.cwd, path)
+        follow_links(&self.links, &self.cwd, path)
     }
 
     /// Whether `path` is a directory in the shell's files.
@@ -146,7 +185,8 @@ impl HostFiles {
     }
 
     /// Upload an output's bytes to the workspace, for a [`HostWrite::Staged`]: nothing refers to them until the
-    /// shell command's commit names them.
+    /// shell command's commit names them. Its `hash` is the bytes' SHA-256, which tells the shell an output that is
+    /// what the file already was (no change to commit).
     pub async fn stage(&self, path: &str, bytes: Vec<u8>) -> Result<Staged> {
         let rel = self
             .resolve(path)
@@ -155,7 +195,10 @@ impl HostFiles {
             .workspace
             .as_ref()
             .ok_or_else(|| anyhow!("{path}: no workspace to stage it in"))?;
-        workspace.stage(&rel, bytes).await
+        let hash = hex::encode(Sha256::digest(&bytes));
+        let mut staged = workspace.stage(&rel, bytes).await?;
+        staged.hash.get_or_insert(hash);
+        Ok(staged)
     }
 }
 
@@ -212,9 +255,15 @@ pub(crate) fn request(
     };
     let mut files = HashMap::new();
     let mut dirs = Vec::new();
+    let mut links = HashMap::new();
     for (path, entry) in meta["index"].as_object().into_iter().flatten() {
         match entry["kind"].as_str() {
             Some("dir") => dirs.push(path.clone()),
+            Some("symlink") => {
+                if let Some(target) = entry["target"].as_str() {
+                    links.insert(path.clone(), target.to_string());
+                }
+            }
             Some("file") => {
                 if let Some(file) = entry["sha"].as_str() {
                     let size = entry["size"].as_u64().unwrap_or(0);
@@ -254,6 +303,7 @@ pub(crate) fn request(
             cwd,
             files,
             dirs,
+            links,
             payload: Arc::new(payload),
             workspace,
         },
@@ -300,7 +350,7 @@ pub(crate) fn pack_reply(cwd: &str, reply: &HostReply) -> Result<Vec<u8>> {
             HostWrite::Staged { path, staged, mode } => (
                 path,
                 mode,
-                json!({ "staged": { "blob": staged.blob, "size": staged.size } }),
+                json!({ "staged": { "blob": staged.blob, "size": staged.size, "hash": staged.hash } }),
             ),
         };
         entry["path"] = json!(rel(path)?);
@@ -326,7 +376,44 @@ pub(crate) fn pack_reply(cwd: &str, reply: &HostReply) -> Result<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
-    use super::workspace_path;
+    use std::collections::HashMap;
+
+    use super::{follow_links, workspace_path};
+
+    #[test]
+    fn links_are_followed_inside_the_workspace_only() {
+        let links: HashMap<String, String> = [
+            ("current.csv", "data.csv"),
+            ("latest", "runs/2"),
+            ("runs/2/up", "../../data.csv"),
+            ("abs", "/workspace/runs/2"),
+            ("escape", "/etc"),
+            ("out", "../.."),
+            ("loop", "loop"),
+        ]
+        .into_iter()
+        .map(|(a, b)| (a.to_string(), b.to_string()))
+        .collect();
+        let at = |cwd: &str, path: &str| follow_links(&links, cwd, path);
+        assert_eq!(at("/workspace", "current.csv").as_deref(), Some("data.csv"));
+        assert_eq!(
+            at("/workspace", "latest/r.txt").as_deref(),
+            Some("runs/2/r.txt")
+        );
+        assert_eq!(
+            at("/workspace/latest", "r.txt").as_deref(),
+            Some("runs/2/r.txt")
+        );
+        assert_eq!(at("/workspace", "latest/up").as_deref(), Some("data.csv"));
+        assert_eq!(
+            at("/workspace", "abs/r.txt").as_deref(),
+            Some("runs/2/r.txt")
+        );
+        assert_eq!(at("/workspace", "plain.txt").as_deref(), Some("plain.txt"));
+        for outside in ["escape/passwd", "out", "loop"] {
+            assert_eq!(at("/workspace", outside), None, "{outside}");
+        }
+    }
 
     #[test]
     fn paths_resolve_inside_the_workspace_only() {

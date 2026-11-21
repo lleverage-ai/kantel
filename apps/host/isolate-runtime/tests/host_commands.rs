@@ -61,6 +61,23 @@ impl HostCommand for Stash {
     }
 }
 
+/// `put PATH TEXT`: writes TEXT to PATH (an inline output).
+struct Put;
+impl HostCommand for Put {
+    fn run<'a>(&'a self, request: HostRequest) -> BoxFuture<'a, Result<HostReply>> {
+        Box::pin(async move {
+            Ok(HostReply {
+                writes: vec![HostWrite::Bytes {
+                    path: request.args[0].clone(),
+                    bytes: format!("{}\n", request.args[1..].join(" ")).into_bytes(),
+                    mode: None,
+                }],
+                ..Default::default()
+            })
+        })
+    }
+}
+
 /// `slow`: takes ten seconds, unless it is cancelled.
 struct Slow;
 impl HostCommand for Slow {
@@ -141,6 +158,7 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
         ))))
         .with_host_command("upper", Arc::new(Upper))
         .with_host_command("stash", Arc::new(Stash))
+        .with_host_command("put", Arc::new(Put))
         .with_host_command("slow", Arc::new(Slow))
         .with_host_command("unzip", Arc::new(Served));
     Engine::init(cfg, embedding, io.handle().clone(), false).unwrap();
@@ -196,9 +214,57 @@ fn an_embedders_host_commands_run_for_the_guest_shell() {
     let reply = io.block_on(run(&shell, reply["manifest"].clone(), "cat moved.txt"));
     assert_eq!(reply["stdout"], "hello\n", "{reply}");
 
+    // Symbolic links, to a file and to a directory: a host command reads through them as the shell does, and its
+    // outputs land where the shell resolves them.
+    let reply = io.block_on(run(
+        &shell,
+        json!({}),
+        "echo data > data.csv && ln -s data.csv current.csv && upper current.csv && mkdir -p runs/2 && \
+         echo r > runs/2/r.txt && ln -s runs/2 latest && cd latest && upper r.txt && cat r.txt.upper",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["stdout"], "DATA\nR\nR\n", "{reply}");
+    assert_eq!(
+        reply["manifest"]["runs/2/r.txt.upper"]["size"], 2,
+        "{reply}"
+    );
+    // Into a directory not there yet, below a link: made where the link leads.
+    let reply = io.block_on(run(
+        &shell,
+        reply["manifest"].clone(),
+        "put latest/new/out.txt hi && cat runs/2/new/out.txt",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["stdout"], "hi\n", "{reply}");
+    assert_eq!(
+        reply["manifest"]["runs/2/new/out.txt"]["size"], 3,
+        "{reply}"
+    );
+
+    // An untouched file keeps its entry, special mode bits too: never read, nothing committed.
+    let reply = io.block_on(run(
+        &shell,
+        json!({ "s.bin": { "kind": "file", "sha": "0".repeat(64), "size": 3, "mode": 0o4755 } }),
+        "true",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["changed"], json!([]), "{reply}");
+    assert_eq!(reply["timings"]["lazyReads"], 0, "{reply}");
+
+    // Over a workspace whose ids aren't content hashes, a staged output that is what the file already was is no
+    // change (nothing to commit over a newer write of the host's).
+    let records = Arc::new(RecordProvider::default());
+    records.seed("u", &[("stash.txt", b"same\n")]);
+    let reply = io.block_on(run_on(
+        &shell,
+        records.open("u", &Value::Null).expect("open"),
+        "stash same",
+    ));
+    assert_eq!(reply["exitCode"], 0, "{reply}");
+    assert_eq!(reply["changed"], json!([]), "{reply}");
+
     // Over a workspace whose ids aren't content hashes, a staged output over an existing file, then touched again
     // (its mode as it was), is told from the file the command started with by its bytes.
-    let records = Arc::new(RecordProvider::default());
     records.seed("r", &[("stash.txt", b"old\n")]);
     let open = || records.open("r", &Value::Null).expect("open");
     let reply = io.block_on(run_on(&shell, open(), "stash hello && chmod 644 stash.txt"));
