@@ -359,6 +359,27 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 		writeFile: async (id, path, content, mode, options) => (await on(id)).writeFile(id, path, content, mode, options),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),
 		listFiles: async (id, path) => (await on(id)).listFiles(id, path),
+		async writeFilePart(id, path, upload, offset, body) {
+			const backend = await on(id);
+			if (backend.writeFilePart === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't take files in parts");
+			}
+			return backend.writeFilePart(id, path, upload, offset, body);
+		},
+		async completeFileParts(id, path, upload, size, sha256, mode) {
+			const backend = await on(id);
+			if (backend.completeFileParts === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't take files in parts");
+			}
+			return backend.completeFileParts(id, path, upload, size, sha256, mode);
+		},
+		async abortFileParts(id, path, upload) {
+			const backend = await on(id);
+			if (backend.abortFileParts === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't take files in parts");
+			}
+			return backend.abortFileParts(id, path, upload);
+		},
 		async processes(id, limit) {
 			const backend = await on(id);
 			if (backend.processes === undefined) {

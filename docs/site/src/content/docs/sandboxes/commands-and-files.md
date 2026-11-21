@@ -177,7 +177,52 @@ curl -s -X PUT "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/files" \
 await kantel.writeFile("sbx_4kq9x2mt", { path: "bin/setup.sh", content: "#!/bin/sh\nnpm ci\n", mode: "0755" });
 ```
 
-To write bytes, send them as base64 with `"encoding": "base64"`.
+To write bytes, send them as base64 with `"encoding": "base64"`. One write takes at most 1 MiB; for a bigger file, write it in parts.
+
+## Write a large file in parts
+
+On a microVM, a file of any size up to 64 GiB goes up as raw bytes, with no base64, in parts of up to 64 MiB (67108864 bytes). Pick an `upload` ID of your own (8 to 64 letters, digits, `-` or `_`, such as a UUID), `PUT` each part as `application/octet-stream` at its `offset`, then complete the upload with the whole file's `size` and SHA-256:
+
+```sh
+upload=$(uuidgen)
+split -b 64M -d workspace.tar.gz part.
+offset=0
+for part in part.*; do
+  curl -s -X PUT "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/files/parts?path=workspace.tar.gz&upload=$upload&offset=$offset" \
+    -H "authorization: Bearer $KANTEL_API_KEY" \
+    -H "content-type: application/octet-stream" \
+    --data-binary "@$part"
+  offset=$((offset + $(stat -c %s "$part")))
+done
+curl -s -X POST "$KANTEL_URL/v1/sandboxes/sbx_4kq9x2mt/files/parts/complete" \
+  -H "authorization: Bearer $KANTEL_API_KEY" \
+  -H "content-type: application/json" \
+  -d "{\"path\": \"workspace.tar.gz\", \"upload\": \"$upload\", \"size\": $offset, \"sha256\": \"$(sha256sum workspace.tar.gz | cut -d' ' -f1)\"}"
+```
+
+```ts
+import { createHash } from "node:crypto";
+
+const sha256 = createHash("sha256").update(bytes).digest("hex");
+const upload = crypto.randomUUID();
+const part = 64 * 1024 * 1024;
+for (let offset = 0; offset < bytes.byteLength; offset += part) {
+	await kantel.writeFilePart("sbx_4kq9x2mt", bytes.subarray(offset, offset + part), { path: "workspace.tar.gz", upload, offset });
+}
+await kantel.completeFileParts("sbx_4kq9x2mt", { path: "workspace.tar.gz", upload, size: bytes.byteLength, sha256 });
+```
+
+How it behaves:
+
+- **Nothing is at the path until the completion.** The parts are kept beside the file, in the same directory, so they count against the sandbox's disk; a disk that fills is `exhausted`. The completion checks the parts come to `size` bytes with that SHA-256, and only then moves the file into place in one step, replacing what was there. A directory at the path is `conflict`.
+- **A check that fails discards the upload.** Wrong size or SHA-256 is `invalid`, with nothing at the path: send the file again under a new `upload` ID.
+- **Parts may come in any order, and several at once.** Sending a part again writes it again, so a part whose answer was lost can just be retried. A part after the upload was completed is `conflict`.
+- **Completing again is safe.** While the path still has that size and SHA-256, a second completion answers as the first, so a lost answer can be asked for again. An upload that isn't known (never started, discarded or aborted) is `conflict`.
+- **Uploads to the same path are separate.** Each `upload` ID has its own parts, and the last to complete wins.
+- **The file is the sandbox user's**, with `mode` from the completion (default `0644`; `0000` is refused).
+- **Abandoned uploads are cleaned up.** `DELETE /v1/sandboxes/{id}/files/parts?path=…&upload=…` (`abortFileParts`) discards one at once. An upload with no part for an hour is discarded, and so is every upload of a sandbox that stops without its memory; a stop that keeps memory keeps its uploads. A sandbox has at most 1024 uploads under way.
+
+Isolates, a deployment's stand-in sandboxes (with no host of their own), an image made before this feature and a host whose kantel-host predates it answer `not_supported`. `kantel scp` writes a file over 1 MiB this way, and falls back to joining smaller base64 parts with a command where parts aren't taken (an isolate, an older host, image or Kantel).
 
 ## List a directory
 
@@ -254,4 +299,4 @@ try {
 
 `kantel exec` and the other CLI commands print the error and, on the next line, what to run, such as `Resume it with: kantel resume sbx_4kq9x2mt`.
 
-<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:509-620, packages/api/src/compute-schema.ts:506-613; not-running calls: packages/compute/src/not-running.ts, packages/compute/src/service.ts requireRunning -->
+<!-- Sources (9cc20eb3): packages/api/src/compute-routes.ts:509-620, packages/api/src/compute-schema.ts:506-613; files in parts: packages/api/src/compute-routes.ts (writeFilePart, completeFileParts, abortFileParts), apps/host/internal/guest/parts.go; not-running calls: packages/compute/src/not-running.ts, packages/compute/src/service.ts requireRunning -->
