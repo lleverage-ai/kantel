@@ -6,7 +6,7 @@ with the runtime):
 | Import | What it is |
 | --- | --- |
 | `@kantel/isolate-guest` | `createGuest(options)`: a guest bundle's `__kantel` (`init(kind)` installs the guards, builds the kind's entry point, and removes every route to the ops), plus `createShell`, `manifestFilesystem`, `prescan`, `createNode`, `createPython` and the guards (`fixBuffers`, `captureShared`, `installWasmGuard`) |
-| `@kantel/isolate-guest/shell` | `createShell(ops, { filesystem, log })`: just-bash over any `ShellFilesystem`, with `node`/`python` runs, stubs for what an isolate lacks, and the parse-before-run check (`needsMicrovm`, `effects`) |
+| `@kantel/isolate-guest/shell` | `createShell(ops, { filesystem, commands, log })`: just-bash over any `ShellFilesystem`, with `node`/`python` runs, the embedder's own commands, stubs for what an isolate lacks, and the parse-before-run check (`needsMicrovm`, `effects`) |
 | `@kantel/isolate-guest/shell/manifest-fs` | `manifestFilesystem(ops)`: Kantel's filesystem, a lazy in-memory one per command over the runtime's workspace ops |
 | `@kantel/isolate-guest/shell/prescan` | `prescan(ast, lookup)`: the parse-before-run check alone, over just-bash's parse |
 | `@kantel/isolate-guest/node`, `/python` | `createNode(ops)`, `createPython(ops, lockdown)`: the node and python runtimes |
@@ -25,6 +25,41 @@ A shell filesystem is `{ open(request) }`, where `open` gives, for one command:
   commit it by its blob.
 
 The embedder's host commands (EMBEDDING.md, "Host commands") are commands of the same name in the shell.
+
+## The embedder's own commands
+
+`commands` adds commands written in JavaScript to the shell: a host command's front-end (its argument parsing and file
+references), or a small command of the embedder's own. Each is `{ name, run(args, ctx, shell), override }`:
+
+- `run` gets the arguments, just-bash's command context and `shell`, and answers just-bash's
+  `{ stdout, stderr, exitCode }`. `ctx.fs` is the command's filesystem, so what it writes there is a change of the
+  shell command like any other.
+- `shell.host(name, args, { stdin, cwd, env })` runs one of the embedder's host commands as the shell would (with the
+  files as they are, and its writes applied to the shell's files). It answers `{ exitCode, stdout, stderr }` as bytes.
+  The options default to the command's own.
+- Nothing a command gets can commit or stage. Its changes are saved by the shell command's one commit, as a host
+  command's are, so an unknown outcome or a stopped command is handled once for everything.
+- A name the shell already has is an error unless the command says `override: true`. That covers just-bash's
+  commands (`rg` is one), `curl`, `wget`, `node`, `python`, `python3` and the embedder's host commands. A clash with
+  a built-in throws from `createShell`. The host commands' names are known only when a command runs, so a clash with
+  one throws from every `exec`. A name the isolate lacks (`git`, say) needs no override, and the command then runs
+  instead of the stub and isn't refused before running.
+- A name the interpreter runs itself (`cd`, `export`, `echo`, `test` and the other shell built-ins) can't be replaced,
+  with or without `override`: just-bash runs those before any command of the name.
+- The parse-before-run check takes a few commands (`cat`, `ls`, …) as only touching files. A command that replaces one
+  of them isn't taken that way, since it may do anything.
+
+```js
+const rg = {
+	name: "rg",
+	override: true,
+	run: async (args, ctx, shell) => {
+		const done = await shell.host("rg", ["--json", ...args]);
+		return { stdout: formatMatches(done.stdout), stderr: "", exitCode: done.exitCode };
+	},
+};
+globalThis.__kantel = createGuest({ shell: { filesystem: myFilesystem(ops), commands: [rg] } });
+```
 
 ## Using it
 

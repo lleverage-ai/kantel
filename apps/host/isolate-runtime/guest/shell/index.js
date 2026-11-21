@@ -3,7 +3,7 @@
 // `node` and `python` run in a fresh isolate each (op_kt_run) over the same files, the commands an isolate lacks
 // answered by stubs (shell/unavailable.js), and a parse-before-run check for those (shell/prescan.js).
 //
-// createShell(ops, { filesystem, log }) takes any `ShellFilesystem`:
+// createShell(ops, { filesystem, commands, log }) takes any `ShellFilesystem`:
 //
 //   filesystem.open(request) -> {
 //     fs,                  // a just-bash IFileSystem with the sandbox's files under /workspace
@@ -17,7 +17,19 @@
 //
 // The embedder's host commands (src/host_commands.rs) are commands of the same name here, run on the host
 // (op_kt_host_command) with the files as childIndex gives them; a name they take is never refused as unavailable.
-import { Bash, defineCommand } from "just-bash/browser";
+//
+// `commands` are the embedder's own guest commands, written in JavaScript: `{ name, run(args, ctx, shell), override }`.
+// `run` gets just-bash's command context (`ctx.fs` is the command's filesystem, so what it writes there is the
+// command's change like any other) and `shell.host(name, args, options)`, which runs one of the embedder's host
+// commands as the shell would (its writes applied to the shell's files; `options` are `{ stdin, cwd, env }`, by default
+// the command's own) and answers `{ exitCode, stdout, stderr }` as bytes. `run` answers just-bash's
+// `{ stdout, stderr, exitCode }`. Nothing it gets can commit: its changes are saved by
+// the shell command's one commit, as a host command's are. A name the shell already has (just-bash's commands, `node`,
+// `python`, `python3`, a host command) is an error unless the command says `override: true`; one the isolate lacks
+// (git, say) is the embedder's to take, and is then neither stubbed nor refused before running. A name the interpreter
+// runs itself (cd, export, echo, test, …) can't be replaced at all. A command that replaces one the parse-before-run
+// check takes as plain (cat, say) isn't taken as plain any more.
+import { Bash, defineCommand, getCommandNames, getNetworkCommandNames } from "just-bash/browser";
 import { latin1 } from "../common/text.js";
 import { Chunks, egressFetch, unpack } from "../common/web.js";
 import { describeFsError } from "./fs-errors.js";
@@ -39,27 +51,83 @@ const fromLatin1 = (s) => {
 	return out;
 };
 
+/** The commands the shell has of its own: just-bash's, and the runtimes it runs in a fresh isolate. Not the ones it
+ * answers with a stub (it lacks them), which are the embedder's to take. */
+const BUILT_IN = new Set(
+	[...getCommandNames(), ...getNetworkCommandNames(), "node", "python", "python3"].filter(
+		(name) => !UNAVAILABLE_BY_NAME.has(name),
+	),
+);
+
+/** Names just-bash 3.6's interpreter runs itself, before any command of that name: no command can replace them. */
+const INTERPRETER = new Set(
+	[
+		": true false cd export unset exit local set break continue return eval shift getopts compgen complete compopt",
+		"pushd popd dirs source . read mapfile readarray declare typeset readonly let command shopt exec test [ echo",
+		"printf pwd alias unalias type hash ulimit umask trap times wait kill jobs fg bg disown suspend fc history help",
+		"enable builtin caller",
+	]
+		.join(" ")
+		.split(" "),
+);
+
+/** The embedder's guest commands by name, checked: each a name and a `run`, once, and a built-in only on purpose. */
+function embedderCommands(commands) {
+	if (!Array.isArray(commands)) throw new TypeError("createShell: commands is an array of { name, run, override }");
+	const byName = new Map();
+	for (const command of commands) {
+		const { name, run, override = false } = command ?? {};
+		if (typeof name !== "string" || !/^[A-Za-z0-9_][A-Za-z0-9_.+-]*$/.test(name) || typeof run !== "function") {
+			throw new TypeError(`createShell: a command is { name, run(args, ctx, shell), override }, not ${String(name)}`);
+		}
+		if (byName.has(name)) throw new Error(`createShell: two commands named ${name}`);
+		if (INTERPRETER.has(name)) throw new Error(`createShell: ${name} is the shell's own, which no command replaces`);
+		if (BUILT_IN.has(name) && override !== true) {
+			throw new Error(`createShell: the shell has a ${name} command; pass override: true to replace it`);
+		}
+		byName.set(name, { name, run, override: override === true });
+	}
+	return byName;
+}
+
 /**
  * The shell isolate's entry point (`{ exec(json) }`). `ops` are the runtime's (the shell kind's); `filesystem` is a
- * `ShellFilesystem` (Kantel's manifest one by default); `log(level, line)` gets a line per command.
+ * `ShellFilesystem` (Kantel's manifest one by default); `log(level, line)` gets a line per command; `commands` are the
+ * embedder's own guest commands (the header says how they run). A command clashing with a built-in throws here; one
+ * clashing with a host command throws from every `exec`, as the host commands' names are known only then.
  */
 export function createShell(ops, options = {}) {
 	// The second argument was `log` alone before options; still accepted.
-	const { filesystem = manifestFilesystem(ops), log } = typeof options === "function" ? { log: options } : options;
+	const {
+		filesystem = manifestFilesystem(ops),
+		log,
+		commands = [],
+	} = typeof options === "function" ? { log: options } : options;
+	const own = embedderCommands(commands);
 	let nextRun = 1;
 	// The embedder's host commands, by name: served, so neither stubbed nor refused.
 	let hostNames;
 	const hostCommands = () => {
-		hostNames ??= new Set(JSON.parse(ops.op_kt_host_commands()));
+		if (!hostNames) {
+			const names = new Set(JSON.parse(ops.op_kt_host_commands()));
+			const clash = [...own.values()].find((c) => names.has(c.name) && !c.override);
+			// Every command fails alike, rather than the clash going unnoticed until the name is run.
+			if (clash) throw new Error(`createShell: ${clash.name} is a host command; pass override: true to replace it`);
+			hostNames = names;
+		}
 		return hostNames;
 	};
+	/** A name the isolate otherwise lacks that is served here: a host command's or the embedder's own. */
+	const served = (name) => own.has(name) || hostCommands().has(name);
 	/** The program's `{ command, reason }` if the isolate doesn't have it. */
 	const unavailableProgram = (name) =>
-		UNAVAILABLE_BY_NAME.has(name) && !hostCommands().has(name)
+		UNAVAILABLE_BY_NAME.has(name) && !served(name)
 			? { command: name, reason: `${UNAVAILABLE_BY_NAME.get(name)}.` }
 			: undefined;
 
 	async function exec(request) {
+		// A host command the embedder's own command clashes with fails every command, before any of it runs.
+		hostCommands();
 		const t0 = performance.now();
 		const files = await filesystem.open(request);
 		const { fs } = files;
@@ -145,37 +213,54 @@ export function createShell(ops, options = {}) {
 			});
 
 		// The embedder's: run on the host, with the files as they are now; their changes come back like a run's.
-		const host = (name) =>
-			defineCommand(name, async (args, ctx) => {
-				const runId = nextRun++;
-				// The shell's `timeout` cancels it on the host too, from before it is prepared: a cancellation while the
-				// files are indexed stops it before it starts.
-				const onAbort = () => ops.op_kt_host_cancel(runId);
-				ctx.signal?.addEventListener?.("abort", onAbort, { once: true });
-				let raw;
-				try {
-					const chunks = new Chunks();
-					const index = await files.childIndex(chunks);
-					const stdin = chunks.add(fromLatin1(String(ctx.stdin ?? "")));
-					const env = ctx.exportedEnv ?? Object.fromEntries(ctx.env ?? []);
-					if (ctx.signal?.aborted) return { stdout: "", stderr: `${name}: cancelled\n`, exitCode: 130 };
-					const meta = { name, args, cwd: ctx.cwd, env, index, stdin, runId };
-					raw = await ops.op_kt_host_command(JSON.stringify(meta), chunks.bytes());
-				} finally {
-					ctx.signal?.removeEventListener?.("abort", onAbort);
+		// Answers the exit code, stdout and stderr as bytes, the host's writes applied.
+		async function runHost(name, args, ctx, { stdin = ctx.stdin, cwd = ctx.cwd, env } = {}) {
+			if (!hostCommands().has(name)) throw new Error(`${name}: no such host command`);
+			const runId = nextRun++;
+			// The shell's `timeout` cancels it on the host too, from before it is prepared: a cancellation while the
+			// files are indexed stops it before it starts.
+			const onAbort = () => ops.op_kt_host_cancel(runId);
+			ctx.signal?.addEventListener?.("abort", onAbort, { once: true });
+			let raw;
+			try {
+				const chunks = new Chunks();
+				const index = await files.childIndex(chunks);
+				const input = stdin instanceof Uint8Array ? stdin : fromLatin1(String(stdin ?? ""));
+				const at = chunks.add(input);
+				env ??= ctx.exportedEnv ?? Object.fromEntries(ctx.env ?? []);
+				if (ctx.signal?.aborted) {
+					return {
+						exitCode: 130,
+						stdout: new Uint8Array(0),
+						stderr: new TextEncoder().encode(`${name}: cancelled\n`),
+					};
 				}
-				const { meta: result, data } = unpack(raw);
-				const slice = (at) => data.subarray(at[0], at[0] + at[1]);
-				await apply(result, slice);
-				return {
-					stdout: latin1(slice(result.stdout)),
-					stdoutKind: "bytes",
-					stderr: new TextDecoder().decode(slice(result.stderr)),
-					exitCode: result.exitCode,
-				};
-			});
+				const meta = { name, args, cwd: normalise(ctx.cwd, cwd), env, index, stdin: at, runId };
+				raw = await ops.op_kt_host_command(JSON.stringify(meta), chunks.bytes());
+			} finally {
+				ctx.signal?.removeEventListener?.("abort", onAbort);
+			}
+			const { meta: result, data } = unpack(raw);
+			const slice = (at) => data.subarray(at[0], at[0] + at[1]);
+			await apply(result, slice);
+			return { exitCode: result.exitCode, stdout: slice(result.stdout), stderr: slice(result.stderr) };
+		}
+		const asResult = (r) => ({
+			stdout: latin1(r.stdout),
+			stdoutKind: "bytes",
+			stderr: new TextDecoder().decode(r.stderr),
+			exitCode: r.exitCode,
+		});
+		const host = (name) => defineCommand(name, async (args, ctx) => asResult(await runHost(name, args, ctx)));
+		// The embedder's own guest commands: what they get reaches the files only through the shell.
+		const embedder = (command) =>
+			defineCommand(command.name, async (args, ctx) =>
+				command.run(args, ctx, {
+					host: (name, hostArgs = [], options = {}) => runHost(name, hostArgs, ctx, options),
+				}),
+			);
 
-		const unavailable = UNAVAILABLE.filter(([name]) => !hostCommands().has(name)).map(([name, reason]) =>
+		const unavailable = UNAVAILABLE.filter(([name]) => !served(name)).map(([name, reason]) =>
 			defineCommand(name, async () => {
 				needsMicrovm ??= { command: name, reason: `${reason}.` };
 				return { stdout: "", stderr: message(name), exitCode: 127 };
@@ -186,12 +271,12 @@ export function createShell(ops, options = {}) {
 			fs,
 			cwd,
 			env: { HOME: ROOT, ...request.env },
+			// Each name once: the embedder's own command replaces the shell's of that name (override, checked above).
 			customCommands: [
 				...unavailable,
-				child("node"),
-				child("python"),
-				child("python3"),
-				...[...hostCommands()].map(host),
+				...["node", "python", "python3"].filter((name) => !own.has(name)).map(child),
+				...[...hostCommands()].filter((name) => !own.has(name)).map(host),
+				...[...own.values()].map(embedder),
 			],
 			executionLimits: { maxOutputSize: MAX_OUTPUT_BYTES },
 			// The host's egress proxy decides what may leave; curl and wget get a plain fetch with no allow-list of
@@ -205,7 +290,8 @@ export function createShell(ops, options = {}) {
 		let refused;
 		if (request.env?.PATH === undefined && (cwd === ROOT || cwd.startsWith(`${ROOT}/`))) {
 			try {
-				refused = prescan(bash.transform(request.command).ast, unavailableProgram);
+				// The embedder's commands may do anything, so one replacing a plain command isn't taken as plain.
+				refused = prescan(bash.transform(request.command).ast, unavailableProgram, own);
 			} catch {
 				// A command the parser refuses fails as it always has, when it runs.
 			}

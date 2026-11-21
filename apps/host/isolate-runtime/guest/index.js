@@ -49,7 +49,8 @@ const hostConsole = {
 /**
  * The guest bundle's `__kantel` object (EMBEDDING.md, "The guest bundle"): `init(kind)` installs the memory guards,
  * builds that kind's entry point and removes every route from guest code to the ops. `options.shell` goes to
- * createShell (shell/index.js): `{ filesystem }` for an embedder's own `ShellFilesystem`.
+ * createShell (shell/index.js): `{ filesystem }` for an embedder's own `ShellFilesystem`, `{ commands }` for its own
+ * commands in the shell.
  */
 export function createGuest(options = {}) {
 	return { init: (kind) => init(kind, options) };
