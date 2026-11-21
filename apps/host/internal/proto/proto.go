@@ -552,6 +552,12 @@ const FeatureBucketMounts = "mounts-bucket"
 // couldn't: a listing error, or a guest that didn't take the new listing.
 const FeatureMountsSync = "mounts-sync"
 
+// FeatureManifestMounts (HOST_FEATURES.mountsManifest): the host mounts CreateParams' manifest Mounts read-only in
+// microVM sandboxes, as it does bucket mounts but from the manifest object the mount names (checked against its
+// digest) rather than a listing, and reads bucket sources whose credentials are an access token, or expire
+// (BucketCredentials.AccessToken, ExpiresAt). Experimental, as bucket mounts are.
+const FeatureManifestMounts = "mounts-manifest"
+
 // FeatureTemplateImageBuild: the host builds templates' custom images (a Dockerfile, or an image reference) in a build
 // microVM whose only network is the sandbox egress proxy, and boots them through Kantel's initramfs (the injected
 // guest agent). Reported only when its settings switch the builder on (templateBuilder) and it injects the agent. A
@@ -1015,8 +1021,9 @@ type GuestDocker struct {
 
 // Mount kinds.
 const (
-	MountBundle = "bundle"
-	MountBucket = "bucket"
+	MountBundle   = "bundle"
+	MountBucket   = "bucket"
+	MountManifest = "manifest"
 )
 
 // Mount is one read-only mount a sandbox is created with (HostMount): the sandbox sees it at Path and can't write to
@@ -1024,13 +1031,20 @@ const (
 // once and attaches it as a read-only drive. A bucket mount is a prefix of an account's bucket source. The host lists
 // it once when it mounts (the manifest: every object's path, size, mtime and ETag), so listing and stat in the sandbox
 // are local, and fetches an object's bytes only when the sandbox reads them, through the host's read cache.
+//
+// A manifest mount (FeatureManifestMounts) is the same, except that nothing is listed: its files are the entries of
+// a manifest the account wrote to its own bucket (the object at ManifestKey, which must hash to Digest), each naming
+// the object that holds its bytes and that object's generation or ETag. It never changes: another set of files is
+// another manifest, so another mount.
 type Mount struct {
 	// Path is where it appears in the sandbox: absolute, and not one of the system's own directories.
 	Path string `json:"path"`
-	// Kind is "bundle" or "bucket".
+	// Kind is "bundle", "bucket" or "manifest".
 	Kind string `json:"kind"`
-	// Digest is a bundle's (kind "bundle"): sha256:<64 hex digits>.
+	// Digest is a bundle's (kind "bundle"), or a manifest's object's (kind "manifest"): sha256:<64 hex digits>.
 	Digest string `json:"digest,omitempty"`
+	// ManifestKey is the object holding a manifest mount's manifest, in its bucket source.
+	ManifestKey string `json:"manifestKey,omitempty"`
 	// BucketSourceID is the account's bucket source: the host asks Kantel for its location and credentials
 	// (bucket.fetch) and keeps them in memory only. They never reach the sandbox.
 	BucketSourceID string `json:"bucketSourceId,omitempty"`
@@ -1101,12 +1115,17 @@ type BucketSource struct {
 	Credentials *BucketCredentials `json:"credentials,omitempty"`
 }
 
-// BucketCredentials is an access key (an S3 key or a GCS HMAC key), or a GCS service account's JSON key.
+// BucketCredentials is an access key (an S3 key or a GCS HMAC key), a GCS service account's JSON key, or (from a host
+// with FeatureManifestMounts) a short-lived OAuth access token sent as a bearer.
 type BucketCredentials struct {
 	AccessKeyID       string `json:"accessKeyId,omitempty"`
 	SecretAccessKey   string `json:"secretAccessKey,omitempty"`
 	SessionToken      string `json:"sessionToken,omitempty"`
 	ServiceAccountKey string `json:"serviceAccountKey,omitempty"`
+	AccessToken       string `json:"accessToken,omitempty"`
+	// ExpiresAt (unix milliseconds) is when short-lived credentials stop working: the host uses them no later, and
+	// asks for the source again shortly before. 0: they don't expire.
+	ExpiresAt int64 `json:"expiresAt,omitempty"`
 }
 
 // EventMounts is the event a host sends when a sandbox's mounts change status after its create answered

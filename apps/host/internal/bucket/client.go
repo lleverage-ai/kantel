@@ -1,7 +1,7 @@
 // Package bucket reads S3-compatible object stores for the host's bucket mounts: one paginated ListObjectsV2 per
 // manifest, and ranged GETs of an object's bytes, signed with AWS Signature Version 4. Google Cloud Storage is read
 // the same way, through its S3-compatible XML API: signed with an HMAC key, or with a service account's key's OAuth
-// token (read-only scope) as a bearer.
+// token (read-only scope) as a bearer, or with a short-lived access token the account gives (AccessToken).
 //
 // Credentials stay in the host: nothing here puts them in an error or a log.
 package bucket
@@ -39,6 +39,13 @@ type Source struct {
 	Credentials Credentials
 	// ServiceAccountKey is a GCS service account's JSON key, instead of Credentials.
 	ServiceAccountKey string
+	// AccessToken is a GCS OAuth access token, sent as a bearer, instead of Credentials or ServiceAccountKey.
+	AccessToken string
+	// ExpiresAt, when set, is when the credentials stop working: no request is made with them from then on
+	// (ErrExpired), so a read after it fails at once rather than with whatever the store answers.
+	ExpiresAt time.Time
+	// Now is the clock credentials expire and requests are signed by; nil is time.Now.
+	Now func() time.Time
 }
 
 // ErrStale is an object that changed since the manifest listed it (its ETag no longer matches).
@@ -49,6 +56,10 @@ var ErrDenied = errors.New("the store refused the bucket source's credentials")
 
 // ErrNotFound is a bucket or object that isn't there.
 var ErrNotFound = errors.New("not found")
+
+// ErrExpired is credentials past their ExpiresAt: no request was made. It is also an ErrDenied, so a caller that
+// asks for the source again when the store refuses its credentials does so for these too.
+var ErrExpired = fmt.Errorf("%w: they have expired", ErrDenied)
 
 // Client reads one source.
 type Client struct {
@@ -107,7 +118,11 @@ func NewClient(src Source, httpClient *http.Client) (*Client, error) {
 	if httpClient == nil {
 		httpClient = http.DefaultClient
 	}
-	c := &Client{src: src, base: base, hosted: hosted, region: region, http: httpClient, now: time.Now}
+	now := src.Now
+	if now == nil {
+		now = time.Now
+	}
+	c := &Client{src: src, base: base, hosted: hosted, region: region, http: httpClient, now: now}
 	if src.ServiceAccountKey != "" {
 		if src.Provider != ProviderGCS {
 			return nil, errors.New("a service account key reads only a gcs bucket source")
@@ -118,7 +133,20 @@ func NewClient(src Source, httpClient *http.Client) (*Client, error) {
 		}
 		c.tokens = ts
 	}
+	if src.AccessToken != "" {
+		if src.Provider != ProviderGCS {
+			return nil, errors.New("an access token reads only a gcs bucket source")
+		}
+		if src.ServiceAccountKey != "" || !src.Credentials.empty() {
+			return nil, errors.New("a bucket source has one kind of credentials")
+		}
+	}
 	return c, nil
+}
+
+// Expired says whether the credentials have expired, or will within margin.
+func (c *Client) Expired(margin time.Duration) bool {
+	return !c.src.ExpiresAt.IsZero() && !c.now().Add(margin).Before(c.src.ExpiresAt)
 }
 
 // objectURL is the object's URL (the bucket's with no key), path-style unless virtual-hosted.
@@ -160,11 +188,20 @@ func (c *Client) send(ctx context.Context, method string, u *url.URL, header htt
 	for k, v := range header {
 		req.Header[k] = v
 	}
+	if c.Expired(0) {
+		return nil, ErrExpired
+	}
 	switch {
+	case c.src.AccessToken != "":
+		req.Header.Set("Authorization", "Bearer "+c.src.AccessToken)
 	case c.tokens != nil:
 		token, err := c.tokens.Token(ctx)
 		if err != nil {
 			return nil, err
+		}
+		if c.Expired(0) {
+			// They expired while the token was traded for.
+			return nil, ErrExpired
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 	case !c.src.Credentials.empty():
@@ -356,8 +393,18 @@ func checkContentRange(h string, off, length int64) error {
 	return nil
 }
 
-// Get reads length bytes of an object from off, refusing it with ErrStale when its ETag isn't etag any more.
-func (c *Client) Get(ctx context.Context, key, etag string, off, length int64) (io.ReadCloser, error) {
+// Pin is the version of an object a read must get: its ETag (If-Match), its GCS generation (that generation is
+// read, whatever is current), both, or neither (whatever the object holds now); and, when Size is above 0, its size,
+// which the store's answer must say the object has.
+type Pin struct {
+	ETag       string
+	Generation string
+	Size       int64
+}
+
+// Get reads length bytes of an object from off, as pin names it: a different ETag is ErrStale, and a generation
+// that is no longer kept ErrNotFound. A generation pins only a GCS object.
+func (c *Client) Get(ctx context.Context, key string, pin Pin, off, length int64) (io.ReadCloser, error) {
 	if key == "" {
 		return nil, errors.New("an empty object key")
 	}
@@ -365,12 +412,23 @@ func (c *Client) Get(ctx context.Context, key, etag string, off, length int64) (
 	if length > 0 {
 		header.Set("Range", "bytes="+strconv.FormatInt(off, 10)+"-"+strconv.FormatInt(off+length-1, 10))
 	}
-	if etag != "" {
-		header.Set("If-Match", `"`+etag+`"`)
+	if pin.ETag != "" {
+		header.Set("If-Match", `"`+pin.ETag+`"`)
 	}
-	resp, err := c.do(ctx, c.objectURL(key, nil), header)
+	var query url.Values
+	if pin.Generation != "" {
+		if c.src.Provider != ProviderGCS {
+			return nil, fmt.Errorf("get %s: a generation pins only a gcs object", key)
+		}
+		query = url.Values{"generation": {pin.Generation}}
+	}
+	resp, err := c.do(ctx, c.objectURL(key, query), header)
 	if err != nil {
 		return nil, fmt.Errorf("get %s: %w", key, err)
+	}
+	if g := resp.Header.Get("x-goog-generation"); pin.Generation != "" && g != "" && g != pin.Generation && resp.StatusCode < 300 {
+		resp.Body.Close()
+		return nil, fmt.Errorf("get %s: %w (generation %s, not %s)", key, ErrStale, g, pin.Generation)
 	}
 	switch resp.StatusCode {
 	case http.StatusOK:
@@ -379,6 +437,10 @@ func (c *Client) Get(ctx context.Context, key, etag string, off, length int64) (
 			resp.Body.Close()
 			return nil, fmt.Errorf("get %s: the store ignored the range and answered the whole object", key)
 		}
+		if pin.Size > 0 && resp.ContentLength >= 0 && resp.ContentLength != pin.Size {
+			resp.Body.Close()
+			return nil, fmt.Errorf("get %s: %w (%d bytes, not %d)", key, ErrStale, resp.ContentLength, pin.Size)
+		}
 		return resp.Body, nil
 	case http.StatusPartialContent:
 		if length > 0 {
@@ -386,6 +448,10 @@ func (c *Client) Get(ctx context.Context, key, etag string, off, length int64) (
 				resp.Body.Close()
 				return nil, fmt.Errorf("get %s: %w", key, err)
 			}
+		}
+		if _, total, ok := strings.Cut(resp.Header.Get("Content-Range"), "/"); ok && pin.Size > 0 && total != "*" && total != strconv.FormatInt(pin.Size, 10) {
+			resp.Body.Close()
+			return nil, fmt.Errorf("get %s: %w (%s bytes, not %d)", key, ErrStale, total, pin.Size)
 		}
 		return resp.Body, nil
 	case http.StatusRequestedRangeNotSatisfiable:

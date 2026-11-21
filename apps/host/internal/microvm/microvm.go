@@ -875,11 +875,12 @@ func (m *Manager) mountStatus(s *sandbox) ([]proto.MountStatus, int64) {
 	return out, s.meta.MountsAt
 }
 
-// bucketMounts are the sandbox's bucket mounts: the part of its one list of mounts the host's mounts.Manager serves.
+// bucketMounts are the sandbox's bucket and manifest mounts: the part of its one list of mounts the host's
+// mounts.Manager serves.
 func bucketMounts(s *sandbox) []proto.Mount {
 	var out []proto.Mount
 	for _, mt := range s.meta.Mounts {
-		if mt.Kind == proto.MountBucket {
+		if mt.Kind == proto.MountBucket || mt.Kind == proto.MountManifest {
 			out = append(out, mt)
 		}
 	}
@@ -974,6 +975,9 @@ func (m *Manager) syncMounts(ctx context.Context, s *sandbox, path string, since
 		for _, mount := range s.meta.Mounts {
 			if mount.Path == path && mount.Kind == proto.MountBundle {
 				return nil, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the mount at %s is a bundle, which never changes: mount another digest for other files", path)}
+			}
+			if mount.Path == path && mount.Kind == proto.MountManifest {
+				return nil, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the mount at %s is a manifest, which never changes: mount another manifest for other files", path)}
 			}
 		}
 	}
@@ -1081,12 +1085,12 @@ func (m *Manager) reconcileMounts(ctx context.Context, s *sandbox) (done bool) {
 }
 
 // SupportsMount says which mounts this tier takes on this host: bundles while the host can build their images and its
-// microVMs have drives for them, buckets while it has a mounts.Manager.
+// microVMs have drives for them, buckets and manifests while it has a mounts.Manager.
 func (m *Manager) SupportsMount(kind string) bool {
 	switch kind {
 	case proto.MountBundle:
 		return m.cfg.Bundles != nil && m.cfg.BundleDrives > 0
-	case proto.MountBucket:
+	case proto.MountBucket, proto.MountManifest:
 		return m.cfg.Mounts != nil
 	}
 	return false

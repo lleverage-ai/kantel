@@ -373,6 +373,9 @@ func (h *Host) makeFacts() proto.Facts {
 	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBucket}) {
 		features = append(features, proto.FeatureBucketMounts, proto.FeatureMountsSync)
 	}
+	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountManifest}) {
+		features = append(features, proto.FeatureManifestMounts)
+	}
 	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBundle}) {
 		features = append(features, proto.FeatureBundleMounts)
 	}

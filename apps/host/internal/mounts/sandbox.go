@@ -87,7 +87,8 @@ func (mt *mount) mac(o object) string {
 // the current manifest: a file opened before a refresh. Its bytes come from the cache, or from the store while it
 // still has that version (If-Match), else the read fails as stale.
 func (mt *mount) proven(path, tag, size, proof string) (object, bool) {
-	if proof == "" || !validRel(path) || tag == "" {
+	// A manifest mount's object keys aren't its paths, and its manifest never changes: what it shows is always current.
+	if mt.spec.Kind == proto.MountManifest || proof == "" || !validRel(path) || tag == "" {
 		return object{}, false
 	}
 	n, err := strconv.ParseInt(size, 10, 64)
@@ -116,7 +117,10 @@ func (mt *mount) proven(path, tag, size, proof string) (object, bool) {
 func newMount(s *Sandbox, index int, spec proto.Mount) *mount {
 	mt := &mount{s: s, index: index, spec: spec, state: proto.MountPending, ttl: DefaultTTL}
 	mt.prefix = normalPrefix(spec.Prefix)
-	if ttl := spec.RefreshTTLSeconds; ttl != nil {
+	if spec.Kind == proto.MountManifest {
+		// Its manifest never changes: the guest never asks again.
+		mt.prefix, mt.ttl = "", 0
+	} else if ttl := spec.RefreshTTLSeconds; ttl != nil {
 		// 0: never look again by itself (a refresh still does).
 		mt.ttl = 0
 		if *ttl > 0 {
@@ -409,6 +413,11 @@ func (s *Sandbox) Status() []proto.MountStatus {
 // the last listing it answers that listing's outcome. listed says whether this call listed.
 func (mt *mount) refresh(ctx context.Context) (listed bool, err error) {
 	mt.mu.Lock()
+	if mt.spec.Kind == proto.MountManifest && mt.current != nil {
+		// Read once: the digest it was checked against is the mount's, so reading it again finds nothing new.
+		mt.mu.Unlock()
+		return false, nil
+	}
 	if ch := mt.listing; ch != nil {
 		mt.mu.Unlock()
 		select {
@@ -435,7 +444,7 @@ func (mt *mount) refresh(ctx context.Context) (listed bool, err error) {
 func (mt *mount) sync(ctx context.Context, since time.Time) error {
 	for {
 		mt.mu.Lock()
-		if mt.current != nil && !mt.listedAt.Before(since) {
+		if mt.current != nil && (!mt.listedAt.Before(since) || mt.spec.Kind == proto.MountManifest) {
 			mt.mu.Unlock()
 			return nil
 		}
@@ -507,11 +516,15 @@ func (mt *mount) outcome() error {
 }
 
 func (mt *mount) list(ctx context.Context) (*manifest, error) {
-	if mt.spec.Kind != proto.MountBucket {
-		return nil, errors.New("not a bucket mount")
-	}
 	ctx, cancel := context.WithTimeout(ctx, ListTimeout)
 	defer cancel()
+	switch mt.spec.Kind {
+	case proto.MountManifest:
+		return mt.fetchManifest(ctx)
+	case proto.MountBucket:
+	default:
+		return nil, errors.New("not a bucket mount")
+	}
 	src, err := mt.s.m.client(ctx, mt.s.id, mt.spec.BucketSourceID, false)
 	if err != nil {
 		return nil, err
@@ -711,7 +724,9 @@ func (s *Sandbox) serveObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cache := s.m.cfg.Cache
-	id := ObjectID(src.src.Endpoint+"|"+src.src.Provider, src.src.Bucket, obj.key, obj.tag, principal(src.src))
+	// The size is part of what a chunk is of: one read for an entry is checked against the store's size, so an entry
+	// that states another never finds it in the cache instead.
+	id := ObjectID(src.src.Endpoint+"|"+src.src.Provider, src.src.Bucket, obj.key, obj.tag+"/"+strconv.FormatInt(obj.size, 10), principal(src.src))
 	w.Header().Set("content-length", strconv.FormatInt(end-start+1, 10))
 	w.Header().Set("content-type", "application/octet-stream")
 	wrote := false
@@ -731,7 +746,8 @@ func (s *Sandbox) serveObject(w http.ResponseWriter, r *http.Request) {
 			release()
 			if !wrote {
 				code := http.StatusBadGateway
-				if errors.Is(err, bucket.ErrStale) {
+				if errors.Is(err, bucket.ErrStale) || (mt.spec.Kind == proto.MountManifest && errors.Is(err, bucket.ErrNotFound)) {
+					// The version the guest was shown is gone (for a manifest's entry, its pinned generation too).
 					code = http.StatusGone
 				}
 				http.Error(w, err.Error(), code)
@@ -777,13 +793,17 @@ func (mt *mount) getChunk(src *source, obj object, chunk int64) func(ctx context
 	return func(ctx context.Context) (io.ReadCloser, error) {
 		off := chunk * ChunkSize
 		n := min(ChunkSize, obj.size-off)
-		body, err := src.client.Get(ctx, obj.key, obj.etag, off, n)
+		// The size too: a chunk is kept for whoever reads that version next, so it must be the object's, never cut short
+		// by a manifest entry that understates it.
+		pin := bucket.Pin{ETag: obj.etag, Generation: obj.generation, Size: obj.size}
+		body, err := src.client.Get(ctx, obj.key, pin, off, n)
 		if errors.Is(err, bucket.ErrDenied) {
+			// Rotated or expired: ask for the source again (at most once per resolveBackoff while it stays expired).
 			fresh, ferr := mt.s.m.client(ctx, mt.s.id, mt.spec.BucketSourceID, true)
 			if ferr != nil {
 				return nil, err
 			}
-			body, err = fresh.client.Get(ctx, obj.key, obj.etag, off, n)
+			body, err = fresh.client.Get(ctx, obj.key, pin, off, n)
 		}
 		if err != nil {
 			return nil, err
