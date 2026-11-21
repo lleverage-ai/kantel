@@ -1,13 +1,17 @@
 // The parse-before-run check for programs an isolate doesn't have (shell/unavailable.js). Before a command runs, the
-// shell parses it with just-bash's own parser (`Bash.transform`) and looks for an unavailable program whose failure
-// would fail the whole command anyway: then nothing of the command runs, and the reply says `effects: "none"`. Where
-// running the command could still turn out otherwise (`git --version || echo ok`, `git log | head`, `git x; echo
-// done`), or where the program is only known at run time (`bash -c`, `eval`, a name built from an expansion), the
-// command runs as before, and a program it reaches is reported with `effects: "possible"`.
+// shell parses it with just-bash's own parser (`Bash.transform`). When the parse shows the command can't succeed,
+// because it ends on one of those programs, the shell refuses it before any of it runs, and the reply says
+// `effects: "none"`: `echo a >> f && git push` leaves `f` as it was. Every other command runs as before, and a
+// program it reaches is reported with `effects: "possible"`. Lleverage's isolate reports the same fields.
 //
-// Lleverage's isolate runs the same check, refusing a command wherever the program appears in it; Kantel refuses
-// only where that can't change the command's outcome, since a command that handles a missing program (`|| true`)
-// runs. The fields (`needsMicrovm`, `effects`) are the same in both.
+// The check refuses only what it can be sure of, because refusing a command that would have succeeded changes what
+// the command does. It is sure only of a plain script: statements of pipelines of simple commands; every word plain
+// text (no expansion, so nothing assigns a variable or runs at expansion time; no absolute path and no `..`, so
+// nothing writes a program somewhere a name could find it); no assignment and no `{var}>` redirection; every
+// command other than the program one of a few file and text commands that can't change what a name runs; and the
+// program the last command of a pipeline in a final statement of `&&` alone. Then the program is the isolate's own
+// stub, which fails whatever its arguments, and the command fails with it. The caller adds what the parse can't
+// show: the request sets no PATH, and its working directory is in the workspace.
 //
 // Over plain data (the AST), with nothing from just-bash imported, so it can be tested and shared on its own.
 
@@ -38,175 +42,83 @@ function staticText(parts) {
 	return text;
 }
 
-function wordText(word) {
-	return isNode(word) ? staticText(word.parts) : undefined;
+/** A word's text, when it is plain text naming nothing outside the working directory. */
+function plainWord(word) {
+	if (!isNode(word)) return undefined;
+	const text = staticText(word.parts);
+	if (text === undefined || text.startsWith("/") || text.split("/").includes("..")) return undefined;
+	return text;
 }
 
 /**
- * Commands that run the command in their arguments: options that take a value, options that take none, and how many
- * words come before the command. An option not listed (`--help`, `--version`, one this check doesn't model) means the
- * command may do something else, so it isn't treated as running the program.
+ * Commands that act on files and text and nothing else: none runs another command, sets a variable or an option,
+ * defines or changes what a name runs, or ends the script.
  */
-const WRAPPERS = new Map([
-	["command", { valueOptions: [], flags: ["-p"] }],
-	["env", { valueOptions: ["-u", "-C"], flags: ["-i", "-0", "--ignore-environment"], assignments: true }],
-	["nohup", { valueOptions: [], flags: [] }],
-	["nice", { valueOptions: ["-n"], flags: [] }],
-	["time", { valueOptions: ["-f", "-o"], flags: ["-p", "-v"] }],
-	["stdbuf", { valueOptions: ["-i", "-o", "-e"], flags: [] }],
-	["timeout", { valueOptions: ["-s", "-k"], flags: ["--foreground", "--preserve-status", "-v"], leading: 1 }],
+const PLAIN = new Set([
+	"echo",
+	"cat",
+	"true",
+	"mkdir",
+	"touch",
+	"cp",
+	"mv",
+	"rm",
+	"ls",
+	"pwd",
+	"head",
+	"tail",
+	"wc",
+	"sort",
+	"uniq",
+	"tee",
+	"grep",
+	"chmod",
 ]);
 
-/** Commands that run another (possibly a builtin) but whose arguments this check doesn't follow. */
-const OPAQUE_WRAPPERS = new Set(["xargs", "exec", "builtin", "sudo"]);
-
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
-
-/**
- * The names a simple command runs, through its wrappers (`env FOO=1 timeout 5 npm i` runs env, timeout and npm), or
- * undefined when that isn't known before it runs: a name or option built from an expansion, an option this check
- * doesn't model, or a wrapper it doesn't follow.
- */
-function chainOf(words) {
-	const names = [];
-	let index = 0;
-	while (index < words.length) {
-		const name = wordText(words[index]);
-		if (name === undefined) return undefined;
-		names.push(name);
-		if (OPAQUE_WRAPPERS.has(name)) return undefined;
-		const wrapper = WRAPPERS.get(name);
-		if (!wrapper) return names;
-		index += 1;
-		let leading = wrapper.leading ?? 0;
-		for (; index < words.length; index += 1) {
-			const word = wordText(words[index]);
-			if (word === undefined) return undefined;
-			if (word === "--") {
-				index += 1;
-				break;
-			}
-			if (word.startsWith("-") && word.length > 1) {
-				if (wrapper.valueOptions.includes(word)) index += 1;
-				else if (!wrapper.flags.includes(word)) return undefined;
-				continue;
-			}
-			if (wrapper.assignments && ASSIGNMENT.test(word)) {
-				if (word.startsWith("PATH=")) return undefined;
-				continue;
-			}
-			if (leading > 0) {
-				leading -= 1;
-				continue;
-			}
-			break;
+/** A simple command's words, all plain, with no assignment and plain redirections; or undefined. */
+function plainCommand(command) {
+	if (!isNode(command) || command.type !== "SimpleCommand" || !command.name) return undefined;
+	if ((command.assignments ?? []).length > 0) return undefined;
+	for (const redirection of command.redirections ?? []) {
+		if (!isNode(redirection) || redirection.fdVariable) return undefined;
+		const target = redirection.target;
+		if (isNode(target) && target.type === "HereDoc") {
+			if (staticText(target.content?.parts) === undefined) return undefined;
+		} else if (plainWord(target) === undefined) {
+			return undefined;
 		}
 	}
-	// A wrapper with nothing to run (`env`, `command`): it runs no program.
-	return [...names, undefined];
+	const words = [command.name, ...(command.args ?? [])].map(plainWord);
+	return words.includes(undefined) ? undefined : words;
 }
 
 /**
- * Builtins and settings that can change whether, or which, a later program runs, or end the script before it:
- * a script using any of them (directly or through a wrapper) isn't refused.
- */
-const CHANGES_THE_RUN = new Set([
-	"exit",
-	"return",
-	"exec",
-	"set",
-	"shopt",
-	"trap",
-	"alias",
-	"unalias",
-	"hash",
-	"source",
-	".",
-	"eval",
-	"enable",
-	"builtin",
-	"break",
-	"continue",
-]);
-
-/** Builtins that can assign variables, PATH among them. */
-const DECLARES = new Set(["export", "declare", "typeset", "readonly", "local"]);
-
-/**
- * Whether anything in the script can stop it reaching its end, or change which program a name runs: a run-changing
- * builtin (directly or through a wrapper), PATH assigned anywhere, a command name or wrapper chain only known at run
- * time, or a syntax error the parse deferred. Also the functions the script defines, which shadow programs.
- */
-function survey(script) {
-	const shadowed = new Set();
-	let changesTheRun = false;
-	const stack = [script];
-	while (stack.length > 0) {
-		const value = stack.pop();
-		if (Array.isArray(value)) {
-			stack.push(...value);
-			continue;
-		}
-		if (!isNode(value)) continue;
-		if (value.type === "Statement" && value.deferredError) changesTheRun = true;
-		if (value.type === "FunctionDef" && typeof value.name === "string") shadowed.add(value.name);
-		if (value.type === "SimpleCommand") {
-			for (const a of value.assignments ?? []) if (a?.name === "PATH") changesTheRun = true;
-			if (value.name) {
-				const words = [value.name, ...(value.args ?? [])];
-				const chain = chainOf(words);
-				if (!chain || chain.some((name) => name !== undefined && CHANGES_THE_RUN.has(name))) changesTheRun = true;
-				if (chain?.some((name) => name !== undefined && DECLARES.has(name))) {
-					for (const arg of value.args ?? []) {
-						const text = wordText(arg);
-						if (text === undefined || /^PATH(\+)?=/.test(text)) changesTheRun = true;
-					}
-				}
-			}
-		}
-		for (const child of Object.values(value)) if (typeof child === "object" && child !== null) stack.push(child);
-	}
-	return { shadowed, changesTheRun };
-}
-
-/**
- * The unavailable program that makes `statements` fail whatever else happens, or undefined. The last statement must
- * be a chain of `&&` only (with any `||` a failure may be handled, or the program skipped), so it fails if any part
- * of it fails; the program must be the last command of an un-negated pipeline in it (the pipeline's status is its
- * last command's), or so inside a group or subshell there. Then the command can't succeed: refusing it changes only
- * what would have run before the program failed.
- */
-function failingProgram(statements, shadowed, lookup) {
-	if (!Array.isArray(statements) || statements.length === 0) return undefined;
-	const statement = statements[statements.length - 1];
-	if (!isNode(statement) || statement.background) return undefined;
-	const operators = statement.operators ?? [];
-	if (operators.some((op) => op !== "&&")) return undefined;
-	for (const pipeline of statement.pipelines ?? []) {
-		if (!isNode(pipeline) || pipeline.negated) continue;
-		const commands = pipeline.commands ?? [];
-		const last = commands[commands.length - 1];
-		if (!isNode(last)) continue;
-		let found;
-		if (last.type === "SimpleCommand" && last.name) {
-			const chain = chainOf([last.name, ...(last.args ?? [])]);
-			const program = chain?.[chain.length - 1];
-			// `command -v git` and the like describe a program; `command git` runs it.
-			if (program !== undefined && !shadowed.has(program) && !program.includes("/")) found = lookup(program);
-		} else if (last.type === "Group" || last.type === "Subshell") {
-			found = failingProgram(last.body, shadowed, lookup);
-		}
-		if (found) return found;
-	}
-	return undefined;
-}
-/**
- * The unavailable program a parsed command would fail on, which is safe to refuse before anything runs, or
+ * The unavailable program the parsed command can't succeed past, which is safe to refuse before anything runs, or
  * undefined. `lookup(name)` answers the program's `{ command, reason }` if the isolate doesn't have it.
  */
 export function prescan(script, lookup) {
-	if (!isNode(script)) return undefined;
-	const { shadowed, changesTheRun } = survey(script);
-	if (changesTheRun) return undefined;
-	return failingProgram(script.statements, shadowed, lookup);
+	if (!isNode(script) || !Array.isArray(script.statements) || script.statements.length === 0) return undefined;
+	const statements = script.statements;
+	let found;
+	for (let s = 0; s < statements.length; s += 1) {
+		const statement = statements[s];
+		const last = s === statements.length - 1;
+		if (!isNode(statement) || statement.background || statement.deferredError) return undefined;
+		const operators = statement.operators ?? [];
+		if (last && operators.some((op) => op !== "&&")) return undefined;
+		for (const pipeline of statement.pipelines ?? []) {
+			if (!isNode(pipeline) || pipeline.negated || pipeline.timed) return undefined;
+			const commands = pipeline.commands ?? [];
+			for (let c = 0; c < commands.length; c += 1) {
+				const words = plainCommand(commands[c]);
+				if (!words) return undefined;
+				if (PLAIN.has(words[0])) continue;
+				// The one program the check refuses on: the last command of a pipeline in the final `&&` chain.
+				const program = lookup(words[0]);
+				if (!program || found || !last || c !== commands.length - 1) return undefined;
+				found = program;
+			}
+		}
+	}
+	return found;
 }

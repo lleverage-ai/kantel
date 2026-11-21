@@ -207,10 +207,15 @@ export function createShell(ops, log) {
 		// Parse before running: a program the isolate doesn't have, whose failure would fail the whole command, stops
 		// it before any of it runs (guest/shell/prescan.js).
 		let refused;
-		try {
-			refused = prescan(bash.transform(request.command).ast, unavailableProgram);
-		} catch {
-			// A command the parser refuses fails as it always has, when it runs.
+		const cwd = normalise(ROOT, request.cwd ?? ".");
+		// What the parse can't show: a PATH of the request's own, or a working directory outside the workspace, could
+		// make a name find a program the parse doesn't see.
+		if (request.env?.PATH === undefined && (cwd === ROOT || cwd.startsWith(`${ROOT}/`))) {
+			try {
+				refused = prescan(bash.transform(request.command).ast, unavailableProgram);
+			} catch {
+				// A command the parser refuses fails as it always has, when it runs.
+			}
 		}
 		if (refused) {
 			return {

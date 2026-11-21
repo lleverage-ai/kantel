@@ -28,55 +28,59 @@ const bash = new Bash({ fs: new InMemoryFs({}) });
 const refused = (command: string) => prescan(bash.transform(command).ast, lookup)?.command;
 
 describe("parse before run", () => {
-	it("refuses a command whose unavailable program would fail it, before anything runs", () => {
+	it("refuses a plain command that ends on an unavailable program, before any of it runs", () => {
 		for (const command of [
 			"git status",
+			"git --help",
 			"tar -tf x.tar",
 			"echo a >> f && git push",
 			"echo a > f; git status",
-			"cd sub && { echo a; npm install; }",
-			"(cd sub && pip install x)",
-			"env A=1 B=2 git log",
-			"timeout 5 npm ci",
-			"nohup git fetch",
+			"mkdir out && touch out/x && npm install",
 			"cat f | git apply",
+			"git status && echo ok",
 		]) {
 			expect(refused(command), command).toBeDefined();
 		}
 	});
-	it("runs a command that could still turn out otherwise, or whose program is known only when it runs", () => {
+	it("runs any command it can't be sure would fail", () => {
 		for (const command of [
-			// Handled, or not the command's outcome.
+			// Handled, skipped, or not the command's outcome.
 			"git --version || echo ok",
+			"true || git status",
+			"true || git status && echo ok",
 			"git status; echo done",
 			"git log | head -1",
 			"! git status",
-			"if git status; then echo y; fi",
 			"git status &",
-			// Not running it, or not that program.
+			"if git status; then echo y; fi",
+			"{ git status; }",
+			"(git status)",
+			// Not that program, or not run.
 			"command -v git",
 			"git() { echo mine; }; git status",
+			"env() { true; }; env git status",
 			"/usr/bin/git status",
 			"echo git",
-			// Only known at run time.
+			// Wrappers and their options.
+			"env git status",
+			"env git --help",
+			"timeout 5 git --help",
+			"env --help git",
+			"xargs git < list",
+			// Only known at run time, or able to change what runs.
 			"bash -c 'git status'",
 			"eval git status",
 			'"$G" status',
-			"xargs git < list",
-			// A chain with `||` anywhere may skip the program, or handle its failure.
-			"true || git status",
-			"true || git status && echo ok",
-			"{ true || git status; }",
-			// Wrapper options this check doesn't model (help, version) may do something else.
-			"env --help git",
-			"timeout --help 5 git",
-			// Anything that can change what runs after it, directly or through a wrapper.
-			"command exit 0; git status",
-			"export PATH=/workspace/bin; git status",
+			"echo $(git status)",
 			"set -e; git status",
 			"alias g=git; g status",
+			"command exit 0; git status",
 			"exit 0; git status",
 			"PATH=/x git status",
+			"export PATH=/workspace/bin; git status",
+			"read PATH <<< /workspace/bin; git status",
+			"cp x /usr/bin/git && git status",
+			"cd .. && git status",
 			// A program the isolate has.
 			"node -e 1",
 			"python -c 1",
