@@ -3797,7 +3797,7 @@ export interface KantelClient {
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
 	/** Get a command. Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox reports it (a microVM on a current kantel-host), detached or not. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
-	/** Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}/output` */
+	/** Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}/output` */
 	readCommandOutput(
 		sandboxId: string,
 		commandId: string,

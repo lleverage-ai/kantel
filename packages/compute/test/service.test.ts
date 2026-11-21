@@ -270,7 +270,7 @@ describe("sandboxes", () => {
 				};
 			},
 		};
-		const { tom } = setup(backend);
+		const { api, tom } = setup(backend);
 		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
 		const big = await tom.runCommand(sandbox.id, { command: "big" });
 		expect(big).toMatchObject({ truncated: true });
@@ -320,6 +320,9 @@ describe("sandboxes", () => {
 		expect(stopped.code).toBe("conflict");
 		expect(stopped.details).toMatchObject({ code: "sandbox_stopped" });
 		expect((await failure(tom.readCommandOutput(sandbox.id, "cmd_none"))).code).toBe("not_found");
+		// A record with U+FFFD may stand for bytes that weren't UTF-8: it doesn't answer for the sandbox's own.
+		await api.store.commands.update(small.id, (command) => ({ ...command, stdout: "\uFFFDsmall\n" }));
+		expect((await failure(tom.readCommandOutput(sandbox.id, small.id))).code).toBe("conflict");
 	});
 
 	it("runs a detached command in the background and records how it ended", async () => {

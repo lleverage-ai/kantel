@@ -90,3 +90,33 @@ func TestAttachSaysWhereTheRestOfItsOutputIs(t *testing.T) {
 	// Short of its limit: it may be missing its end (it ended with its machine).
 	contains(t, "stderr", cut.Stderr, "kantel: the end of its stdout may be missing")
 }
+
+func TestAttachDrainsOutputPastItsRecordsEnd(t *testing.T) {
+	ended := command(map[string]any{"state": "killed", "exitCode": 137})
+	// Killed in its record, its sandbox's output ends a look later, with more.
+	looks := 0
+	r := run(t, []string{"attach", "sbx_test1", "cmd_1"}, opts{routes: routes{
+		commandOne: func(call) any { return ended },
+		commandOutput: func(c call) any {
+			if url.Values(c.Query).Get("stream") == "stderr" {
+				return keptOutput("", "", true)(c)
+			}
+			looks++
+			if looks < 3 {
+				return keptOutput("first\n", "", false)(c)
+			}
+			return keptOutput("first\nlast\n", "", true)(c)
+		},
+	}})
+	eq(t, "exit", r.Code, 137)
+	eq(t, "stdout", r.Stdout, "first\nlast\n")
+	// One that never ends is given up on, saying so.
+	never := run(t, []string{"attach", "sbx_test1", "cmd_1"}, opts{routes: routes{
+		commandOne: func(call) any { return ended },
+		commandOutput: func(c call) any {
+			return keptOutput("first\n", "", url.Values(c.Query).Get("stream") == "stderr")(c)
+		},
+	}})
+	eq(t, "stdout", never.Stdout, "first\n")
+	contains(t, "stderr", never.Stderr, "kantel: more of its stdout may still come: kantel attach sbx_test1 cmd_1")
+}

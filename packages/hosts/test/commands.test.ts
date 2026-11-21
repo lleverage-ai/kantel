@@ -839,7 +839,11 @@ describe("kantel exec on kantel-host hosts", () => {
 			fetch: async (input, init) => (await api.fetch(new Request(input, init))) ?? new Response(null, { status: 404 }),
 			configDir: attachDir,
 			home: attachDir,
-			stdout: { isTTY: false, write: (chunk: string | Uint8Array) => out.push(String(chunk)) > 0 },
+			stdout: {
+				isTTY: false,
+				write: (chunk: string | Uint8Array) =>
+					out.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)) > 0,
+			},
 			stderr: { isTTY: false, write: () => true },
 			sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))),
 		});

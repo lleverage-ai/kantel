@@ -125,7 +125,7 @@ What is kept, and where:
 
 It stays until the sandbox is deleted, through stops, restarts, moves and its machine failing: a machine that fails loses at most the last 2 seconds of output, which may not have reached the disk yet, so a command that ended with its machine reads as `truncated`. A snapshot keeps it with the rest of the disk.
 
-Read it while the sandbox runs, as you read files: a call to a stopped one answers `409` with a [SandboxNotRunning](#when-the-sandbox-isnt-running), unless the command exited and its own `stdout` and `stderr` hold all of it (not `truncated`), when the answer comes from those. An isolate, and a microVM on a self-hosted kantel-host or guest image from before it, keep only the command's own 1 MiB: the route reads that, with `limit` 1 MiB.
+Read it while the sandbox runs, as you read files: a call to a stopped one answers `409` with a [SandboxNotRunning](#when-the-sandbox-isnt-running), unless the command exited and its own `stdout` and `stderr` hold all of it (not `truncated`, and its output was UTF-8), when the answer comes from those. An isolate, and a microVM on a self-hosted kantel-host or guest image from before it, keep only the command's own 1 MiB: the route reads that, with `limit` 1 MiB.
 
 `kantel exec` and `kantel attach` read a command's output this way for you, all Kantel keeps of it, and say where the rest is if the sandbox has stopped.
 

@@ -59,14 +59,18 @@ function fakeKantel(routes: { readonly [route: string]: Route }) {
 
 function capture(isTTY = false) {
 	const chunks: string[] = [];
+	const raw: Uint8Array[] = [];
 	const decoder = new TextDecoder();
 	return {
 		isTTY,
 		write(chunk: string | Uint8Array) {
 			chunks.push(typeof chunk === "string" ? chunk : decoder.decode(chunk));
+			raw.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
 			return true;
 		},
 		text: () => chunks.join(""),
+		/** What was written, as bytes. */
+		bytes: () => Uint8Array.from(raw.flatMap((chunk) => [...chunk])),
 	};
 }
 
@@ -190,7 +194,17 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 			return 0;
 		},
 	});
-	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls, keys: api.keys, opened, slept, ssh };
+	return {
+		code,
+		stdout: stdout.text(),
+		stdoutBytes: stdout.bytes(),
+		stderr: stderr.text(),
+		calls: api.calls,
+		keys: api.keys,
+		opened,
+		slept,
+		ssh,
+	};
 }
 
 describe("parsing", () => {
@@ -712,6 +726,33 @@ describe("exec", () => {
 		});
 		expect(old.stdout.length).toBe(MiB);
 		expect(old.stderr).toBe("kantel: the output was cut at 1 MiB\n");
+	});
+
+	it("attach writes the bytes it reads by range as they are, a BOM and bytes that aren't UTF-8 too", async () => {
+		const kept = new Uint8Array([0xef, 0xbb, 0xbf, 0xff, 0x41, 0x0a]);
+		const result = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () =>
+					command({ state: "exited", exitCode: 0, stdout: "\uFFFDA\n" }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": (call) => {
+					const bytes = call.query.get("stream") === "stdout" ? kept : new Uint8Array();
+					const offset = Math.min(Number(call.query.get("offset")), bytes.length);
+					return {
+						commandId: "cmd_1",
+						stream: call.query.get("stream"),
+						encoding: "base64",
+						content: btoa(String.fromCharCode(...bytes.subarray(offset))),
+						offset,
+						size: bytes.length,
+						ended: true,
+						truncated: false,
+						limit: 64 * 1024 * 1024,
+					};
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdoutBytes).toEqual(kept);
 	});
 
 	it("with --timeout 0 runs it detached and follows it", async () => {

@@ -21,6 +21,13 @@ import (
 // answer for now.
 const followRetryPause = 2 * time.Second
 
+// followDrainPause and followDrains: how often, and how many times, more asks again after a command's end for its
+// sandbox's output to end too (a kill it hasn't taken yet).
+const (
+	followDrainPause = time.Second
+	followDrains     = 30
+)
+
 // outputTail is one stream of a followed command.
 type outputTail struct {
 	stream api.CommandStream
@@ -59,7 +66,7 @@ func (t *outputTail) more(c *cli.Context, client *api.Client, sandboxID, command
 		return
 	}
 	stream, encoding := t.stream, api.FileEncodingBase64
-	tries := 0
+	tries, drains := 0, 0
 	for {
 		offset := int64(t.shown)
 		ctx, cancel := context.WithTimeout(c.Ctx, followLook)
@@ -103,6 +110,15 @@ func (t *outputTail) more(c *cli.Context, client *api.Client, sandboxID, command
 		}
 		if !fresh || int64(t.shown) >= part.Size {
 			t.ended = part.Ended && int64(t.shown) >= part.Size
+			// Caught up after the command's end, with its sandbox's output not yet ended: asked again for a while, then said.
+			if final && !t.ended && part.Offset == offset && int64(t.shown) >= part.Size {
+				if drains < followDrains && sleep(c, followDrainPause) == nil {
+					drains++
+					continue
+				}
+				t.stopped = true
+				c.Note("kantel: more of its " + string(t.stream) + " may still come: kantel attach " + sandboxID + " " + commandID)
+			}
 			return
 		}
 	}

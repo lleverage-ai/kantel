@@ -1658,6 +1658,9 @@ async function follow(
 
 /** How long `OutputTail.more` waits, after a command's end, before asking again for a part Kantel couldn't answer. */
 const OUTPUT_RETRY_MS = 2000;
+/** How long, and how often, `OutputTail.more` waits after a command's end for its sandbox's output to end too. */
+const OUTPUT_DRAIN_MS = 1000;
+const OUTPUT_DRAINS = 30;
 
 /**
  * One stream of a followed command, read by range (`readCommandOutput`) as its bytes from the start, rather than from
@@ -1677,8 +1680,6 @@ class OutputTail {
 	/** Kantel kept only the first `limit` bytes of the stream. */
 	cut = false;
 	limit = 0;
-	/** Its bytes as text, a character split across two parts joined. */
-	private readonly decoder = new TextDecoder();
 
 	private readonly ctx: Context;
 	private readonly client: KantelClient;
@@ -1721,7 +1722,7 @@ class OutputTail {
 	 */
 	async more(to: Output, final: boolean): Promise<void> {
 		if (this.record || this.stopped || this.ended) return;
-		for (let tries = 0; ; ) {
+		for (let tries = 0, drains = 0; ; ) {
 			const offset = this.shown;
 			const deadline = AbortSignal.timeout(FOLLOW_LOOK_MS);
 			let part: CommandOutput;
@@ -1750,16 +1751,23 @@ class OutputTail {
 			const fresh = part.offset === offset && bytes.byteLength > 0;
 			if (fresh) {
 				this.ranged = true;
-				const text = this.decoder.decode(bytes, { stream: true });
-				if (text !== "") to.write(text);
+				to.write(bytes);
 				this.shown += bytes.byteLength;
 			}
 			if (!fresh || this.shown >= part.size) {
 				this.ended = part.ended && this.shown >= part.size;
-				// All of it read: a sequence its end cut short is written as what it is.
-				if (this.ended) {
-					const rest = this.decoder.decode();
-					if (rest !== "") to.write(rest);
+				// Caught up after the command's end, with its sandbox's output not yet ended (a kill it hasn't taken yet): asked
+				// again for a while, then said.
+				if (final && !this.ended && this.shown >= part.size && part.offset === offset) {
+					if (drains < OUTPUT_DRAINS) {
+						drains++;
+						await this.ctx.io.sleep(OUTPUT_DRAIN_MS);
+						continue;
+					}
+					this.stopped = true;
+					this.ctx.note(
+						`kantel: more of its ${this.stream} may still come: kantel attach ${this.sandboxId} ${this.commandId}`,
+					);
 				}
 				return;
 			}

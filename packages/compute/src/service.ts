@@ -11726,7 +11726,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Its sandbox may keep it all (a microVM's guest agent, on its disk), read while it runs, as files are: from there
 			// whenever it can, so one reader's offsets stay the sandbox's bytes. Stopped, the record answers for a command that
 			// exited (its end its backend's own) with none of it cut; anything else needs the sandbox running.
-			const whole = (command.state === "exited" || command.state === "timed_out") && !command.truncated;
+			// A record with U+FFFD may stand for bytes that weren't UTF-8 (its host's JSON replaced them), so its offsets
+			// wouldn't be the sandbox's: it doesn't answer for it.
+			const whole =
+				(command.state === "exited" || command.state === "timed_out") &&
+				!command.truncated &&
+				!command.stdout.includes("\uFFFD") &&
+				!command.stderr.includes("\uFFFD");
 			const read = sandbox.type === "isolate" ? undefined : backend.commandOutput?.bind(backend);
 			if (read !== undefined && (sandbox.state === "running" || !whole)) {
 				await requireRunning(principal, sandbox.id);

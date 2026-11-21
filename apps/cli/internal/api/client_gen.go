@@ -1530,7 +1530,7 @@ func (c *Client) GetCommand(ctx context.Context, sandboxID string, commandID str
 	return &out, nil
 }
 
-// ReadCommandOutput GET /sandboxes/{sandboxId}/commands/{commandId}/output: Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`.
+// ReadCommandOutput GET /sandboxes/{sandboxId}/commands/{commandId}/output: Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`.
 func (c *Client) ReadCommandOutput(ctx context.Context, sandboxID string, commandID string, query *ReadCommandOutputQuery, opts ...CallOption) (*CommandOutput, error) {
 	var out CommandOutput
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/commands/%s/output", url.PathEscape(sandboxID), url.PathEscape(commandID)), Query: query.values(), Out: &out}, opts...); err != nil {
