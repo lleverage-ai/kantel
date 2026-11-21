@@ -66,3 +66,8 @@ panic = "unwind"
 
 [profile.dev]
 opt-level = 1
+
+# The hardening tests fork, so they run one at a time on one thread (tests/hardening.rs has its own main).
+[[test]]
+name = "hardening"
+harness = false
