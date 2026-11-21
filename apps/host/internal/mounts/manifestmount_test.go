@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -79,10 +80,25 @@ func TestParseManifest(t *testing.T) {
 			t.Errorf("%s: %v", name, err)
 		}
 	}
+	// More entries than a mount of 10 files may hold (20, its directories with them): refused as they are counted,
+	// before the rest are decoded.
+	var dirs []string
+	for i := range 21 {
+		dirs = append(dirs, fmt.Sprintf(`{"path":"d%d","dir":true}`, i))
+	}
+	many := `{"version":1,"entries":[` + strings.Join(dirs, ",") + `]}`
+	manySum := sha256.Sum256([]byte(many))
+	if _, err := parseManifest([]byte(many), "sha256:"+hex.EncodeToString(manySum[:]), 10); err == nil || !strings.Contains(err.Error(), "more than 20 entries") {
+		t.Errorf("21 entries, 20 allowed: %v", err)
+	}
 	for name, raw := range map[string]string{
 		"not json":      "nope",
 		"version":       `{"version":2,"entries":[]}`,
 		"unknown field": `{"version":1,"entries":[{"path":"a","key":"k","etag":"e","size":1,"mode":420}]}`,
+		"no size":       `{"version":1,"entries":[{"path":"a","key":"k","etag":"e"}]}`,
+		"null size":     `{"version":1,"entries":[{"path":"a","key":"k","etag":"e","size":null}]}`,
+		"trailing":      `{"version":1,"entries":[]} {}`,
+		"twice":         `{"version":1,"entries":[],"entries":[]}`,
 	} {
 		sum := sha256.Sum256([]byte(raw))
 		if _, err := parseManifest([]byte(raw), "sha256:"+hex.EncodeToString(sum[:]), 10); !errors.Is(err, errManifest) {
@@ -235,7 +251,7 @@ func cacheID(t *testing.T, s *Sandbox, path string) string {
 		t.Fatal(err)
 	}
 	o := mt.current.objects[path]
-	return ObjectID(src.src.Endpoint+"|"+src.src.Provider, src.src.Bucket, o.key, o.tag, principal(src.src))
+	return ObjectID(src.src.Endpoint+"|"+src.src.Provider, src.src.Bucket, o.key, o.tag+"/"+strconv.FormatInt(o.size, 10), principal(src.src))
 }
 
 // A manifest whose object isn't the one the create named (changed since, or another) doesn't mount.
@@ -293,6 +309,11 @@ func TestManifestMountSizeIsPinned(t *testing.T) {
 	h = b.mount("sbx_2", "bks_a", "manifests/right.json", rightDigest).handler()
 	if rec := readRange(h, manifestOf(t, h)["a.txt"], "bytes=0-4"); rec.Code != 200 || rec.Body.String() != "hello" {
 		t.Errorf("the right size, after: %d %q", rec.Code, rec.Body.String())
+	}
+	// With the right size's chunk cached, the understated entry still doesn't read it.
+	h = b.mount("sbx_3", "bks_a", "manifests/short.json", shortDigest).handler()
+	if rec := readRange(h, manifestOf(t, h)["a.txt"], "bytes=0-0"); rec.Code != http.StatusGone {
+		t.Errorf("an understated size, the object cached: %d %q", rec.Code, rec.Body.String())
 	}
 }
 

@@ -724,7 +724,9 @@ func (s *Sandbox) serveObject(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cache := s.m.cfg.Cache
-	id := ObjectID(src.src.Endpoint+"|"+src.src.Provider, src.src.Bucket, obj.key, obj.tag, principal(src.src))
+	// The size is part of what a chunk is of: one read for an entry is checked against the store's size, so an entry
+	// that states another never finds it in the cache instead.
+	id := ObjectID(src.src.Endpoint+"|"+src.src.Provider, src.src.Bucket, obj.key, obj.tag+"/"+strconv.FormatInt(obj.size, 10), principal(src.src))
 	w.Header().Set("content-length", strconv.FormatInt(end-start+1, 10))
 	w.Header().Set("content-type", "application/octet-stream")
 	wrote := false

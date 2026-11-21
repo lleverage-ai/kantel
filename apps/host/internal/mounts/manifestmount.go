@@ -49,7 +49,7 @@ type ManifestFileEntry struct {
 	Dir bool `json:"dir,omitempty"`
 	// Key is the object in the bucket source holding the file's bytes.
 	Key string `json:"key,omitempty"`
-	// Size is the object's size in bytes.
+	// Size is the object's size in bytes: required for a file (0 for an empty one), and checked against the store's.
 	Size int64 `json:"size"`
 	// Generation is the object's GCS generation: that generation is read, and a read fails once it is gone.
 	Generation string `json:"generation,omitempty"`
@@ -63,56 +63,75 @@ type ManifestFileEntry struct {
 // errManifest is a manifest the account wrote that can't be mounted as it is.
 var errManifest = errors.New("the manifest can't be mounted")
 
+// wireEntry is a ManifestFileEntry as decoded: a file's size is required, and null or missing isn't zero.
+type wireEntry struct {
+	Path       string `json:"path"`
+	Dir        bool   `json:"dir"`
+	Key        string `json:"key"`
+	Size       *int64 `json:"size"`
+	Generation string `json:"generation"`
+	ETag       string `json:"etag"`
+	MTimeMs    int64  `json:"mtimeMs"`
+}
+
 // parseManifest checks a manifest's bytes against the mount's digest and makes its tree. Unlike a listing, which
 // skips what has no place in a file tree, a manifest is the account's word on exactly which files the mount has:
 // an entry that can't be shown as it says is an error naming it, and so is a manifest of more than maxObjects files.
+// Entries are decoded one at a time and counted as they come, so a manifest within MaxManifestBytes of tiny entries
+// is refused before it takes more memory than a mount of maxObjects files.
 func parseManifest(raw []byte, digest string, maxObjects int) (*manifest, error) {
 	sum := sha256.Sum256(raw)
 	if want, ok := strings.CutPrefix(digest, "sha256:"); !ok || hex.EncodeToString(sum[:]) != want {
 		return nil, fmt.Errorf("%w: its object doesn't match the mount's digest (it changed since, or the digest is wrong)", errManifest)
 	}
-	var file ManifestFile
+	notManifest := func(why string) error { return fmt.Errorf("%w: it isn't a manifest: %s", errManifest, why) }
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
-	if err := dec.Decode(&file); err != nil {
-		return nil, fmt.Errorf("%w: it isn't a manifest: %v", errManifest, err)
+	delim := func(want json.Delim) error {
+		tok, err := dec.Token()
+		if d, ok := tok.(json.Delim); err != nil || !ok || d != want {
+			return notManifest(fmt.Sprintf("expected %q", want))
+		}
+		return nil
 	}
-	if file.Version != ManifestFormat {
-		return nil, fmt.Errorf("%w: its version is %d, not %d", errManifest, file.Version, ManifestFormat)
-	}
+	// Files and the directories they need: as a listing of maxObjects objects may hold.
+	maxEntries := 2 * maxObjects
+	version, sawVersion, sawEntries := 0, false, false
 	files := 0
-	seen := make(map[string]bool, len(file.Entries))
-	items := make([]item, 0, len(file.Entries))
-	for i, e := range file.Entries {
+	seen := map[string]bool{}
+	var items []item
+	entry := func(i int, e wireEntry) error {
 		bad := func(why string) error {
 			return fmt.Errorf("%w: entry %d (%q) %s", errManifest, i, truncate(e.Path, 200), why)
 		}
 		if !validRel(e.Path) {
-			return nil, bad("isn't a relative path with no empty or dot segment, of names of at most 255 bytes")
+			return bad("isn't a relative path with no empty or dot segment, of names of at most 255 bytes")
 		}
 		if seen[e.Path] {
-			return nil, bad("is listed twice")
+			return bad("is listed twice")
 		}
 		seen[e.Path] = true
 		if e.Dir {
-			if e.Key != "" || e.Size != 0 || e.Generation != "" || e.ETag != "" {
-				return nil, bad("is a directory with an object")
+			if e.Key != "" || (e.Size != nil && *e.Size != 0) || e.Generation != "" || e.ETag != "" {
+				return bad("is a directory with an object")
 			}
 			items = append(items, item{rel: e.Path, dir: true})
-			continue
+			return nil
 		}
 		switch {
 		case e.Key == "" || len(e.Key) > maxKey:
-			return nil, bad("names no object key (or one over 1024 bytes)")
-		case e.Size < 0:
-			return nil, bad("has a negative size")
+			return bad("names no object key (or one over 1024 bytes)")
+		case e.Size == nil:
+			return bad("has no size")
+		case *e.Size < 0:
+			return bad("has a negative size")
 		case e.Generation == "" && e.ETag == "":
-			return nil, bad("pins no version: give its generation or its ETag")
+			return bad("pins no version: give its generation or its ETag")
 		case strings.ContainsAny(e.ETag, `"`) || len(e.ETag) > 256 || !validGeneration(e.Generation):
-			return nil, bad("has a bad generation (a GCS generation is a decimal number) or ETag")
+			return bad("has a bad generation (a GCS generation is a decimal number) or ETag")
 		}
 		if files++; maxObjects > 0 && files > maxObjects {
-			return nil, fmt.Errorf("%w: it lists more than %d files", errManifest, maxObjects)
+			return fmt.Errorf("%w: it lists more than %d files", errManifest, maxObjects)
 		}
 		tag := "e" + e.ETag
 		if e.Generation != "" {
@@ -121,9 +140,63 @@ func parseManifest(raw []byte, digest string, maxObjects int) (*manifest, error)
 				tag += "e" + e.ETag
 			}
 		}
-		items = append(items, item{rel: e.Path, o: object{key: e.Key, etag: e.ETag, generation: e.Generation, tag: tag, size: e.Size}, mtime: time.UnixMilli(e.MTimeMs)})
+		items = append(items, item{rel: e.Path, o: object{key: e.Key, etag: e.ETag, generation: e.Generation, tag: tag, size: *e.Size}, mtime: time.UnixMilli(e.MTimeMs)})
+		return nil
 	}
-	m, err := buildTree(items, nil, 2*maxObjects)
+	if err := delim('{'); err != nil {
+		return nil, err
+	}
+	for dec.More() {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, notManifest(err.Error())
+		}
+		switch tok {
+		case "version":
+			if sawVersion {
+				return nil, notManifest("version is given twice")
+			}
+			sawVersion = true
+			if err := dec.Decode(&version); err != nil {
+				return nil, notManifest("version: " + err.Error())
+			}
+		case "entries":
+			if sawEntries {
+				return nil, notManifest("entries are given twice")
+			}
+			sawEntries = true
+			if err := delim('['); err != nil {
+				return nil, err
+			}
+			for i := 0; dec.More(); i++ {
+				if maxEntries > 0 && i >= maxEntries {
+					return nil, fmt.Errorf("%w: it has more than %d entries", errManifest, maxEntries)
+				}
+				var e wireEntry
+				if err := dec.Decode(&e); err != nil {
+					return nil, notManifest(fmt.Sprintf("entry %d: %v", i, err))
+				}
+				if err := entry(i, e); err != nil {
+					return nil, err
+				}
+			}
+			if err := delim(']'); err != nil {
+				return nil, err
+			}
+		default:
+			return nil, notManifest(fmt.Sprintf("unknown field %v", tok))
+		}
+	}
+	if err := delim('}'); err != nil {
+		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, notManifest("something follows it")
+	}
+	if version != ManifestFormat {
+		return nil, fmt.Errorf("%w: its version is %d, not %d", errManifest, version, ManifestFormat)
+	}
+	m, err := buildTree(items, nil, maxEntries)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errManifest, err)
 	}
