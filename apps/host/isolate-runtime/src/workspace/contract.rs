@@ -613,6 +613,16 @@ async fn the_record_as_it_is(
         "the catch-up is to the record's version"
     );
     assert_eq!(now.entries.contains_key("b.txt"), present);
+    assert_eq!(now.entries.contains_key("a.txt"), !present);
+    if present {
+        // The change itself, not just a file at its path: the bytes the commit put.
+        assert_eq!(
+            catch_up.changed.get("b.txt"),
+            now.entries.get("b.txt"),
+            "the catch-up names the record's b.txt"
+        );
+        assert_eq!(read_all(ws, &file_of(&now, "b.txt")).await, B);
+    }
     let c = put(ws, "c.txt", A).await;
     let next = committed(
         ws.commit(commit(&catch_up.generation, vec![c], &[]))
