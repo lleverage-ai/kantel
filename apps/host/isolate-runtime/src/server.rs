@@ -304,18 +304,25 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         .filter(|t| *t > 0)
         .map(|t| Duration::from_millis(t).min(MAX_WALL))
         .unwrap_or(DEFAULT_WALL);
-    let manifest = body.get("manifest").cloned().unwrap_or(json!({}));
-    let request = json!({
-        "command": body["command"].as_str().unwrap_or(""),
-        "cwd": body["cwd"],
-        "env": body["env"],
-        "manifest": manifest,
-    });
+    let Prepared {
+        workspace,
+        request,
+        manifest,
+    } = match prepare(&id, &body).await {
+        Ok(p) => p,
+        Err((status, e)) => return err(status, e),
+    };
     let command = Command::new(engine().cfg.cpu, wall);
-    match handle.exec(&request, manifest, command).await {
+    match handle.exec(&request, manifest, workspace, command).await {
         Ok(mut value) => {
             if value.get("error").is_some() {
-                return (StatusCode::INTERNAL_SERVER_ERROR, Json(value)).into_response();
+                // A command refused because the sandbox's last commit is still running: kantel-host may retry.
+                let status = if value["retryable"] == true {
+                    StatusCode::SERVICE_UNAVAILABLE
+                } else {
+                    StatusCode::INTERNAL_SERVER_ERROR
+                };
+                return (status, Json(value)).into_response();
             }
             value["hit"] = json!(hit);
             value["ms"] = json!(started.elapsed().as_secs_f64() * 1e3);
@@ -323,6 +330,40 @@ async fn exec(State(app): State<Arc<App>>, Json(body): Json<Value>) -> Response 
         }
         Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
     }
+}
+
+/// One /exec's command for the shell: its workspace (the filesystem provider's), what the guest's `exec` gets, and
+/// the files it starts from.
+pub struct Prepared {
+    pub workspace: Arc<dyn crate::workspace::Workspace>,
+    pub request: Value,
+    pub manifest: Value,
+}
+
+/// Open the command's workspace for an /exec `body` and make the guest's request: the files the shell starts from
+/// and the base it commits from are one version of the workspace (with Kantel's provider, the request's manifest).
+pub async fn prepare(id: &str, body: &Value) -> Result<Prepared, (StatusCode, String)> {
+    let workspace = engine()
+        .filesystem
+        .open(id, body)
+        .map_err(|e| (StatusCode::BAD_REQUEST, format!("{e:#}")))?;
+    let view = workspace
+        .view()
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, format!("{e:#}")))?;
+    let manifest = workspace.manifest(&view);
+    let request = json!({
+        "command": body["command"].as_str().unwrap_or(""),
+        "cwd": body["cwd"],
+        "env": body["env"],
+        "manifest": manifest,
+        "base": view.generation,
+    });
+    Ok(Prepared {
+        workspace,
+        request,
+        manifest,
+    })
 }
 
 /// True once the pools are full and start-up work is done, so W3 can take the template snapshot (it waits for this).

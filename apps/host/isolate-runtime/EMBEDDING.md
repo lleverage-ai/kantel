@@ -55,14 +55,15 @@ Once per process, in this order:
    It builds the startup snapshot from the embedding's guest bundle and ops; every isolate is made from it.
 
 Then `isolate::spawn_shell(sandbox_id, memory_mib, warm)` makes a sandbox's shell isolate on its own thread, and the
-handle's `exec(request, manifest, command)` runs one command in it (`load(memory_mib)` changes its memory). The
+handle's `exec(request, manifest, workspace, command)` runs one command in it (the workspace is the filesystem
+provider's, below) (`load(memory_mib)` changes its memory). The
 `node`/`python` ready pools are filled by `isolate::node_refill()` and `isolate::python_refill()` (the sizes are in
 `Config`). `server::serve(config, embedding)` is the whole of `kantel-isolate serve`, Kantel's HTTP protocol, for an
 embedder that wants it as it is.
 
 ## The embedding
 
-`Embedding { guest, extensions }`:
+`Embedding { guest, extensions, filesystem }` (`filesystem` is [below](#the-filesystem-provider)):
 
 - **`guest`**: the guest bundle, one classic script, evaluated once into the startup snapshot. It is the embedder's
   JavaScript: Kantel's is `guest/main.js` bundled to `guest/dist/guest.js`.
@@ -120,6 +121,84 @@ An embedder's op runs on the isolate's thread, with that isolate's `OpState`. It
   guest code can see them: return `hostbuf::HostBytes::charge(isolate, &state, bytes)` (or `adopt`, for bytes already
   charged while they were collected) rather than a `Vec<u8>`, so a host-returned buffer can't sit outside the limit.
 - **Not block the isolate's thread** on I/O: do it on the engine's I/O runtime (`engine().io`) from an async op.
+
+## The filesystem provider
+
+`Embedding::with_filesystem(provider)` sets where sandboxes' files come from and where commands' changes go
+([`src/workspace.rs`](src/workspace.rs)). Without one, the engine uses Kantel's: a manifest per command over the blob
+store bridge. One interface serves two models:
+
+- **A manifest per command** (`ManifestProvider`): the host sends the files with each command and keeps what it
+  returns. Only that command changes them, so a commit is `committed`.
+- **A persistent workspace**: the provider keeps a sandbox's files between commands, and each command's changes are one
+  compare-and-swap commit to a durable record. A write whose outcome isn't known is reported as `unknown`, with the
+  record as read back after it, and is never replayed; another owner taking the record over fences the workspace.
+  `workspace::memory::RecordProvider` is the reference provider of this kind.
+
+`FilesystemProvider::open(sandbox_id, request)` gives the `Workspace` one command runs against (a per-command provider
+makes one; a persistent one gives the sandbox's own). `ShellHandle::exec` takes it, and the shell's ops use it:
+
+| Step | `Workspace` method | Op (shell only) | What it promises |
+| --- | --- | --- | --- |
+| Start | `view()`, `manifest(view)` | (in the request) | Every path and an opaque generation, and the files the guest starts from as a manifest: the view's own, so the files and the base are one version (Kantel's gives the request's manifest). |
+| Read | `read(file, cap, charge)` | `op_kt_blob_read(file)` | Only a file a view or `stage` gave this workspace (`NotFound` otherwise). Over `cap` is `TooLarge`, refused before it is read; the bytes are charged to the isolate as they arrive. |
+| Stage | `stage(path, bytes)` | `op_kt_stage(path, bytes)` | A blob id a commit may name. Nothing refers to it until then. |
+| Commit | `commit(commit)` | `op_kt_commit(json)` | The command's changes from its `base`, applied whole or not at all: removals, then directories, links and files. |
+| Catch up | `sync(base)` | `op_kt_sync(base)` | The changes from a version the guest holds to the current one (after the host changed the workspace itself). |
+
+A commit's reply is one of:
+
+- `committed`: the changes are in `catchUp.generation`;
+- `unknown`: the write may or may not have landed. `catchUp` is what the workspace holds now; the guest takes it and
+  drops the changes it sent, and nothing replays them;
+- `failed`: nothing was written, and the changes stand (a bad path, a blob nobody staged, a write the store refused);
+- `fenced`: the workspace takes no more commits (another owner has the record, or the commit named a base the workspace
+  never gave).
+
+Every reply but `fenced` carries a catch-up from the commit's base, and `fenced` is for good. Kantel's guest shell
+reports the files as the workspace holds them: its manifest with the catch-up applied, so the reply names the
+provider's own file ids. A command whose commit wasn't `committed` fails (exit 1, a line on stderr, and
+`commit: {status, error}` in its reply); after `failed` the reply still has the workspace's own changes since the
+command's base (the host's writes), from the catch-up. It commits only what the workspace keeps
+(`op_kt_workspace_capabilities`): in a files-only workspace, directories are implied by paths and aren't committed, and
+a file or link a directory replaced is removed. A command commits once at a time (a second `op_kt_commit` while one is
+running is refused).
+
+A file the command didn't change isn't in its commit, whatever the provider's ids are. Where they are the bytes'
+SHA-256 (`Capabilities::content_addressed`, as Kantel's are) the guest compares ids; otherwise it compares the bytes'
+digest with what the command read (or, for a file written over unread, reads the original to compare).
+
+The commit runs as a task on the engine's I/O runtime, so a command stopped while it waits for its commit (CPU, wall
+clock, memory) doesn't cut the write off. The stopped command's reply waits for the commit (`Config::commit_grace`,
+15 s) and reports the files as the workspace then holds them (`sync` from the command's base), with
+`commit: {status: "unknown"}` when the outcome isn't known. A commit still running after that holds the sandbox's next
+command back (refused with `retryable: true`, a 503 from `kantel-isolate serve`) until it ends, so it can't land over
+later work.
+
+A persistent provider over a durable record fits as follows. File ids are strings, so a provider that numbers its
+files per session formats the number. Read-only and scratch areas (files the session may read but not change, or a
+`tmp` that is never saved) are the guest filesystem's to enforce; the provider refuses a commit that touches them
+(`failed`). A provider that keeps files only reports `directories: false, symlinks: false` in its `Capabilities` and
+refuses directories and links in a commit. A file node may carry `mtimeMs` and a content `hash` for the guest's
+listings and the host's caches. A host command that writes files (one the host runs natively on the session's files)
+commits through the same workspace, and the guest catches up with `sync`. Warming the host's caches before reads is the embedder's own op.
+
+### The contract tests
+
+`workspace::contract` is the contract as tests: `common` for every provider, `persistent` for the faults a persistent
+one meets (a refused write, a lost reply that landed or didn't, a base behind the record, another owner taking over).
+`tests/workspace_contract.rs` runs them against both of the crate's providers, and `tests/guest_workspace.rs` runs
+Kantel's guest shell over the persistent one. An embedder runs them against its own provider by implementing
+`contract::Subject` (and `contract::Persistent`), as `contract::subjects` does:
+
+```rust
+#[tokio::test]
+async fn our_provider_keeps_the_contract() {
+    let subject = OurSubject::new(); // implements Subject and Persistent
+    kantel_isolate::workspace::contract::common(&subject).await;
+    kantel_isolate::workspace::contract::persistent(&subject).await;
+}
+```
 
 ## The limits
 

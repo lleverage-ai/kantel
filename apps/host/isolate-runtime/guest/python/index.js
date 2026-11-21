@@ -153,6 +153,7 @@ export function createPython(ops, lockdown = () => {}) {
 		const MEMFS = FS.filesystems?.MEMFS ?? py._module.MEMFS;
 		const fileNode = MEMFS.ops_table.file.node;
 		const fileStream = MEMFS.ops_table.file.stream;
+		const hex = (b) => Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 		const materialize = (node) => {
 			const lazy = node.kt;
 			if (!lazy) return;
@@ -162,7 +163,9 @@ export function createPython(ops, lockdown = () => {}) {
 			node.usedBytes = data.length;
 			node.node_ops = fileNode;
 			node.stream_ops = fileStream;
-			node.ktSha = lazy.sha;
+			// The SHA-256 of the file as the run found it: the shell's (a file id isn't always one), or the digest of
+			// what was just read. Unknown when it was truncated unread.
+			node.ktSha = lazy.hash ?? (lazy.truncate ? undefined : hex(ops.op_kt_digest("sha256", data)));
 		};
 		const lazyNode = {
 			getattr(node) {
@@ -201,7 +204,7 @@ export function createPython(ops, lockdown = () => {}) {
 				FS.mkdirTree(parent);
 				FS.writeFile(full, new Uint8Array(0));
 				const node = FS.lookupPath(full).node;
-				node.kt = { path: p, size: e.size ?? 0, sha: e.sha };
+				node.kt = { path: p, size: e.size ?? 0, hash: e.hash };
 				node.node_ops = lazyNode;
 				node.stream_ops = lazyStream;
 				FS.chmod(full, e.mode ?? 0o644);
