@@ -218,17 +218,22 @@ func (s *Server) startCommand(w http.ResponseWriter, r *http.Request) {
 		max = 1 << 20
 	}
 	stdout, stderr := &cappedBuffer{max: max}, &cappedBuffer{max: max}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
 	run := &command{cancel: cancel, done: make(chan struct{}), detached: true, stdout: stdout, stderr: stderr}
 	if !s.commands.add(req.ID, run) {
 		cancel()
 		fail(w, 409, errors.New("a command with this id is already known, or was killed before it started"))
 		return
 	}
+	// Its whole output kept on the disk too, past what its result holds (output.go).
+	output := s.openOutput(req.ID)
+	outLog, errLog := output.streams()
+	cmd.Stdout, cmd.Stderr = tee(stdout, outLog), tee(stderr, errLog)
 	started := time.Now()
 	oomBefore := OOMKills()
 	if err := cmd.Start(); err != nil {
 		cancel()
+		_, _ = cmd.Stderr.Write([]byte(err.Error() + "\n"))
+		output.finish()
 		s.commands.end(req.ID, run, ExecResult{ExitCode: 127, Stderr: err.Error() + "\n"}, false)
 		fail(w, 500, err)
 		return
@@ -238,8 +243,10 @@ func (s *Server) startCommand(w http.ResponseWriter, r *http.Request) {
 		defer cancel()
 		err := cmd.Wait()
 		if note := OOMNote(oomBefore); note != "" {
-			_, _ = stderr.Write([]byte(note))
+			_, _ = cmd.Stderr.Write([]byte(note))
 		}
+		// Ended on the disk before it reads as ended (GET /exec/{id}/output reads an ended one's end file).
+		output.finish()
 		result := ExecResult{
 			Stdout: string(stdout.bytes()), Stderr: string(stderr.bytes()), Truncated: stdout.cut() || stderr.cut(),
 			DurationMs: time.Since(started).Milliseconds(), Pid: pid, ExitCode: exitCode(err),

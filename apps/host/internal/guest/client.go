@@ -580,6 +580,15 @@ func (c *Client) CommandStatus(ctx context.Context, id string, wait time.Duratio
 	return out, err
 }
 
+// CommandOutput reads a part of a command's kept output (GET /exec/{id}/output): at most length bytes (at most
+// MaxOutputRead) of stream from offset. A guest from before kept output answers IsUnknownRoute.
+func (c *Client) CommandOutput(ctx context.Context, id, stream string, offset, length int64) (CommandOutput, error) {
+	var out CommandOutput
+	q := url.Values{"stream": {stream}, "offset": {strconv.FormatInt(offset, 10)}, "length": {strconv.FormatInt(length, 10)}}
+	_, err := c.do(ctx, http.MethodGet, "/exec/"+url.PathEscape(id)+"/output?"+q.Encode(), nil, &out)
+	return out, err
+}
+
 // KillCommand kills a command by its ID and its process group (POST /exec/{id}/kill), saying whether it was running.
 // A command the guest doesn't know is IsNotFound; a guest from before kills answers IsUnknownRoute.
 func (c *Client) KillCommand(ctx context.Context, id string) (bool, error) {

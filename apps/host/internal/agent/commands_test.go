@@ -672,3 +672,48 @@ func TestAKillOfAKeptForegroundCommandTheGuestDidntTakeFails(t *testing.T) {
 		t.Fatal("a kill the guest didn't take was answered done")
 	}
 }
+
+// outputTier keeps its commands' output, as the microVM tier's guest agent does.
+type outputTier struct {
+	*runnerTier
+	asked proto.ExecOutputParams
+}
+
+func (o *outputTier) CommandOutput(_ context.Context, p proto.ExecOutputParams) (proto.ExecOutput, error) {
+	o.asked = p
+	return proto.ExecOutput{Data: "aGk=", Offset: p.Offset, Size: 2, Ended: true, Limit: 64 << 20}, nil
+}
+
+func TestCommandOutputIsReadFromASandboxThatKeepsIt(t *testing.T) {
+	tier := &outputTier{runnerTier: &runnerTier{heldTier: newHeldTier()}}
+	h := hostWith(t, tier)
+	ctx := context.Background()
+	out, err := callCmd[proto.ExecOutput](t, h, ctx, proto.MethodExecOutput, proto.ExecOutputParams{SandboxID: "sbx_1", CommandID: "cmd_1", Stream: proto.ExecStderr, Offset: 7})
+	if err != nil || out.Data != "aGk=" || out.Offset != 7 || !out.Ended {
+		t.Fatalf("read: %+v, %v", out, err)
+	}
+	// No length, or more than one read answers, is one read's most.
+	if tier.asked.Length != proto.ExecOutputMaxRead || tier.asked.Stream != proto.ExecStderr || tier.asked.CommandID != "cmd_1" {
+		t.Fatalf("the tier was asked %+v", tier.asked)
+	}
+	for _, bad := range []proto.ExecOutputParams{
+		{SandboxID: "sbx_1", CommandID: "cmd_1", Stream: "both"},
+		{SandboxID: "sbx_1", CommandID: "cmd 1", Stream: proto.ExecStdout},
+		{SandboxID: "sbx_1", CommandID: "cmd_1", Stream: proto.ExecStdout, Offset: -1},
+	} {
+		if _, err := callCmd[proto.ExecOutput](t, h, ctx, proto.MethodExecOutput, bad); !isCode(err, proto.ErrInvalid) {
+			t.Fatalf("%+v: %v", bad, err)
+		}
+	}
+	// A sandbox that keeps none (an isolate, a tier with no guest agent of its own) is unsupported.
+	plain := hostWith(t, newHeldTier())
+	if _, err := callCmd[proto.ExecOutput](t, plain, ctx, proto.MethodExecOutput, proto.ExecOutputParams{SandboxID: "iso_1", CommandID: "cmd_1", Stream: proto.ExecStdout}); !isCode(err, proto.ErrUnsupported) {
+		t.Fatalf("no kept output: %v", err)
+	}
+}
+
+// isCode says err is a proto.Error with code.
+func isCode(err error, code string) bool {
+	var pe *proto.Error
+	return errors.As(err, &pe) && pe.Code == code
+}
