@@ -145,7 +145,7 @@ func TestKeptOutputIsCutAtItsLimitAndTheOldestDropped(t *testing.T) {
 	if string(got) != "0123456789" || !last.Cut || last.Limit != 10 {
 		t.Fatalf("cut: %q, %+v", got, last)
 	}
-	// So is one ended with its machine (no end file), from its size.
+	// So is one ended with its machine (no end file): its last output may not have reached the disk.
 	if err := os.Remove(filepath.Join(dir, "cmd_1", outputEndFile)); err != nil {
 		t.Fatal(err)
 	}
@@ -350,11 +350,30 @@ func TestACutStreamKeepsNothingMoreAndSaysSoAfterARestart(t *testing.T) {
 	if string(got) != "01234" || !last.Cut {
 		t.Fatalf("cmd_b's stdout, cut: %q, %+v", got, last)
 	}
-	// Ended with its machine (no end file), read after a restart: still cut, below its stream's limit.
+	// Ended with its machine (no end file), read after a restart: cut, below its stream's limit.
 	if err := os.Remove(filepath.Join(dir, "cmd_b", outputEndFile)); err != nil {
 		t.Fatal(err)
 	}
 	if _, last := readAll(t, clientFor(t, (&Server{OutputDir: dir}).Handler()), "cmd_b", StreamStdout, 100); !last.Cut || last.Size != 5 {
 		t.Fatalf("after a restart: %+v", last)
+	}
+}
+
+func TestAStreamWithNoEndReadsAsCut(t *testing.T) {
+	dir := t.TempDir()
+	client := clientFor(t, (&Server{OutputDir: dir}).Handler())
+	if _, err := client.Exec(context.Background(), ExecRequest{Cwd: os.TempDir(), ID: "cmd_1", Argv: []string{"sh", "-c", "printf short"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, last := readAll(t, client, "cmd_1", StreamStdout, 100); last.Cut || !last.Ended {
+		t.Fatalf("ended with its end file: %+v", last)
+	}
+	// Its machine went before its end was written (or the disk refused it): what it kept may not be all of it.
+	if err := os.Remove(filepath.Join(dir, "cmd_1", outputEndFile)); err != nil {
+		t.Fatal(err)
+	}
+	got, last := readAll(t, clientFor(t, (&Server{OutputDir: dir}).Handler()), "cmd_1", StreamStdout, 100)
+	if string(got) != "short" || !last.Cut || !last.Ended {
+		t.Fatalf("with no end file, after a restart: %q, %+v", got, last)
 	}
 }

@@ -19,7 +19,8 @@ import (
 // A command run with an ID keeps its whole output on the sandbox's own disk too, past the MaxOutputBytes its status and
 // answer hold: each stream up to OutputKeepBytes, in OutputDir/<id>/stdout and stderr, and an end file once it ends.
 // The disk is the sandbox's, so the output outlives the agent, a reboot, a stop and a crash of the machine (all but
-// what came in the last OutputSyncEvery, which may not be synced yet), and goes with the sandbox when it is deleted. GET
+// what came in the last OutputSyncEvery, which may not be synced yet: a command with no end file reads as cut), and
+// goes with the sandbox when it is deleted. GET
 // /exec/{id}/output reads any part of it, while the command runs and after it ends. A guest from before answers that
 // route 404 (IsUnknownRoute).
 
@@ -75,7 +76,8 @@ type CommandOutput struct {
 	Size int64 `json:"size"`
 	// Ended: the command has ended, so Size is the stream's whole kept size.
 	Ended bool `json:"ended,omitempty"`
-	// Cut: the stream went past Limit, and what came after it was dropped (or the disk refused it).
+	// Cut: the rest may be missing: the stream went past Limit or OutputKeepTotal, or the disk refused it, and what came
+	// after was dropped; or the command ended with its machine or agent before its end file was written.
 	Cut bool `json:"cut,omitempty"`
 	// Limit is OutputKeepBytes.
 	Limit int64 `json:"limit"`
@@ -83,11 +85,9 @@ type CommandOutput struct {
 
 // outputLog is one stream of a command, appended to its file as it comes, up to max. It never fails a write: past its
 // limit, past what all commands may keep, or with a disk that refuses a write or a sync, the log stops for good, marked
-// cut (on the disk too, cutSuffix), so what it kept is always the start of the stream; the command carries on.
+// cut, so what it kept is always the start of the stream; the command carries on.
 type outputLog struct {
-	mu sync.Mutex
-	// path is the stream's file.
-	path   string
+	mu     sync.Mutex
 	f      *os.File
 	n      int64
 	max    int64
@@ -100,10 +100,6 @@ type outputLog struct {
 	// stops, is on the disk within that too.
 	later *time.Timer
 }
-
-// cutSuffix names the file beside a stream's that says it was cut: what a read finds after a crash, before its command's
-// end file was written.
-const cutSuffix = ".cut"
 
 func (l *outputLog) Write(p []byte) (int, error) {
 	if l == nil {
@@ -173,17 +169,9 @@ func (l *outputLog) syncLocked() {
 	l.synced = time.Now()
 }
 
-// cutLocked marks the stream cut, on the disk too, and closes it: it keeps nothing more. l.mu is held.
+// cutLocked marks the stream cut and closes it: it keeps nothing more. l.mu is held.
 func (l *outputLog) cutLocked() {
-	if !l.cut {
-		l.cut = true
-		if l.path != "" {
-			if f, err := os.OpenFile(l.path+cutSuffix, os.O_WRONLY|os.O_CREATE, 0o600); err == nil {
-				_ = f.Sync()
-				_ = f.Close()
-			}
-		}
-	}
+	l.cut = true
 	l.closeLocked()
 }
 
@@ -357,7 +345,7 @@ func (s *Server) openOutput(id string) *commandOutput {
 		if err != nil {
 			return nil
 		}
-		return &outputLog{path: filepath.Join(dir, name), f: f, max: stream, synced: time.Now(), used: &o.used, total: total}
+		return &outputLog{f: f, max: stream, synced: time.Now(), used: &o.used, total: total}
 	}
 	out := &commandOutput{id: id, dir: dir, stdout: open(StreamStdout), stderr: open(StreamStderr), kept: o}
 	if out.stdout == nil || out.stderr == nil {
@@ -536,10 +524,9 @@ func (s *Server) commandOutput(w http.ResponseWriter, r *http.Request) {
 	case end != nil:
 		answer.Cut = end.StderrCut
 	case !running:
-		// No end: it ended with its machine (a reboot, a crash), or as the agent restarted. Cut if it was marked so before,
-		// or filled the stream.
-		_, marked := os.Stat(filepath.Join(dir, stream+cutSuffix))
-		answer.Cut = marked == nil || answer.Size >= limit
+		// No end: it ended with its machine (a reboot, a crash) or its agent, so its last output may not have reached the
+		// disk, and whether it was cut before isn't known: cut.
+		answer.Cut = true
 	}
 	writeJSON(w, 200, answer)
 }

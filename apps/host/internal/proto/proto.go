@@ -1722,7 +1722,8 @@ const ExecOutputMaxRead = 1 << 20
 // microVM's guest agent keeps each stream of a command run with an ID on the sandbox's disk, up to Limit bytes). Data
 // is base64, from Offset (the offset asked for, or Size when that is past it). Size is how much of the stream is kept
 // now, which only grows while the command runs; Ended says it has ended, so Size is the whole of it; Truncated says
-// the stream went past Limit, and the rest was dropped. A command whose output the sandbox doesn't keep is not_found;
+// the rest may be missing: the stream went past Limit, or past what the sandbox keeps in all, its disk refused it, or
+// the command ended with its machine before its end was recorded. A command whose output the sandbox doesn't keep is not_found;
 // a sandbox that keeps none (an isolate, a guest agent from before) is unsupported.
 type ExecOutput struct {
 	Data      string `json:"data"`

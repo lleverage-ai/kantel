@@ -157,10 +157,11 @@ func TestCommandOutputOutlivesItsMachine(t *testing.T) {
 	}
 	vmCall[map[string]any](t, h, proto.MethodStart, proto.ResumeParams{SandboxID: id})
 	check("after its machine was killed and it started again")
-	if got, last := readOutput(t, h, id, "cmd_crash", proto.ExecStdout); !bytes.Equal(got, crash) || !last.Ended || last.Truncated {
+	// Read as cut: it ended with its machine, so what it wrote last may not have reached the disk (here all of it had).
+	if got, last := readOutput(t, h, id, "cmd_crash", proto.ExecStdout); !bytes.Equal(got, crash) || !last.Ended || !last.Truncated {
 		t.Fatalf("cmd_crash, running as its machine was killed: %d of %d bytes, last part %+v", len(got), len(crash), last)
 	} else {
-		t.Logf("cmd_crash, running as its machine was killed: all %d bytes kept, ended %v", len(got), last.Ended)
+		t.Logf("cmd_crash, running as its machine was killed: all %d bytes kept, ended %v, read as cut %v", len(got), last.Ended, last.Truncated)
 	}
 }
 
