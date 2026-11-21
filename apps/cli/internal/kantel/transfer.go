@@ -169,8 +169,13 @@ func runIn(ctx context.Context, client *api.Client, sandboxID, command string, t
 	return result.Stdout, nil
 }
 
-// rawPartSize is a part of a file written in parts (files/parts): raw bytes, at most 64 MiB a part.
-const rawPartSize = 16 * 1024 * 1024
+// rawPartSize is a part of a file written in parts (files/parts): raw bytes, at most 64 MiB a part. The first is
+// firstRawPartSize, which says whether parts are taken at all: small enough for a self-hosted gateway from before them,
+// which reads a body it doesn't stream whole, up to 4 MiB, before it answers the route unknown.
+const (
+	rawPartSize      = 16 * 1024 * 1024
+	firstRawPartSize = 1024 * 1024
+)
 
 // errPartsUnsupported is putParts' answer when the sandbox, its host or Kantel doesn't take files in parts.
 var errPartsUnsupported = errors.New("files in parts aren't supported here")
@@ -180,28 +185,29 @@ var errPartsUnsupported = errors.New("files in parts aren't supported here")
 // refused as not_supported (an isolate, an older host or image) or the route isn't there (an older Kantel).
 func putParts(ctx context.Context, client *api.Client, sandboxID, p string, content []byte, mode string) error {
 	upload := randomID()
-	write := func(offset int) error {
+	write := func(offset, length int) error {
 		_, err := client.WriteFilePart(ctx, sandboxID, &api.WriteFilePartQuery{
 			Path: &p, Upload: &upload, Offset: api.Ptr(int64(offset)),
-		}, bytes.NewReader(content[offset:min(offset+rawPartSize, len(content))]), "application/octet-stream")
-		return err
-	}
-	if err := write(0); err != nil {
-		var apiErr *api.Error
-		if errors.As(err, &apiErr) && (apiErr.Code == "not_supported" || apiErr.Status == 404 || apiErr.Status == 405) {
-			return errPartsUnsupported
-		}
+		}, bytes.NewReader(content[offset:min(offset+length, len(content))]), "application/octet-stream")
 		return err
 	}
 	abort := func(err error) error {
 		_ = client.AbortFileParts(context.WithoutCancel(ctx), sandboxID, &api.AbortFilePartsQuery{Path: &p, Upload: &upload})
 		return err
 	}
+	if err := write(0, firstRawPartSize); err != nil {
+		var apiErr *api.Error
+		if errors.As(err, &apiErr) && (apiErr.Code == "not_supported" || apiErr.Status == 404 || apiErr.Status == 405 || apiErr.Status == 413) {
+			return errPartsUnsupported
+		}
+		// Some of it may be staged.
+		return abort(err)
+	}
 	var offsets []int
-	for offset := rawPartSize; offset < len(content); offset += rawPartSize {
+	for offset := firstRawPartSize; offset < len(content); offset += rawPartSize {
 		offsets = append(offsets, offset)
 	}
-	if err := eachLimited(offsets, 4, write); err != nil {
+	if err := eachLimited(offsets, 4, func(offset int) error { return write(offset, rawPartSize) }); err != nil {
 		return abort(err)
 	}
 	sum := sha256.Sum256(content)

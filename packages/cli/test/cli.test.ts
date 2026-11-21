@@ -2550,6 +2550,49 @@ describe("copying files", () => {
 			sha256: createHash("sha256").update(big).digest("hex"),
 		});
 		expect(result.calls.some((call) => call.path.endsWith("/commands"))).toBe(false);
+
+		// A part that fails: no more start, and the upload is aborted once those under way have ended.
+		const order: string[] = [];
+		const failed = await kantel(["scp", "big.bin", "sbx_test1:/srv/big.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({ path: "/srv", items: [] }),
+				"PUT /v1/sandboxes/sbx_test1/files/parts": async (call) => {
+					order.push("part");
+					if (call.query.get("offset") === String(1024 * 1024)) {
+						return kantelError(507, "exhausted", "the sandbox's disk is full");
+					}
+					await new Promise((resolve) => setImmediate(resolve));
+					return { path: "/srv/big.bin", upload: "u", offset: 0, size: call.raw?.length ?? 0 };
+				},
+				"DELETE /v1/sandboxes/sbx_test1/files/parts": () => {
+					order.push("abort");
+					return undefined;
+				},
+			},
+		});
+		expect(failed.code).not.toBe(0);
+		expect(order.at(-1)).toBe("abort");
+		expect(order.filter((step) => step === "abort")).toHaveLength(1);
+	});
+
+	it("scp falls back to base64 parts when a gateway from before parts refuses the first as too large", async () => {
+		const big = Buffer.alloc(5 * 1024 * 1024, 3);
+		await writeFile(join(configDir, "big.bin"), big);
+		let first = 0;
+		const result = await kantel(["scp", "big.bin", "sbx_test1:/srv/big.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({ path: "/srv", items: [] }),
+				"PUT /v1/sandboxes/sbx_test1/files/parts": (call) => {
+					first = call.raw?.length ?? 0;
+					return kantelError(413, "invalid", "Request body too large");
+				},
+				"PUT /v1/sandboxes/sbx_test1/files": () => ({ path: "x", size: 1 }),
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({}),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(first).toBeLessThanOrEqual(1024 * 1024);
+		expect(result.calls.some((call) => call.path.endsWith("/commands"))).toBe(true);
 	});
 
 	it("scp sends a file over 1 MiB in parts and joins them with one command", async () => {

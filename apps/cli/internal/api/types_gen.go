@@ -501,7 +501,7 @@ const (
 )
 
 type CompleteFilePartsBody struct {
-	// Octal permissions, such as `0755` (default `0644`).
+	// Octal permissions, such as `0755` (default `0644`); not `0000`.
 	Mode *string `json:"mode,omitempty"`
 	// The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
 	Path string `json:"path"`

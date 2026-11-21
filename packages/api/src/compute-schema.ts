@@ -2276,7 +2276,9 @@ export const CompleteFilePartsBody = Type.Object(
 			pattern: "^[0-9a-fA-F]{64}$",
 			description: "The whole file's SHA-256, in hex.",
 		}),
-		mode: Type.Optional(Type.String({ description: "Octal permissions, such as `0755` (default `0644`)." })),
+		mode: Type.Optional(
+			Type.String({ description: "Octal permissions, such as `0755` (default `0644`); not `0000`." }),
+		),
 	},
 	{ title: "CompleteFilePartsBody" },
 );

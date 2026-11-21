@@ -184,10 +184,10 @@ How it behaves:
 - **Parts may come in any order, and several at once.** Sending a part again writes it again, so a part whose answer was lost can just be retried. A part after the upload was completed is `conflict`.
 - **Completing again is safe.** While the path still has that size and SHA-256, a second completion answers as the first, so a lost answer can be asked for again. An upload that isn't known (never started, discarded or aborted) is `conflict`.
 - **Uploads to the same path are separate.** Each `upload` ID has its own parts, and the last to complete wins.
-- **The file is the sandbox user's**, with `mode` from the completion (default `0644`).
+- **The file is the sandbox user's**, with `mode` from the completion (default `0644`; `0000` is refused).
 - **Abandoned uploads are cleaned up.** `DELETE /v1/sandboxes/{id}/files/parts?path=…&upload=…` (`abortFileParts`) discards one at once. An upload with no part for an hour is discarded, and so is every upload of a sandbox that stops without its memory; a stop that keeps memory keeps its uploads. A sandbox has at most 1024 uploads under way.
 
-Isolates, an image made before this feature and a host whose kantel-host predates it answer `not_supported`. `kantel scp` and `kantel files put` write a file over 1 MiB this way, and fall back to joining smaller parts with a command where it isn't supported.
+Isolates, an image made before this feature and a host whose kantel-host predates it answer `not_supported`. `kantel scp` writes a file over 1 MiB this way, and falls back to joining smaller base64 parts with a command where parts aren't taken (an isolate, an older host, image or Kantel).
 
 ## List a directory
 

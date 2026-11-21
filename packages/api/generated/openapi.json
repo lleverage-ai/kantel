@@ -16043,7 +16043,7 @@
 					},
 					"mode": {
 						"type": "string",
-						"description": "Octal permissions, such as `0755` (default `0644`)."
+						"description": "Octal permissions, such as `0755` (default `0644`); not `0000`."
 					}
 				},
 				"title": "CompleteFilePartsBody"

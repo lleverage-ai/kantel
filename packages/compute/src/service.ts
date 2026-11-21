@@ -11783,10 +11783,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (backend.completeFileParts === undefined) throw partsUnsupported(sandbox);
 			let mode: number | undefined;
 			if (body.mode !== undefined) {
-				if (!/^0?[0-7]{3}$/.test(body.mode)) {
-					throw new KantelError("invalid", "mode must be octal permissions, such as 0755");
-				}
-				mode = Number.parseInt(body.mode, 8);
+				mode = /^0?[0-7]{3}$/.test(body.mode) ? Number.parseInt(body.mode, 8) : 0;
+				// 0 would read as no mode given, and the file would be 0644.
+				if (mode === 0) throw new KantelError("invalid", "mode must be octal permissions, such as 0755, not 0000");
 			}
 			return fileEntry(
 				await backend.completeFileParts(running.id, path, body.upload, body.size, body.sha256.toLowerCase(), mode),

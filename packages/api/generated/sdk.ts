@@ -452,7 +452,7 @@ export interface CompleteFilePartsBody {
 	readonly size: number;
 	/** The whole file's SHA-256, in hex. */
 	readonly sha256: string;
-	/** Octal permissions, such as `0755` (default `0644`). */
+	/** Octal permissions, such as `0755` (default `0644`); not `0000`. */
 	readonly mode?: string;
 }
 

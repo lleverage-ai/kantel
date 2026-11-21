@@ -429,7 +429,7 @@ One of: `"cpu"` or `"memory"` or `"wall"`.
 | `upload` | string | yes | Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. |
 | `size` | integer | yes | The whole file's size in bytes. (minimum 0, maximum 68719476736) |
 | `sha256` | string | yes | The whole file's SHA-256, in hex. |
-| `mode` | string | no | Octal permissions, such as `0755` (default `0644`). |
+| `mode` | string | no | Octal permissions, such as `0755` (default `0644`); not `0000`. |
 
 ### Cost
 

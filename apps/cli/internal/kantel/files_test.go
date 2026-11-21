@@ -567,6 +567,51 @@ func TestScpSendsALargeFileInRawParts(t *testing.T) {
 	}})
 	eq(t, "fallback exit", old.Code, 0)
 	eq(t, "joined by a command", joined, true)
+
+	// A self-hosted gateway from before parts reads the first part whole and refuses one over 4 MiB: the first is
+	// smaller, and a 413 falls back too.
+	joined = false
+	var first int
+	tooLarge := run(t, []string{"scp", "big.bin", "sbx_test1:/srv/big.bin"}, opts{configDir: dir, routes: routes{
+		"GET /v1/sandboxes/sbx_test1/files/list": func(call) any { return map[string]any{"path": "/srv", "items": []any{}} },
+		"PUT /v1/sandboxes/sbx_test1/files/parts": func(c call) any {
+			first = len(c.Raw)
+			return kantelError(413, "invalid", "Request body too large")
+		},
+		"PUT /v1/sandboxes/sbx_test1/files": func(call) any { return map[string]any{"path": "x", "size": 1} },
+		commands: func(c call) any {
+			joined = strings.HasPrefix(c.Body["command"].(string), "cat ")
+			return command(nil)
+		},
+	}})
+	eq(t, "413 exit", tooLarge.Code, 0)
+	eq(t, "the first part fits", first <= 1024*1024, true)
+	eq(t, "413 joined", joined, true)
+
+	// A part that fails, the first or a later one: the upload is aborted, once no part is under way.
+	for _, failAt := range []string{"0", strconv.Itoa(1024 * 1024)} {
+		var order []string
+		failed := run(t, []string{"scp", "big.bin", "sbx_test1:/srv/big.bin"}, opts{configDir: dir, routes: routes{
+			"GET /v1/sandboxes/sbx_test1/files/list": func(call) any { return map[string]any{"path": "/srv", "items": []any{}} },
+			"PUT /v1/sandboxes/sbx_test1/files/parts": func(c call) any {
+				mu.Lock()
+				order = append(order, "part")
+				mu.Unlock()
+				if url.Values(c.Query).Get("offset") == failAt {
+					return kantelError(507, "exhausted", "the sandbox's disk is full")
+				}
+				return map[string]any{"path": "/srv/big.bin", "upload": "u", "offset": 0, "size": len(c.Raw)}
+			},
+			"DELETE /v1/sandboxes/sbx_test1/files/parts": func(call) any {
+				mu.Lock()
+				order = append(order, "abort")
+				mu.Unlock()
+				return nil
+			},
+		}})
+		eq(t, "failed exit "+failAt, failed.Code != 0, true)
+		eq(t, "aborted last "+failAt, len(order) > 0 && order[len(order)-1] == "abort", true)
+	}
 }
 
 func TestScpDownloadsAFileIntoADirectoryAndADirectoryWithR(t *testing.T) {

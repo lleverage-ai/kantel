@@ -23,6 +23,11 @@ export const PART = 768 * 1024;
 export const DOWNLOAD_PART = 512 * 1024;
 /** A raw part of a file written in parts (`files/parts`, at most 64 MiB a part). */
 export const RAW_PART = 16 * 1024 * 1024;
+/**
+ * The first part, which says whether parts are taken at all: small enough for a self-hosted gateway from before them,
+ * which reads a body it doesn't stream whole, up to 4 MiB, before it answers the route unknown.
+ */
+const FIRST_RAW_PART = 1024 * 1024;
 /** How many files go at once. */
 const CONCURRENCY = 6;
 
@@ -60,16 +65,25 @@ function utf8(content: Uint8Array): string | undefined {
 	}
 }
 
-/** Runs `work` on each item, `limit` at a time, in order of starting. */
+/**
+ * Runs `work` on each item, `limit` at a time, in order of starting; after one fails no more start, and it rejects
+ * with the first failure once those under way have ended.
+ */
 async function eachLimited<T>(items: readonly T[], limit: number, work: (item: T) => Promise<void>): Promise<void> {
 	let next = 0;
+	let failure: { readonly error: unknown } | undefined;
 	const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
-		while (next < items.length) {
+		while (failure === undefined && next < items.length) {
 			const item = items[next++] as T;
-			await work(item);
+			try {
+				await work(item);
+			} catch (error) {
+				failure ??= { error };
+			}
 		}
 	});
 	await Promise.all(runners);
+	if (failure !== undefined) throw failure.error;
 }
 
 async function run(client: KantelClient, sandboxId: string, command: string, timeoutMs = 120_000): Promise<string> {
@@ -95,22 +109,21 @@ async function putParts(
 	mode?: string,
 ): Promise<boolean> {
 	const upload = randomBytes(8).toString("hex");
-	const write = (offset: number) =>
-		client.writeFilePart(sandboxId, content.slice(offset, offset + RAW_PART), { path, upload, offset });
+	const write = (offset: number, length = RAW_PART) =>
+		client.writeFilePart(sandboxId, content.slice(offset, offset + length), { path, upload, offset });
 	try {
-		await write(0);
+		await write(0, FIRST_RAW_PART);
 	} catch (error) {
-		if (
-			error instanceof KantelApiError &&
-			(error.code === "not_supported" || error.status === 404 || error.status === 405)
-		) {
+		if (error instanceof KantelApiError && (error.code === "not_supported" || [404, 405, 413].includes(error.status))) {
 			return false;
 		}
+		// Some of it may be staged.
+		await client.abortFileParts(sandboxId, { path, upload }).catch(() => undefined);
 		throw error;
 	}
 	try {
 		const offsets: number[] = [];
-		for (let offset = RAW_PART; offset < content.length; offset += RAW_PART) offsets.push(offset);
+		for (let offset = FIRST_RAW_PART; offset < content.length; offset += RAW_PART) offsets.push(offset);
 		await eachLimited(offsets, 4, async (offset) => {
 			await write(offset);
 		});

@@ -257,10 +257,9 @@ describe("sandboxes", () => {
 		const sha256 = await sha256Hex(content);
 		const part = (offset: number, end: number, upload = "upload-one") =>
 			tom.writeFilePart(sandbox.id, content.slice(offset, end), { path: "big/f.bin", upload, offset });
-		// In any order, one sent again.
-		expect(await part(30, content.length)).toMatchObject({ path: "/home/user/big/f.bin", offset: 30, size: 16 });
-		await part(0, 15);
-		await part(15, 30);
+		// In any order and at once, one sent again.
+		const [last] = await Promise.all([part(30, content.length), part(0, 15), part(15, 30)]);
+		expect(last).toMatchObject({ path: "/home/user/big/f.bin", offset: 30, size: 16 });
 		await part(15, 30);
 		expect((await failure(tom.readFile(sandbox.id, { path: "big/f.bin" }))).code).toBe("not_found");
 
@@ -287,9 +286,22 @@ describe("sandboxes", () => {
 		const aborted = { path: "aborted.bin", upload: "upload-three", size: content.length, sha256 };
 		expect((await failure(tom.completeFileParts(sandbox.id, aborted))).code).toBe("conflict");
 
-		// Past the largest file, and on an isolate: refused.
+		// No permissions at all is refused rather than read as none given.
+		await part(0, 15, "upload-mode");
+		const noMode = { path: "m.bin", upload: "upload-mode", size: 15, sha256, mode: "0000" };
+		expect((await failure(tom.completeFileParts(sandbox.id, noMode))).code).toBe("invalid");
+
+		// Past the largest file, past what the stub holds in memory, and on an isolate: refused. A stop without memory
+		// discards the uploads.
 		const past = { path: "x.bin", upload: "upload-four", offset: 64 * 1024 * MiB - 2 };
 		expect((await failure(tom.writeFilePart(sandbox.id, content.slice(0, 3), past))).code).toBe("invalid");
+		const sparse = { ...past, offset: 64 * MiB };
+		expect((await failure(tom.writeFilePart(sandbox.id, content.slice(0, 1), sparse))).code).toBe("invalid");
+		await tom.writeFilePart(sandbox.id, content, { path: "kept.bin", upload: "upload-five", offset: 0 });
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		const stopped = { path: "kept.bin", upload: "upload-five", size: content.length, sha256 };
+		expect((await failure(tom.completeFileParts(sandbox.id, stopped))).code).toBe("conflict");
 		const isolate = await tom.createSandbox({ wait: true });
 		const unsupported = await failure(tom.writeFilePart(isolate.id, content, { ...past, offset: 0 }));
 		expect(unsupported.code).toBe("not_supported");
