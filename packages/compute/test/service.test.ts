@@ -116,11 +116,6 @@ async function failure(call: Promise<unknown>): Promise<KantelApiError> {
 
 const MiB = 2 ** 20;
 
-async function sha256Hex(bytes: Uint8Array<ArrayBuffer>): Promise<string> {
-	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
-	return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 /** A snapshot's ref on its backend; fails the test when it has none. */
 async function refOf(store: ComputeStore, snapshotId: string): Promise<string> {
 	const ref = (await store.snapshots.get(snapshotId))?.ref;
@@ -250,61 +245,59 @@ describe("sandboxes", () => {
 		expect((await failure(tom.readFile(sandbox.id, { path: "a.txt", length: 1024 * 1024 + 1 }))).code).toBe("invalid");
 	});
 
-	it("writes a file in parts, moving it into place only once its size and SHA-256 are checked", async () => {
-		const { tom } = setup();
+	it("writes a file in parts through a backend that takes them, and refuses where none does", async () => {
+		// The stub keeps files in the gateway's memory and takes no parts; a host's guest stages and checks them
+		// (apps/host/internal/guest/parts.go). This one records what the service asks of it.
+		const asked: unknown[][] = [];
+		const stub = createStubBackend();
+		const backend: SandboxBackend = {
+			...stub,
+			async writeFilePart(_sandboxId, path, upload, offset, body) {
+				const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+				asked.push(["part", path, upload, offset, new TextDecoder().decode(bytes)]);
+				return { size: bytes.byteLength };
+			},
+			async completeFileParts(_sandboxId, path, upload, size, sha256, mode) {
+				asked.push(["complete", path, upload, size, sha256, mode]);
+				return { name: "f.bin", path, kind: "file", size, modifiedAt: 1 };
+			},
+			async abortFileParts(_sandboxId, path, upload) {
+				asked.push(["abort", path, upload]);
+			},
+		};
+		const { tom } = setup(backend);
 		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
-		const content = new TextEncoder().encode("the first part, then the second, then the last");
-		const sha256 = await sha256Hex(content);
-		const part = (offset: number, end: number, upload = "upload-one") =>
-			tom.writeFilePart(sandbox.id, content.slice(offset, end), { path: "big/f.bin", upload, offset });
-		// In any order and at once, one sent again.
-		const [last] = await Promise.all([part(30, content.length), part(0, 15), part(15, 30)]);
-		expect(last).toMatchObject({ path: "/home/user/big/f.bin", offset: 30, size: 16 });
-		await part(15, 30);
-		expect((await failure(tom.readFile(sandbox.id, { path: "big/f.bin" }))).code).toBe("not_found");
+		const content = new TextEncoder().encode("the first part");
+		const query = { path: "big/f.bin", upload: "upload-one", offset: 30 };
+		expect(await tom.writeFilePart(sandbox.id, content, query)).toEqual({
+			path: "/home/user/big/f.bin",
+			upload: "upload-one",
+			offset: 30,
+			size: 14,
+		});
+		const sha256 = "AB".repeat(32);
+		const done = { path: "big/f.bin", upload: "upload-one", size: 44, sha256, mode: "0640" };
+		expect(await tom.completeFileParts(sandbox.id, done)).toMatchObject({ path: "/home/user/big/f.bin", size: 44 });
+		await tom.abortFileParts(sandbox.id, { path: "/tmp/x", upload: "upload-two" });
+		expect(asked).toEqual([
+			["part", "/home/user/big/f.bin", "upload-one", 30, "the first part"],
+			["complete", "/home/user/big/f.bin", "upload-one", 44, "ab".repeat(32), 0o640],
+			["abort", "/tmp/x", "upload-two"],
+		]);
 
-		const done = { path: "big/f.bin", upload: "upload-one", size: content.length, sha256, mode: "0640" };
-		expect(await tom.completeFileParts(sandbox.id, done)).toMatchObject({ path: "/home/user/big/f.bin", size: 46 });
-		expect((await tom.readFile(sandbox.id, { path: "big/f.bin" })).content).toBe(new TextDecoder().decode(content));
-		// Completing again answers as the first did; a wrong checksum is refused, with nothing put in place.
-		expect(await tom.completeFileParts(sandbox.id, done)).toMatchObject({ size: 46 });
-		await part(0, 15, "upload-two");
-		const wrong = await failure(
-			tom.completeFileParts(sandbox.id, { path: "other.bin", upload: "upload-two", size: 15, sha256 }),
-		);
-		expect(wrong.code).toBe("conflict");
-		await tom.writeFilePart(sandbox.id, content.slice(0, 15), { path: "other.bin", upload: "upload-two", offset: 0 });
-		const refused = await failure(
-			tom.completeFileParts(sandbox.id, { path: "other.bin", upload: "upload-two", size: 15, sha256 }),
-		);
-		expect(refused.code).toBe("invalid");
-		expect((await failure(tom.readFile(sandbox.id, { path: "other.bin" }))).code).toBe("not_found");
+		// No permissions at all is refused rather than read as none given; past the largest file, refused.
+		expect((await failure(tom.completeFileParts(sandbox.id, { ...done, mode: "0000" }))).code).toBe("invalid");
+		const past = { ...query, offset: 64 * 1024 * MiB - 2 };
+		expect((await failure(tom.writeFilePart(sandbox.id, content, past))).code).toBe("invalid");
+		expect(asked).toHaveLength(3);
 
-		// Aborted: gone.
-		await tom.writeFilePart(sandbox.id, content, { path: "aborted.bin", upload: "upload-three", offset: 0 });
-		await tom.abortFileParts(sandbox.id, { path: "aborted.bin", upload: "upload-three" });
-		const aborted = { path: "aborted.bin", upload: "upload-three", size: content.length, sha256 };
-		expect((await failure(tom.completeFileParts(sandbox.id, aborted))).code).toBe("conflict");
-
-		// No permissions at all is refused rather than read as none given.
-		await part(0, 15, "upload-mode");
-		const noMode = { path: "m.bin", upload: "upload-mode", size: 15, sha256, mode: "0000" };
-		expect((await failure(tom.completeFileParts(sandbox.id, noMode))).code).toBe("invalid");
-
-		// Past the largest file, past what the stub holds in memory, and on an isolate: refused. A stop without memory
-		// discards the uploads.
-		const past = { path: "x.bin", upload: "upload-four", offset: 64 * 1024 * MiB - 2 };
-		expect((await failure(tom.writeFilePart(sandbox.id, content.slice(0, 3), past))).code).toBe("invalid");
-		const sparse = { ...past, offset: 64 * MiB };
-		expect((await failure(tom.writeFilePart(sandbox.id, content.slice(0, 1), sparse))).code).toBe("invalid");
-		await tom.writeFilePart(sandbox.id, content, { path: "kept.bin", upload: "upload-five", offset: 0 });
-		await tom.stopSandbox(sandbox.id, { wait: true });
-		await tom.startSandbox(sandbox.id, { wait: true });
-		const stopped = { path: "kept.bin", upload: "upload-five", size: content.length, sha256 };
-		expect((await failure(tom.completeFileParts(sandbox.id, stopped))).code).toBe("conflict");
+		// An isolate, and a deployment whose backend takes no parts (the stub's stand-ins): not_supported.
 		const isolate = await tom.createSandbox({ wait: true });
-		const unsupported = await failure(tom.writeFilePart(isolate.id, content, { ...past, offset: 0 }));
-		expect(unsupported.code).toBe("not_supported");
+		expect((await failure(tom.writeFilePart(isolate.id, content, query))).code).toBe("not_supported");
+		const plain = setup().tom;
+		const standIn = await plain.createSandbox({ type: "microvm", wait: true });
+		expect((await failure(plain.writeFilePart(standIn.id, content, query))).code).toBe("not_supported");
+		expect((await failure(plain.completeFileParts(standIn.id, done))).code).toBe("not_supported");
 	});
 
 	it("runs a detached command in the background and records how it ended", async () => {

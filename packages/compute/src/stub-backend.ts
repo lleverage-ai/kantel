@@ -23,7 +23,6 @@ import {
 	type ExecRequest,
 	type ExecResult,
 	ISOLATE_UPGRADE_FEATURE,
-	MAX_UNSTREAMED_WRITE_BYTES,
 	type Placement,
 	SANDBOX_ENV_FEATURE,
 	type SandboxBackend,
@@ -276,19 +275,6 @@ function entriesOf(tree: Tree, dir: string): BackendFileEntry[] {
 }
 
 /** A `SandboxBackend` in memory over just-bash, with one stub host. */
-/** The most a stub sandbox's files being written in parts hold in all: they are in the gateway's memory. */
-const STUB_FILE_PARTS_MAX_BYTES = MAX_UNSTREAMED_WRITE_BYTES;
-
-interface StagedUpload {
-	bytes: Uint8Array;
-	length: number;
-}
-
-async function bytesSha256(bytes: Uint8Array): Promise<string> {
-	const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(bytes)));
-	return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
-}
-
 export function createStubBackend(options: StubBackendOptions = {}): SandboxBackend {
 	const types: readonly computeSchema.SandboxType[] = options.types ?? ["isolate", "microvm"];
 	const domain = options.sandboxDomain ?? "sandbox.localhost";
@@ -309,21 +295,6 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 	const upgrades = new Map<string, { operationId: string; placement?: UpgradedPlacement; reason?: string }>();
 	/** Template snapshots by ref: a cache apart from `snapshots`, which `deleteSnapshot` never touches. */
 	const templateSnapshots = new Map<string, Tree>();
-	/**
-	 * Files being written in parts, by sandbox, then path and upload: the bytes so far, as a guest's staged file holds
-	 * them. The stub keeps them in the gateway's memory, so a sandbox's come to at most `STUB_FILE_PARTS_MAX_BYTES`, and
-	 * they go with its machine (a stop without memory, a delete).
-	 */
-	const uploads = new Map<string, Map<string, StagedUpload>>();
-	const uploadKey = (path: string, upload: string) => `${path}\u0000${upload}`;
-	const uploadsOf = (sandboxId: string) => {
-		let mine = uploads.get(sandboxId);
-		if (mine === undefined) {
-			mine = new Map();
-			uploads.set(sandboxId, mine);
-		}
-		return mine;
-	};
 
 	const host: BackendHost = {
 		id: STUB_HOST_ID,
@@ -685,7 +656,6 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			machine.ports.clear();
 			if (keepMemory) machine.state = "paused";
 			else {
-				uploads.delete(sandboxId);
 				machine.fs = undefined;
 				machine.state = "stopped";
 			}
@@ -720,7 +690,6 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 
 		async destroy(sandboxId) {
 			stickyAttached.delete(sandboxId);
-			uploads.delete(sandboxId);
 			machines.delete(sandboxId);
 		},
 
@@ -843,82 +812,6 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 			} catch (error) {
 				return fsError(error, path);
 			}
-		},
-
-		async writeFilePart(sandboxId, path, upload, offset, body) {
-			running(sandboxId);
-			const mine = uploadsOf(sandboxId);
-			const key = uploadKey(path, upload);
-			// Made before the body is read, so parts at once share it.
-			let staged = mine.get(key);
-			if (staged === undefined) {
-				staged = { bytes: new Uint8Array(0), length: 0 };
-				mine.set(key, staged);
-			}
-			let at = offset;
-			for await (const chunk of body as unknown as AsyncIterable<Uint8Array>) {
-				// Aborted, or completed, while this part came: the rest of it goes nowhere.
-				if (mine.get(key) !== staged) continue;
-				if (at + chunk.byteLength > staged.bytes.byteLength) {
-					const want = Math.min(
-						Math.max(at + chunk.byteLength, staged.bytes.byteLength * 2),
-						STUB_FILE_PARTS_MAX_BYTES,
-					);
-					let held = 0;
-					for (const other of mine.values()) held += other === staged ? 0 : other.bytes.byteLength;
-					if (at + chunk.byteLength > want || held + want > STUB_FILE_PARTS_MAX_BYTES) {
-						throw new KantelError(
-							"invalid",
-							`This deployment's sandboxes take files in parts of at most ${STUB_FILE_PARTS_MAX_BYTES} bytes in all`,
-						);
-					}
-					const grown = new Uint8Array(want);
-					grown.set(staged.bytes.subarray(0, staged.length));
-					staged.bytes = grown;
-				}
-				staged.bytes.set(chunk, at);
-				at += chunk.byteLength;
-				staged.length = Math.max(staged.length, at);
-			}
-			return { size: at - offset };
-		},
-
-		async completeFileParts(sandboxId, path, upload, size, sha256, mode): Promise<BackendFileEntry> {
-			const { fs } = running(sandboxId);
-			const mine = uploadsOf(sandboxId);
-			const key = uploadKey(path, upload);
-			const staged = mine.get(key);
-			if (staged === undefined) {
-				const current = await fs.readFileBuffer(path).then(
-					(bytes) => new Uint8Array(bytes),
-					() => undefined,
-				);
-				if (current !== undefined && current.byteLength === size && (await bytesSha256(current)) === sha256) {
-					return { name: baseName(path), path, kind: "file", size, modifiedAt: now() };
-				}
-				throw new KantelError("conflict", `No upload ${upload} of ${path}`);
-			}
-			mine.delete(key);
-			const bytes = staged.bytes.subarray(0, staged.length);
-			if (bytes.byteLength !== size) {
-				throw new KantelError(
-					"invalid",
-					`The parts written come to ${bytes.byteLength} bytes, not ${size}; the upload is discarded`,
-				);
-			}
-			const got = await bytesSha256(bytes);
-			if (got !== sha256) {
-				throw new KantelError(
-					"invalid",
-					`The parts written have SHA-256 ${got}, not ${sha256}; the upload is discarded`,
-				);
-			}
-			return this.writeFile(sandboxId, path, bytes, mode ?? 0o644);
-		},
-
-		async abortFileParts(sandboxId, path, upload) {
-			running(sandboxId);
-			uploads.get(sandboxId)?.delete(uploadKey(path, upload));
 		},
 
 		async deleteFile(sandboxId, path) {
