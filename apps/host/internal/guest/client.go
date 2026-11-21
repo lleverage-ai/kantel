@@ -589,3 +589,71 @@ func (c *Client) KillCommand(ctx context.Context, id string) (bool, error) {
 	_, err := c.do(ctx, http.MethodPost, "/exec/"+url.PathEscape(id)+"/kill", nil, &out)
 	return out.Killed, err
 }
+
+// partQuery is an upload in parts' path and upload ID as the agent's query.
+func partQuery(path, upload string) url.Values {
+	return url.Values{"path": {path}, "upload": {upload}}
+}
+
+// WritePart writes data at offset into the staged file of the upload named upload of path (PUT /files/part). An agent
+// from before uploads in parts answers 404 or 405 (IsUnknownRoute); a full disk, 507 (IsFull).
+func (c *Client) WritePart(ctx context.Context, path, upload string, offset int64, data []byte) (int64, error) {
+	q := partQuery(path, upload)
+	q.Set("offset", strconv.FormatInt(offset, 10))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPut, "http://guest/files/part?"+q.Encode(), bytes.NewReader(data))
+	if err != nil {
+		return 0, err
+	}
+	res, err := c.http.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	if res.StatusCode >= 300 {
+		return 0, refusal(res)
+	}
+	defer res.Body.Close()
+	var out struct {
+		Size int64 `json:"size"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		return 0, fmt.Errorf("guest agent: a part's answer: %w", err)
+	}
+	return out.Size, nil
+}
+
+// CompleteUpload moves the upload's staged file over path once it is size bytes with that SHA-256 (POST
+// /files/complete), with mode (0 is 0644). A failed check is the agent's 400 (IsRefused); an upload it doesn't have,
+// 409 (IsConflict). It answers the file's size and mode.
+func (c *Client) CompleteUpload(ctx context.Context, path, upload string, size int64, sha256 string, mode uint32) (int64, uint32, error) {
+	q := partQuery(path, upload)
+	q.Set("size", strconv.FormatInt(size, 10))
+	q.Set("sha256", sha256)
+	if mode != 0 {
+		q.Set("mode", strconv.FormatUint(uint64(mode), 8))
+	}
+	var out struct {
+		Size int64  `json:"size"`
+		Mode string `json:"mode"`
+	}
+	if _, err := c.do(ctx, http.MethodPost, "/files/complete?"+q.Encode(), nil, &out); err != nil {
+		return 0, 0, err
+	}
+	m, _ := strconv.ParseUint(out.Mode, 8, 32)
+	return out.Size, uint32(m), nil
+}
+
+// AbortUpload discards the upload's staged file (DELETE /files/part).
+func (c *Client) AbortUpload(ctx context.Context, path, upload string) error {
+	res, err := c.do(ctx, http.MethodDelete, "/files/part?"+partQuery(path, upload).Encode(), nil, nil)
+	if err != nil {
+		return err
+	}
+	res.Body.Close()
+	return nil
+}
+
+// IsFull reports a 507 from the agent: the sandbox's disk is full.
+func IsFull(err error) bool {
+	var api *apiError
+	return errors.As(err, &api) && api.Status == 507
+}

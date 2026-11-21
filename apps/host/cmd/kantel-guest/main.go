@@ -88,7 +88,9 @@ func main() {
 		Dial:      func(context.Context) (net.Conn, error) { return vsock.DialHost(guest.MountPort) },
 		StateFile: guest.MountsStateFile,
 	}
-	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1, Mounts: mounts}
+	server := &guest.Server{Version: version, Injected: *injected, Init: *pid1, Mounts: mounts, UploadsDir: guest.UploadsStateDir}
+	// Uploads in parts a previous run had: the sandbox restarted, so nothing completes them.
+	server.RestoreUploads()
 	if self, err := os.Executable(); err == nil && guest.UsableTrampoline(self) {
 		server.Trampoline = self
 	} else {
