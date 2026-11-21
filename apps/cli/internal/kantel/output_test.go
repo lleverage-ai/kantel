@@ -68,7 +68,10 @@ func TestAttachSaysWhereTheRestOfItsOutputIs(t *testing.T) {
 	}})
 	eq(t, "exit", stopped.Code, 0)
 	eq(t, "stdout", len(stopped.Stdout), 1<<20)
-	contains(t, "stderr", stopped.Stderr, "the rest of its stdout is kept in the sandbox, which isn't running: resume it, then kantel attach sbx_test1 cmd_1")
+	contains(t, "stderr", stopped.Stderr, "the rest of its output is kept in the sandbox, which isn't running: resume it, then kantel attach sbx_test1 cmd_1")
+	if strings.Count(stopped.Stderr, "kept in the sandbox") != 1 {
+		t.Errorf("said more than once: %q", stopped.Stderr)
+	}
 	// A gateway from before readCommandOutput: its record is all there is.
 	old := run(t, []string{"attach", "sbx_test1", "cmd_1"}, opts{routes: routes{commandOne: func(call) any { return ended }}})
 	eq(t, "exit", old.Code, 0)
@@ -84,5 +87,6 @@ func TestAttachSaysWhereTheRestOfItsOutputIs(t *testing.T) {
 		},
 	}})
 	eq(t, "stdout", cut.Stdout, mib+"more")
-	contains(t, "stderr", cut.Stderr, "kantel: the stdout was cut at 64 MiB")
+	// Short of its limit: it may be missing its end (it ended with its machine).
+	contains(t, "stderr", cut.Stderr, "kantel: the end of its stdout may be missing")
 }

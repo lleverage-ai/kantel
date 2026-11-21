@@ -35,9 +35,11 @@ type outputTail struct {
 	stopped bool
 	// ended: the command has ended and all Kantel kept of the stream has been shown.
 	ended bool
-	// cut and limit: Kantel kept only the first limit bytes of the stream.
+	// cut and limit: Kantel kept only the first limit bytes of the stream, or some of it may be missing.
 	cut   bool
 	limit int64
+	// away is shared by a command's streams: set once one has said the sandbox isn't running, so the other doesn't.
+	away *bool
 }
 
 // fromRecord writes what the command's own record of the stream has past what is shown, up to end, where the stream
@@ -119,8 +121,13 @@ func (t *outputTail) failed(c *cli.Context, sandboxID, commandID string, err err
 	}
 	switch {
 	case isAPI && apiErr.Code == "conflict":
-		c.Note("kantel: the rest of its " + string(t.stream) + " is kept in the sandbox, which isn't running: resume it, " +
-			"then kantel attach " + sandboxID + " " + commandID)
+		if t.away == nil || !*t.away {
+			c.Note("kantel: the rest of its output is kept in the sandbox, which isn't running: resume it, then kantel attach " +
+				sandboxID + " " + commandID)
+		}
+		if t.away != nil {
+			*t.away = true
+		}
 	case isAPI && apiErr.Status == 404 && apiErr.Code == "not_found" && !t.ranged:
 		// A gateway from before readCommandOutput.
 	default:
@@ -132,7 +139,11 @@ func (t *outputTail) failed(c *cli.Context, sandboxID, commandID string, err err
 func cutNote(command *api.Command, tails ...*outputTail) string {
 	for _, t := range tails {
 		if !t.record && t.cut {
-			return fmt.Sprintf("kantel: the %s was cut at %s", t.stream, mebibytes(t.limit))
+			if int64(t.shown) >= t.limit {
+				return fmt.Sprintf("kantel: the %s was cut at %s", t.stream, mebibytes(t.limit))
+			}
+			// Short of its limit: it ended with its machine, or its sandbox kept no more output in all.
+			return fmt.Sprintf("kantel: the end of its %s may be missing: it ended with its machine, or its sandbox kept no more", t.stream)
 		}
 	}
 	for _, t := range tails {

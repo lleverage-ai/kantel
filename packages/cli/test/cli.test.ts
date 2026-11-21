@@ -690,7 +690,8 @@ describe("exec", () => {
 			},
 		});
 		expect(cut.stdout).toBe(`${record}more`);
-		expect(cut.stderr).toContain("kantel: the stdout was cut at 64 MiB");
+		// Short of its limit: it may be missing its end (it ended with its machine).
+		expect(cut.stderr).toContain("kantel: the end of its stdout may be missing");
 
 		const stopped = await kantel(["attach", "sbx_test1", "cmd_1"], {
 			routes: {
@@ -701,8 +702,9 @@ describe("exec", () => {
 		});
 		expect(stopped.stdout.length).toBe(MiB);
 		expect(stopped.stderr).toContain(
-			"the rest of its stdout is kept in the sandbox, which isn't running: resume it, then kantel attach sbx_test1 cmd_1",
+			"the rest of its output is kept in the sandbox, which isn't running: resume it, then kantel attach sbx_test1 cmd_1",
 		);
+		expect(stopped.stderr.split("kept in the sandbox").length).toBe(2);
 
 		// A gateway from before readCommandOutput: its record is all there is.
 		const old = await kantel(["attach", "sbx_test1", "cmd_1"], {

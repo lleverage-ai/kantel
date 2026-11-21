@@ -218,7 +218,9 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 	}
 	// Its output is read by range (output.go), all Kantel keeps of it; a pseudo-shell's (marker) from its record, which
 	// holds back its trailer.
-	out, errs := &outputTail{stream: api.CommandStreamStdout}, &outputTail{stream: api.CommandStreamStderr}
+	away := false
+	out := &outputTail{stream: api.CommandStreamStdout, away: &away}
+	errs := &outputTail{stream: api.CommandStreamStderr, away: &away}
 	if o.marker != "" {
 		out.record, errs.record = true, true
 	}

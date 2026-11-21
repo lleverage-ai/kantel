@@ -1573,9 +1573,10 @@ async function follow(
 ): Promise<number> {
 	// Its output is read by range (`OutputTail`), all Kantel keeps of it; a pseudo-shell's (`marker`) from its record,
 	// which holds back its trailer.
+	const away = { said: false };
 	const tails = {
-		stdout: new OutputTail(ctx, client, sandboxId, commandId, "stdout", options.marker !== undefined),
-		stderr: new OutputTail(ctx, client, sandboxId, commandId, "stderr", options.marker !== undefined),
+		stdout: new OutputTail(ctx, client, sandboxId, commandId, "stdout", options.marker !== undefined, away),
+		stderr: new OutputTail(ctx, client, sandboxId, commandId, "stderr", options.marker !== undefined, away),
 	};
 	// Soon after its start, so a short command's end comes quickly, then every second.
 	let wait = 100;
@@ -1666,7 +1667,7 @@ const OUTPUT_RETRY_MS = 2000;
  */
 class OutputTail {
 	/** How much has been written out: bytes read by range, or the record's characters, from its start. */
-	private shown = 0;
+	shown = 0;
 	/** Some of it was read by range. */
 	private ranged = false;
 	/** Failed by range after some of it was read: nothing more of it is shown. */
@@ -1679,15 +1680,33 @@ class OutputTail {
 	/** Its bytes as text, a character split across two parts joined. */
 	private readonly decoder = new TextDecoder();
 
+	private readonly ctx: Context;
+	private readonly client: KantelClient;
+	private readonly sandboxId: string;
+	private readonly commandId: string;
+	readonly stream: "stdout" | "stderr";
+	/** Shown from the command's own stdout or stderr. */
+	record: boolean;
+	/** Shared by a command's streams: once one has said the sandbox isn't running, the other doesn't. */
+	private readonly away: { said: boolean };
+
 	constructor(
-		private readonly ctx: Context,
-		private readonly client: KantelClient,
-		private readonly sandboxId: string,
-		private readonly commandId: string,
-		readonly stream: "stdout" | "stderr",
-		/** Shown from the command's own stdout or stderr. */
-		public record: boolean,
-	) {}
+		ctx: Context,
+		client: KantelClient,
+		sandboxId: string,
+		commandId: string,
+		stream: "stdout" | "stderr",
+		record: boolean,
+		away: { said: boolean },
+	) {
+		this.away = away;
+		this.ctx = ctx;
+		this.client = client;
+		this.sandboxId = sandboxId;
+		this.commandId = commandId;
+		this.stream = stream;
+		this.record = record;
+	}
 
 	/** Writes what the command's record of the stream has past what is shown, up to `end`, where it is shown from there. */
 	fromRecord(to: Output, record: string, end: number): void {
@@ -1755,9 +1774,12 @@ class OutputTail {
 		if (this.ranged) this.stopped = true;
 		else this.record = true;
 		if (error instanceof KantelApiError && error.code === "conflict") {
-			this.ctx.note(
-				`kantel: the rest of its ${this.stream} is kept in the sandbox, which isn't running: resume it, then kantel attach ${this.sandboxId} ${this.commandId}`,
-			);
+			if (!this.away.said) {
+				this.ctx.note(
+					`kantel: the rest of its output is kept in the sandbox, which isn't running: resume it, then kantel attach ${this.sandboxId} ${this.commandId}`,
+				);
+			}
+			this.away.said = true;
 		} else if (
 			!(error instanceof KantelApiError && error.status === 404 && error.code === "not_found" && !this.ranged)
 		) {
@@ -1772,6 +1794,10 @@ class OutputTail {
 function cutNote(command: Command, tails: readonly OutputTail[]): string | undefined {
 	const cut = tails.find((tail) => !tail.record && tail.cut);
 	if (cut !== undefined) {
+		// Short of its limit: it ended with its machine, or its sandbox kept no more output in all.
+		if (cut.shown < cut.limit) {
+			return `kantel: the end of its ${cut.stream} may be missing: it ended with its machine, or its sandbox kept no more`;
+		}
 		const size = cut.limit % (1024 * 1024) === 0 ? `${cut.limit / (1024 * 1024)} MiB` : `${cut.limit} bytes`;
 		return `kantel: the ${cut.stream} was cut at ${size}`;
 	}
