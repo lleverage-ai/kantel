@@ -49,6 +49,8 @@ type Server struct {
 	// UploadsDir is where uploads in parts are recorded (UploadsStateDir), so a later run of the agent removes their
 	// staged files (RestoreUploads); "" records none.
 	UploadsDir string
+	// OutputDir is where commands run with an ID keep their whole output (OutputDir, output.go); empty keeps none.
+	OutputDir string
 
 	sshOnce    sync.Once
 	ssh        *SSHServer
@@ -65,6 +67,8 @@ type Server struct {
 	commands commands
 	// uploads are files being written in parts (parts.go).
 	uploads uploads
+	// outputs orders the pruning of their kept output (output.go).
+	outputs outputs
 	// trimming is held while a trim of the disk runs (trimDisk): one at a time. stickyTrimming is held while a trim of a
 	// sticky disk runs (trimSticky), likewise.
 	trimming       sync.Mutex
@@ -86,6 +90,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /exec/start", s.startCommand)
 	mux.HandleFunc("GET /exec/{id}", s.commandStatus)
 	mux.HandleFunc("POST /exec/{id}/kill", s.killCommand)
+	mux.HandleFunc("GET /exec/{id}/output", s.commandOutput)
 	mux.HandleFunc("POST /sync", s.sync)
 	mux.HandleFunc("POST /disk/grow", s.growDisk)
 	mux.HandleFunc("POST /disk/trim", s.trimDisk)
@@ -748,6 +753,7 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	// With an ID it can be killed (POST /exec/{id}/kill) while it runs, and its status (GET /exec/{id}) has its output
 	// so far, as a detached one's has: what attach shows of a command whose call outlived its host's connection.
 	var run *command
+	var output *commandOutput
 	if req.ID != "" {
 		if !validCommandID(req.ID) {
 			fail(w, 400, errors.New("a command's id is letters, digits, _, - and ."))
@@ -761,12 +767,17 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 			fail(w, 409, errors.New("a command with this id is already known, or was killed before it started"))
 			return
 		}
+		// Its whole output kept on the disk too, past what its answer holds (output.go), and ended there before it reads
+		// as ended.
+		output = s.openOutput(req.ID)
 		defer func() {
+			output.finish()
 			if run != nil {
 				s.commands.end(req.ID, run, ExecResult{}, false)
 			}
 		}()
 	}
+	outLog, errLog := output.streams()
 	killed := func() bool {
 		if run == nil {
 			return false
@@ -777,14 +788,15 @@ func (s *Server) exec(w http.ResponseWriter, r *http.Request) {
 	}
 	oomBefore := OOMKills()
 	if req.Stream {
-		s.execStream(ctx, w, cmd, killed, oomBefore)
+		s.execStream(ctx, w, cmd, killed, oomBefore, outLog, errLog)
 		return
 	}
-	cmd.Stdout, cmd.Stderr = stdout, stderr
+	cmd.Stdout, cmd.Stderr = tee(stdout, outLog), tee(stderr, errLog)
 	err = cmd.Run()
 	if note := OOMNote(oomBefore); note != "" {
-		_, _ = stderr.Write([]byte(note))
+		_, _ = cmd.Stderr.Write([]byte(note))
 	}
+	output.finish()
 	result := ExecResult{Stdout: string(stdout.buf), Stderr: string(stderr.buf), Truncated: stdout.truncated || stderr.truncated, DurationMs: time.Since(started).Milliseconds()}
 	result.ExitCode = exitCode(err)
 	failed := false
@@ -859,15 +871,18 @@ func (p *streamPipe) Write(b []byte) (int, error) {
 	return len(b), nil
 }
 
-func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd, killed func() bool, oomBefore int64) {
+// execStream runs cmd, its output streamed as it comes, and kept on the disk too in outLog and errLog where they are
+// set (a command with an ID).
+func (s *Server) execStream(ctx context.Context, w http.ResponseWriter, cmd *exec.Cmd, killed func() bool, oomBefore int64, outLog, errLog *outputLog) {
 	w.Header().Set("content-type", "application/x-ndjson")
 	w.WriteHeader(200)
 	flusher, _ := w.(http.Flusher)
 	events := &eventWriter{w: w, flush: flusher}
-	cmd.Stdout = &streamPipe{events: events}
-	cmd.Stderr = &streamPipe{events: events, stderr: true}
+	cmd.Stdout = tee(&streamPipe{events: events}, outLog)
+	cmd.Stderr = tee(&streamPipe{events: events, stderr: true}, errLog)
 	err := cmd.Run()
 	if note := OOMNote(oomBefore); note != "" {
+		_, _ = errLog.Write([]byte(note))
 		events.emit(ExecEvent{Stderr: base64.StdEncoding.EncodeToString([]byte(note))})
 	}
 	code := exitCode(err)

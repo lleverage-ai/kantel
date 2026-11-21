@@ -512,6 +512,11 @@ const FeatureUsageAcks = "usage-acks"
 // and its result is then kept for sandbox.exec.get (a host from before ended it with the connection).
 const FeatureExecControl = "exec-control"
 
+// FeatureExecOutput: sandbox.exec.output reads any part of a command's output as its sandbox keeps it (ExecOutput),
+// while it runs and after it ends: a microVM's guest agent keeps each stream of a command with a CommandID on the
+// sandbox's disk, past the start of each that ExecResult holds. Without it, a command's output is ExecResult's alone.
+const FeatureExecOutput = "exec-output"
+
 // FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
 // each sandbox's and snapshot's Base, and restarts a sandbox on its current images when sandbox.start has Rebase.
 const FeatureImagePatching = "image-patching"
@@ -1694,6 +1699,41 @@ type ExecRef struct {
 	WaitMs    int64  `json:"waitMs,omitempty"`
 }
 
+// ExecOutputParams is sandbox.exec.output's (FeatureExecOutput): at most Length bytes (at most ExecOutputMaxRead) of a
+// command's Stream (ExecStdout or ExecStderr) from Offset, as its sandbox keeps it.
+type ExecOutputParams struct {
+	SandboxID string `json:"sandboxId"`
+	CommandID string `json:"commandId"`
+	Stream    string `json:"stream"`
+	Offset    int64  `json:"offset,omitempty"`
+	Length    int64  `json:"length,omitempty"`
+}
+
+// ExecOutputParams.Stream's values.
+const (
+	ExecStdout = "stdout"
+	ExecStderr = "stderr"
+)
+
+// ExecOutputMaxRead is the most of a stream one sandbox.exec.output answers.
+const ExecOutputMaxRead = 1 << 20
+
+// ExecOutput is sandbox.exec.output's answer: a part of one of a command's streams, as its sandbox keeps it (a
+// microVM's guest agent keeps each stream of a command run with an ID on the sandbox's disk, up to Limit bytes). Data
+// is base64, from Offset (the offset asked for, or Size when that is past it). Size is how much of the stream is kept
+// now, which only grows while the command runs; Ended says it has ended, so Size is the whole of it; Truncated says
+// the rest may be missing: the stream went past Limit, or past what the sandbox keeps in all, its disk refused it, or
+// the command ended with its machine before its end was recorded. A command whose output the sandbox doesn't keep is not_found;
+// a sandbox that keeps none (an isolate, a guest agent from before) is unsupported.
+type ExecOutput struct {
+	Data      string `json:"data"`
+	Offset    int64  `json:"offset"`
+	Size      int64  `json:"size"`
+	Ended     bool   `json:"ended,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Limit     int64  `json:"limit"`
+}
+
 // ExecMaxWaitMs is the longest a sandbox.exec.get waits for a command to end.
 const ExecMaxWaitMs = 60_000
 
@@ -2016,7 +2056,10 @@ const (
 	MethodExecGet = "sandbox.exec.get"
 	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its
 	// process group; answered ExecKilled.
-	MethodExecKill   = "sandbox.exec.kill"
+	MethodExecKill = "sandbox.exec.kill"
+	// MethodExecOutput (Kantel → host, ExecOutputParams; FeatureExecOutput) answers a part of a command's kept output,
+	// ExecOutput.
+	MethodExecOutput = "sandbox.exec.output"
 	MethodFileRead   = "sandbox.files.read"
 	MethodFileWrite  = "sandbox.files.write"
 	MethodFileDelete = "sandbox.files.delete"
