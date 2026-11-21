@@ -91,7 +91,10 @@ The runtime calls these entry points, each with JSON-encoded arguments:
 node and python isolates. A shell isolate is reused for its sandbox's next command, so the guest builds its state per
 call (Kantel's builds a fresh just-bash and filesystem for each `exec`).
 
-The simplest way to a working bundle is Kantel's own guest pieces, composed with your shell: see `guest/main.js`.
+The simplest way to a working bundle is Kantel's own guest pieces, the `@kantel/isolate-guest` package in `guest/`
+([guest/README.md](guest/README.md)): `createGuest({ shell: { filesystem } })` is a whole bundle's `__kantel`, with
+the guards installed, node and python, and the shell over the embedder's own filesystem. Kantel's bundle,
+`guest/main.js`, is `createGuest()` with its manifest filesystem.
 
 #### The guards a bundle must install
 
