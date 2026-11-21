@@ -160,6 +160,15 @@ mod tests {
         std::fs::create_dir_all(&work).unwrap();
         let copy = work.join("true");
         std::fs::copy("/bin/true", &copy).unwrap();
+        // Only meaningful where the copy can run before Landlock is applied (not on a noexec temporary directory).
+        if !std::process::Command::new(&copy)
+            .status()
+            .is_ok_and(|s| s.success())
+        {
+            let _ = std::fs::remove_dir_all(&work);
+            eprintln!("skipped: {} can't be executed here", copy.display());
+            return;
+        }
         // SAFETY: fork in a test; the child restricts itself and exits without returning to the runner.
         let pid = unsafe { libc::fork() };
         assert!(pid >= 0, "fork failed");

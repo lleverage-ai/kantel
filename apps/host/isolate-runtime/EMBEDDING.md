@@ -213,7 +213,7 @@ let mut rt = deno_core::JsRuntime::new(deno_core::RuntimeOptions {
 });
 let mut watch = kantel_isolate::memory::watch(&mut rt, &budget);
 // While guest code runs, on the isolate's thread: over the budget, its CPU or its wall clock, it is stopped.
-let running = kantel_isolate::memory::enforce(&mut rt, &budget, cpu, wall);
+let running = kantel_isolate::memory::enforce(&mut rt, &budget, cpu, wall)?; // one run at a time
 // ...
 drop(running);
 watch.remove(&mut rt); // before the isolate is dropped
@@ -240,7 +240,8 @@ directory or ports), then seccomp (`seccomp: None` for no filter). `HardeningPol
 `spawn`, the process may start child processes (fork and clone without namespaces, exec, wait, signal) for an
 embedder's own worker or helper: a child inherits Landlock and the filter, so it can execute only what `execute`
 names and must keep to the same allow-list. Writable places (the temporary directory, `read_write`, the socket
-directory) are never executable, and `harden` refuses an `execute` path that contains one. A redirect is checked against
+directory) are never executable, and `harden` refuses an `execute` path that overlaps one (inside it or containing
+it, symlinks resolved). A redirect is checked against
 the egress methods too.
 
 ## The limits

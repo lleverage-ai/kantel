@@ -36,6 +36,17 @@ fn an_embedders_isolate_is_held_to_its_budget() {
         &budget,
         Duration::from_secs(10),
         Duration::from_secs(10),
+    )
+    .unwrap();
+    // One run at a time: a second guard would disarm the first when dropped.
+    assert!(
+        memory::enforce(
+            &mut rt,
+            &budget,
+            Duration::from_secs(10),
+            Duration::from_secs(10)
+        )
+        .is_err()
     );
 
     // A buffer within the budget is allocated and counted against it.
@@ -74,7 +85,8 @@ fn an_embedders_isolate_is_held_to_its_budget() {
         &budget,
         Duration::from_secs(10),
         Duration::from_millis(200),
-    );
+    )
+    .unwrap();
     assert!(
         run(&mut rt, "for (;;) {}").is_err(),
         "the loop wasn't stopped"

@@ -21,7 +21,7 @@
 //! });
 //! let mut watch = memory::watch(&mut rt, &budget);
 //! // While guest code runs, on the isolate's thread: over the budget, its CPU or its wall clock, it is stopped.
-//! let running = memory::enforce(&mut rt, &budget, Duration::from_secs(30), Duration::from_secs(60));
+//! let running = memory::enforce(&mut rt, &budget, Duration::from_secs(30), Duration::from_secs(60)).unwrap();
 //! // ... run code; running.watched().term() says why it was stopped, if it was ...
 //! drop(running);
 //! watch.remove(&mut rt); // Before the isolate is dropped.
@@ -71,14 +71,23 @@ impl MemoryWatch {
 /// limits. Call it on the isolate's own thread just before guest code runs, after [`watch`]; drop the guard when it
 /// ends, before the isolate is dropped. `guard.watched().term()` is why the isolate was stopped, if it was. Call
 /// `budget.reset_exceeded()` before each run after the first, so a refusal in the last doesn't count against it.
-pub fn enforce(rt: &mut JsRuntime, budget: &Arc<Budget>, cpu: Duration, wall: Duration) -> Guard {
+/// One run at a time: an error while another guard for the same budget lives (dropping either would disarm both).
+pub fn enforce(
+    rt: &mut JsRuntime,
+    budget: &Arc<Budget>,
+    cpu: Duration,
+    wall: Duration,
+) -> anyhow::Result<Guard> {
+    if budget.armed() {
+        anyhow::bail!("this budget is already enforced on a run; drop its guard first");
+    }
     let handle = rt.v8_isolate().thread_safe_handle();
-    crate::limits::watch(
+    Ok(crate::limits::watch(
         handle,
         Command::new(cpu, wall),
         budget.clone(),
         Scope::Command,
-    )
+    ))
 }
 
 /// Record `rt`'s isolate's heap in `budget` after every GC, and stop it at its heap limit. `rt` is made with
