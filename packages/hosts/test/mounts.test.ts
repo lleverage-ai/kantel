@@ -896,11 +896,18 @@ describe("the backend's file streams", () => {
 		);
 		expect(written).toEqual({ size: 5 * piece.length });
 		const max = FILE_PART_CALL_MAX_BYTES;
-		expect(host.parts).toEqual([
+		expect([...host.parts].sort((a, b) => a.offset - b.offset)).toEqual([
 			{ upload: "upload-1", offset: 10, length: max },
 			{ upload: "upload-1", offset: 10 + max, length: max },
 			{ upload: "upload-1", offset: 10 + 2 * max, length: 5 * piece.length - 2 * max },
 		]);
+		// A call that fails fails the part, once the calls under way have ended.
+		host.failPartAt = 10 + max;
+		const full = await failure(
+			backend.writeFilePart?.("sbx_one", "/home/user/a", "upload-1", 10, streamOf(piece, piece, piece)) ??
+				Promise.resolve(),
+		);
+		expect(full.code).toBe("exhausted");
 		const entry = await backend.completeFileParts?.("sbx_one", "/home/user/a", "upload-1", 42, "ab".repeat(32));
 		expect(entry).toMatchObject({ path: "/home/user/a", size: 42 });
 		expect(host.calls.find((call) => call.method === "sandbox.files.complete")?.params).toMatchObject({

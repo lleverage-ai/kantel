@@ -38,6 +38,9 @@ const (
 	UploadIdle = time.Hour
 	// MaxUploads is how many uploads in parts a sandbox may have under way at once: each holds a file open.
 	MaxUploads = 1024
+	// PendingCleanupMax is how long a previous run's record of a staged file that isn't there yet is kept: its file
+	// system (a sticky disk, mounted after the agent starts) may not be mounted yet.
+	PendingCleanupMax = 24 * time.Hour
 	// UploadsStateDir is where the agent records its uploads' staged files, on the sandbox's disk: what a later run
 	// of the agent removes (Server.RestoreUploads).
 	UploadsStateDir = "/var/lib/kantel-guest/uploads"
@@ -74,7 +77,10 @@ type upload struct {
 type uploads struct {
 	mu   sync.Mutex
 	byID map[string]*upload
-	once sync.Once
+	// pending are a previous run's records whose staged file wasn't there when the agent started, by record path:
+	// each sweep looks again (PendingCleanupMax).
+	pending map[string]bool
+	once    sync.Once
 }
 
 func uploadKey(path, id string) string {
@@ -95,7 +101,14 @@ func (s *Server) upload(path, id string, create bool) (*upload, error) {
 	key := uploadKey(path, id)
 	u := s.uploads.byID[key]
 	if u == nil && create {
-		if len(s.uploads.byID) >= MaxUploads {
+		// Completed ones are kept a while to refuse late parts, but aren't under way.
+		active := 0
+		for _, other := range s.uploads.byID {
+			if !other.done {
+				active++
+			}
+		}
+		if active >= MaxUploads {
 			return nil, errTooManyUploads
 		}
 		u = &upload{key: key, path: path, touched: time.Now()}
@@ -190,7 +203,18 @@ func (s *Server) sweepUploads(now time.Time) {
 		}
 		idle = append(idle, u)
 	}
+	pending := make([]string, 0, len(s.uploads.pending))
+	for record := range s.uploads.pending {
+		pending = append(pending, record)
+	}
 	s.uploads.mu.Unlock()
+	for _, record := range pending {
+		if s.cleanUpRecord(record, now) {
+			s.uploads.mu.Lock()
+			delete(s.uploads.pending, record)
+			s.uploads.mu.Unlock()
+		}
+	}
 	for _, u := range idle {
 		// One with a part or a completion under way isn't idle.
 		if !u.mu.TryLock() {
@@ -207,16 +231,23 @@ func (s *Server) sweepUploads(now time.Time) {
 }
 
 // RestoreUploads removes the staged file of every upload a previous run of the agent recorded (the sandbox restarted,
-// so nothing will complete them), then sweeps idle uploads every minute until the agent ends.
+// so nothing will complete them), then sweeps idle uploads every minute until the agent ends. A record whose staged
+// file isn't there is kept and looked at again each sweep, for up to PendingCleanupMax: it may be on a sticky disk
+// the host mounts after the agent starts.
 func (s *Server) RestoreUploads() {
 	if dir := s.UploadsDir; dir != "" {
 		entries, _ := os.ReadDir(dir)
+		now := time.Now()
 		for _, e := range entries {
 			record := filepath.Join(dir, e.Name())
-			if raw, err := os.ReadFile(record); err == nil {
-				removeStaged(strings.TrimSpace(string(raw)))
+			if !s.cleanUpRecord(record, now) {
+				s.uploads.mu.Lock()
+				if s.uploads.pending == nil {
+					s.uploads.pending = map[string]bool{}
+				}
+				s.uploads.pending[record] = true
+				s.uploads.mu.Unlock()
 			}
-			_ = os.Remove(record)
 		}
 	}
 	s.uploads.once.Do(func() {
@@ -226,6 +257,25 @@ func (s *Server) RestoreUploads() {
 			}
 		}()
 	})
+}
+
+// cleanUpRecord removes a previous run's record and its staged file, reporting whether it is done with it: false while
+// the staged file isn't there and the record is younger than PendingCleanupMax.
+func (s *Server) cleanUpRecord(record string, now time.Time) bool {
+	info, err := os.Lstat(record)
+	if err != nil {
+		return true
+	}
+	raw, err := os.ReadFile(record)
+	if err == nil {
+		staged := strings.TrimSpace(string(raw))
+		if _, err := os.Lstat(staged); err != nil && now.Sub(info.ModTime()) < PendingCleanupMax {
+			return false
+		}
+		removeStaged(staged)
+	}
+	_ = os.Remove(record)
+	return true
 }
 
 // removeStaged removes a previous run's staged file, but only what the agent itself made one as: an absolute path

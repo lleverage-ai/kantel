@@ -88,6 +88,8 @@ export class FakeHost {
 	readonly extracts: { readonly archive: string; readonly target: string }[] = [];
 	/** `sandbox.files.part` calls: the upload, the offset and the bytes' length. */
 	readonly parts: { readonly upload: string; readonly offset: number; readonly length: number }[] = [];
+	/** A part call at this offset fails, as a full disk does. */
+	failPartAt?: number;
 	/** How a create is answered as served (`HostSandbox.source`): `boot` for a template snapshot it couldn't restore. */
 	createSource = "pool";
 	/** For a test: the size a create is answered as made, instead of the one asked for (a restore's own size). */
@@ -399,6 +401,7 @@ export class FakeHost {
 			case "sandbox.files.part": {
 				const part = message.params as { upload: string; offset: number; data: string };
 				const length = atob(part.data).length;
+				if (part.offset === this.failPartAt) return fail("capacity", "the sandbox's disk is full");
 				this.parts.push({ upload: part.upload, offset: part.offset ?? 0, length });
 				return answer({ size: length });
 			}
