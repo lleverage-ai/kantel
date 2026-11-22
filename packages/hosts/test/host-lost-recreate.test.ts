@@ -10,6 +10,7 @@ import {
 	CREATE_SETTLE_GRACE_MS,
 	createComputeApi,
 	createOutcomeUnknown,
+	HOST_AWAY_STOP_REASON,
 	HOST_LOST_REASON,
 	joinTokenSpender,
 	NOT_RECREATED,
@@ -273,6 +274,115 @@ describe("a lost host's sandbox set to be made again (onHostLost recreate)", () 
 		await pass(LOST_AFTER_MS + 1_000);
 		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
 		expect(b?.host.calls.some((call) => call.method === "sandbox.create")).toBe(true);
+	});
+
+	it("is stopped where it was lost running but owing a stop (one asked for while its host was away)", async () => {
+		const { api, root, b, sandbox, pass, save, a, events } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		// As an asked stop leaves it whose host was away past its wait (LLE-19732): running, the stop owed.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, stopFor: HOST_AWAY_STOP_REASON }));
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
+		expect((await root.getSandbox(sandbox.id)).reason).toBe(HOST_AWAY_STOP_REASON);
+		expect(b?.host.calls.some((call) => call.method === "sandbox.create")).toBe(true);
+		expect(b?.host.sandboxes.get(sandbox.id)?.state).not.toBe("running");
+		// Lost running, as it was.
+		expect((await events("sandbox.recreated"))[0]).toMatchObject({ data: { previousState: "running" } });
+	});
+
+	it("is published running with the stop it owes in the one write, so it is never usable before it", async () => {
+		const { api, root, sandbox, pass, save, a } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		await api.store.sandboxes.update(sandbox.id, (current) => ({ ...current, stopFor: HOST_AWAY_STOP_REASON }));
+		const update = vi.spyOn(api.store.sandboxes, "update");
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
+		const written = await Promise.all(update.mock.results.map((result) => result.value));
+		const running = written.filter((record) => record?.id === sandbox.id && record.state === "running");
+		expect(running.length).toBeGreaterThan(0);
+		expect(running.map((record) => record?.stopFor)).toEqual(running.map(() => HOST_AWAY_STOP_REASON));
+	});
+
+	it("never gives a later run the stop its making again owed, when it is finished after that run began", async () => {
+		const { api, root, sandbox, pass } = await setup({ onHostLost: "recreate" });
+		const running = await api.store.sandboxes.get(sandbox.id);
+		const lifecycle = running?.lifecycle ?? 0;
+		// Its replacement ended (or was stopped) and a start booted it again before its making again was finished: its
+		// marker names an attempt runs ago.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			recreating: {
+				hostId: "host_gone",
+				eventId: "evt_later_run",
+				previousState: "running",
+				snapshotId: "snap_gone",
+				heartbeatAt: Date.now(),
+				attempt: lifecycle - 3,
+				stopFor: HOST_AWAY_STOP_REASON,
+			},
+		}));
+		await pass(1_000);
+		const finished = await api.store.sandboxes.get(sandbox.id);
+		expect(finished?.recreating).toBeUndefined();
+		expect(finished?.stopFor).toBeUndefined();
+		expect((await root.getSandbox(sandbox.id)).state).toBe("running");
+	});
+
+	it("is lost as it is, not as an earlier making again found it, where a later run is lost before that one is finished", async () => {
+		const { api, root, sandbox, pass, save, a, b, events } = await setup({ onHostLost: "recreate" });
+		await save("kept");
+		const lifecycle = (await api.store.sandboxes.get(sandbox.id))?.lifecycle ?? 0;
+		// Made again after a loss found it stopped; that stop carried out and the sandbox started again since, its making
+		// again not yet finished (its event not written, so its marker stays).
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			recreating: {
+				hostId: "host_gone",
+				eventId: "evt_unfinished",
+				previousState: "stopped",
+				snapshotId: "snap_gone",
+				heartbeatAt: Date.now(),
+				attempt: lifecycle - 3,
+			},
+		}));
+		const put = api.store.eventWrites.put.bind(api.store.eventWrites);
+		vi.spyOn(api.store.eventWrites, "put").mockImplementation((event) =>
+			event.id === "evt_unfinished" ? Promise.reject(new Error("not now")) : put(event),
+		);
+		a.host.connection.closed(1006, "gone");
+		await pass(LOST_AFTER_MS + 1_000);
+		await vi.waitFor(async () =>
+			expect((await events("sandbox.recreated")).some((event) => event.id !== "evt_unfinished")).toBe(true),
+		);
+		await pass(1_000);
+		// Lost running with nothing owed: it runs on host b, not stopped again for the earlier loss.
+		const after = await root.getSandbox(sandbox.id);
+		expect(after.state).toBe("running");
+		expect((await api.store.sandboxes.get(sandbox.id))?.stopFor).toBeUndefined();
+		expect(b?.host.sandboxes.get(sandbox.id)?.state).toBe("running");
+	});
+
+	it("stops the run its making again published where that run still owes the stop as it is finished", async () => {
+		const { api, root, sandbox, pass } = await setup({ onHostLost: "recreate" });
+		const lifecycle = (await api.store.sandboxes.get(sandbox.id))?.lifecycle ?? 0;
+		// Published by its making again (the attempt before this run), the stop not written yet.
+		await api.store.sandboxes.update(sandbox.id, (current) => ({
+			...current,
+			recreating: {
+				hostId: "host_gone",
+				eventId: "evt_own_run",
+				previousState: "running",
+				snapshotId: "snap_gone",
+				heartbeatAt: Date.now(),
+				attempt: lifecycle - 1,
+				stopFor: HOST_AWAY_STOP_REASON,
+			},
+		}));
+		await pass(1_000);
+		await vi.waitFor(async () => expect((await root.getSandbox(sandbox.id)).state).toBe("stopped"));
+		expect((await root.getSandbox(sandbox.id)).reason).toBe(HOST_AWAY_STOP_REASON);
 	});
 
 	it("is stopped again by the sweep where its gateway went before its stop was carried out", async () => {
