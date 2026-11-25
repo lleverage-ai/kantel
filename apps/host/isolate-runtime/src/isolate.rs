@@ -828,9 +828,13 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                     // (it won't terminate twice, to survive teardown GC), so a reused isolate would
                                     // otherwise have no heap guard for its next command (review finding H1). Each
                                     // exec builds its own bash and filesystem from the manifest, so nothing carries
-                                    // over.
+                                    // over. The old callback goes with the heap limit it raised restored (once the
+                                    // garbage is collected), so the next command has the backstop at memoryMiB again.
                                     live.rt.v8_isolate().cancel_terminate_execution();
                                     live.rt.v8_isolate().low_memory_notification();
+                                    live.rt.remove_near_heap_limit_callback(
+                                        live.budget.initial_heap_limit(),
+                                    );
                                     live.rt.add_near_heap_limit_callback(near_heap_limit(
                                         &live.budget.clone(),
                                         live.handle.clone(),

@@ -278,6 +278,11 @@ charges the budget on the stock V8, and Kantel's in-sandbox budget allocator on 
 when a GC found the total over the limit and the program then stopped allocating. `tests/memory.rs` runs on the V8 the
 crate is tested with (CI's: the sandboxed one).
 
+`memory::watch`'s near-heap-limit callback stops the isolate at its heap limit and lets the allocation in flight
+through, so one allocation of any size stops the run rather than the process: it raises the heap limit, by at most
+2 GiB + 128 MiB in all (README.md's known gaps say what that costs). It stops the isolate once per watch, and the limit
+stays raised: discard an isolate stopped at its heap limit, as the runtime does its node and python isolates.
+
 ## Egress and hardening
 
 What guest code may send out is `Config::egress_policy` ([`EgressPolicy`](src/config.rs)): whether it may at all, the
