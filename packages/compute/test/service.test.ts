@@ -5945,4 +5945,48 @@ describe("listing sandboxes", () => {
 			expect(anyOf?.state).not.toContain("deleted");
 		}
 	});
+
+	it("records an owed delete when a host is unreachable, counts it in allocated, and finishes it on host reconnect (#967)", async () => {
+		const store = createMemoryStore();
+		const base = createStubBackend();
+		let hostUp = true;
+		let destroyCalls = 0;
+		const backend: SandboxBackend = {
+			...base,
+			hostConnected: async () => hostUp,
+			destroy: async (sandboxId, opts) => {
+				destroyCalls++;
+				if (!hostUp) throw new KantelError("unavailable", "Host is not connected");
+				await base.destroy(sandboxId, opts);
+			},
+		};
+		const { tom, root, api } = setup(backend, { store });
+		const sbx = await tom.createSandbox({ wait: true, name: "owed-delete" });
+		const hostId = (await store.sandboxes.get(sbx.id))?.hostId ?? STUB_HOST_ID;
+
+		// Host drops before DELETE arrives: delete fails with unavailable, marks deleteOwed, and keeps it counted in allocated.
+		hostUp = false;
+		await expect(tom.deleteSandbox(sbx.id)).rejects.toThrow(/not connected/);
+		expect(destroyCalls).toBe(1);
+		const errored = await store.sandboxes.get(sbx.id);
+		expect(errored?.state).toBe("error");
+		expect(errored?.deleteOwed).toBeDefined();
+
+		const hostsBefore = await root.listHosts();
+		const stubBefore = hostsBefore.items.find((h) => h.id === hostId);
+		expect(stubBefore?.allocated.sandboxes).toBe(1);
+
+		// Host reconnects: reportHostConnection triggers finishOwedDelete automatically without a second DELETE call.
+		hostUp = true;
+		await api.service.reportHostConnection(hostId, true);
+		await api.service.idle();
+		expect(destroyCalls).toBe(2);
+		const gone = await store.sandboxes.get(sbx.id);
+		expect(gone?.state).toBe("deleted");
+		expect(gone?.deleteOwed).toBeUndefined();
+
+		const hostsAfter = await root.listHosts();
+		const stubAfter = hostsAfter.items.find((h) => h.id === hostId);
+		expect(stubAfter?.allocated.sandboxes).toBe(0);
+	});
 });

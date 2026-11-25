@@ -314,6 +314,15 @@ export type StoredSandbox = Omit<
 		readonly pending?: OOMPending;
 	};
 	/**
+	 * A delete whose host was unreachable (`deleteSandbox`): retried automatically once the host reconnects
+	 * (`reportHostConnection`) or on the sweep so a transient disconnect never leaves a running VM stranded in `error`.
+	 */
+	readonly deleteOwed?: {
+		readonly at: number;
+		readonly previousState: computeSchema.SandboxState;
+		readonly actor: StoredSandbox["createdBy"];
+	};
+	/**
 	 * Its `sandbox.lost` event, written with its move to `lost` and not yet stored: the ID it is stored under and the
 	 * state it was lost from, never changed, so every try (any gateway's, after any restart) stores the same event once.
 	 * Cleared once stored. `recreate`: its `onHostLost` was `recreate` as it was lost, so it is made again on another host
