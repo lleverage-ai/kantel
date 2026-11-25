@@ -149,6 +149,22 @@ const READS: readonly Read[] = [
 		fields: 1,
 	},
 	{
+		name: "bulk ref memory check (listSnapshots)",
+		kind: "snapshots",
+		where: { memory: true },
+		anyOf: { ref: ["host_1/ref_5", "host_2/ref_6"] },
+		index: "compute_api_records_snapshots_by_ref",
+		fields: 1,
+	},
+	{
+		name: "bulk ref share count (expireSnapshots)",
+		kind: "snapshots",
+		where: {},
+		anyOf: { ref: ["host_1/ref_5", "host_2/ref_6"] },
+		index: "compute_api_records_snapshots_by_ref",
+		fields: 1,
+	},
+	{
 		name: "sandboxes in one state across accounts (the sweep, usage sampling)",
 		kind: "sandboxes",
 		where: { state: "running" },

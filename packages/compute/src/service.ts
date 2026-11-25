@@ -6553,16 +6553,44 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				const expired = ready.filter((snapshot) => snapshot.expiresAt !== undefined && snapshot.expiresAt <= at);
 				if (expired.length === 0) return;
 				const hosts = new Map((await backend.capabilities()).hosts.map((host) => [host.id, host]));
-				const marked: StoredSnapshot[] = [];
-				const shared = new Map<string, boolean>();
+				const candidates: StoredSnapshot[] = [];
 				for (const snapshot of expired) {
 					if (snapshot.ref === undefined || !(await keepsCopies(snapshot, hosts))) continue;
-					let isShared = shared.get(snapshot.ref);
-					if (isShared === undefined) {
-						isShared = (await store.snapshots.list({ ref: snapshot.ref })).length > 1;
-						shared.set(snapshot.ref, isShared);
+					candidates.push(snapshot);
+				}
+				if (candidates.length === 0) return;
+				// Count how many snapshot records name each candidate ref in one bulk read (indexed by snapshots_by_ref on
+				// SQLite; a single pass on Postgres rather than one full scan per expired ref).
+				const candidateRefs = [...new Set(candidates.flatMap((snapshot) => (snapshot.ref ? [snapshot.ref] : [])))];
+				const named = new Map<string, number>();
+				if (candidateRefs.length <= 500) {
+					for (const snapshot of await store.snapshots.list(undefined, { ref: candidateRefs })) {
+						if (snapshot.ref !== undefined) named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
 					}
-					if (isShared) continue;
+				} else if (store.snapshots.listNewest !== undefined) {
+					const wanted = new Set(candidateRefs);
+					let beforeSeq: number | undefined;
+					for (;;) {
+						const batch = await store.snapshots.listNewest(undefined, { limit: 500, beforeSeq });
+						for (const snapshot of batch.items) {
+							if (snapshot.ref !== undefined && wanted.has(snapshot.ref)) {
+								named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+							}
+						}
+						if (batch.nextBeforeSeq === undefined) break;
+						beforeSeq = batch.nextBeforeSeq;
+					}
+				} else {
+					const wanted = new Set(candidateRefs);
+					for (const snapshot of await store.snapshots.list()) {
+						if (snapshot.ref !== undefined && wanted.has(snapshot.ref)) {
+							named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+						}
+					}
+				}
+				const marked: StoredSnapshot[] = [];
+				for (const snapshot of candidates) {
+					if (snapshot.ref === undefined || (named.get(snapshot.ref) ?? 0) > 1) continue;
 					const written = await markExpiring(snapshot.id).catch(() => undefined);
 					if (written !== undefined) marked.push(written);
 				}
@@ -12071,21 +12099,33 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			const uses = page.items.length === 0 ? new Map<string, number>() : await usesIn(account.id);
-			// Only check ref-level memory sharing for page items whose own record says no (uses snapshots_by_ref).
-			const refMemory = new Map<string, boolean>();
-			const items: computeSchema.Snapshot[] = [];
-			for (const snapshot of page.items) {
-				let memory = snapshot.memory;
-				if (!memory && snapshot.ref !== undefined) {
-					let cached = refMemory.get(snapshot.ref);
-					if (cached === undefined) {
-						cached = await holdsMemory(snapshot);
-						refMemory.set(snapshot.ref, cached);
-					}
-					memory = cached;
-				}
-				items.push(snapshotView({ ...snapshot, memory }, uses.get(snapshot.id) ?? 0));
+			// The bytes that hold memory (`holdsMemory`): derive from `all` when the account's whole snapshot list was
+			// already read; otherwise resolve every missing ref in one bulk read (indexed on SQLite, one pass on Postgres).
+			let memoryRefs: Set<string>;
+			if (query.sandboxId === undefined && query.kind === undefined) {
+				memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			} else {
+				const missingRefs = [
+					...new Set(page.items.flatMap((snapshot) => (!snapshot.memory && snapshot.ref ? [snapshot.ref] : []))),
+				];
+				memoryRefs =
+					missingRefs.length === 0
+						? new Set()
+						: new Set(
+								(await store.snapshots.list({ memory: true }, { ref: missingRefs })).flatMap((snapshot) =>
+									snapshot.ref ? [snapshot.ref] : [],
+								),
+							);
 			}
+			const items = page.items.map((snapshot) =>
+				snapshotView(
+					{
+						...snapshot,
+						memory: snapshot.memory || (snapshot.ref !== undefined && memoryRefs.has(snapshot.ref)),
+					},
+					uses.get(snapshot.id) ?? 0,
+				),
+			);
 			return { items, nextCursor: page.nextCursor };
 		},
 
