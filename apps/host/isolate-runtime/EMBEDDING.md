@@ -64,7 +64,8 @@ embedder that wants it as it is.
 
 ## The embedding
 
-`Embedding { guest, extensions, filesystem, host_commands }` (`filesystem` and `host_commands` are below):
+`Embedding { guest, extensions, filesystem, host_commands, kinds }` (`filesystem`, `host_commands` and `kinds` are
+below; build one with `Embedding::new` and its `with_*` methods, which keep working as fields are added):
 
 - **`guest`**: the guest bundle, one classic script, evaluated once into the startup snapshot. It is the embedder's
   JavaScript: Kantel's is `guest/main.js` bundled to `guest/dist/guest.js`.
@@ -75,8 +76,8 @@ embedder that wants it as it is.
 ### The guest bundle
 
 The bundle must leave `globalThis.__kantel = { init(kind) }` behind. For each new isolate the runtime calls
-`__kantel.init(kind)` once, with `kind` one of `"shell"`, `"node"` or `"python"`, and keeps what it returns as that
-isolate's entry point. Before it returns, `init` must remove every route from guest code to the ops: `Deno`,
+`__kantel.init(kind)` once, with `kind` one of `"shell"`, `"node"` or `"python"`, or the name of one of the embedder's
+own kinds (below), and keeps what it returns as that isolate's entry point (`globalThis.__kantelEntry`). Before it returns, `init` must remove every route from guest code to the ops: `Deno`,
 `__bootstrap` (the route Pyodide's `js` module reaches) and `__kantel` itself. After that, nothing the guest runs can
 call an op except through the functions `init` closed over.
 
@@ -112,6 +113,47 @@ counts. Kantel's `init` installs, before any guest code runs and in this order:
 
 A bundle that lets untrusted code run without these has no limit on wasm memory beyond V8's process-wide one (512 MiB
 per memory), whatever the isolate's memory limit. Install them as Kantel's `guest/main.js` does.
+
+### An embedder's own kinds
+
+An embedder that runs its own kind of isolate (a program isolate, say) names it in the embedding rather
+than starting from a shell: `Embedding::with_kind(name, runtime)` (an [`EmbedderKind`](src/embed.rs)), then
+`isolate::try_new_live(Kind::Embedder(name), memory_mib)` makes one, on the calling thread inside a tokio runtime, as
+`new_live` does for the runtime's own kinds:
+
+- `__kantel.init(name, runtime)` builds its entry point, so the guest knows what it is from the start. `init` removes
+  every route to the ops, as for any kind.
+- Code generation from strings (`eval`, `new Function`) is off, as in a shell isolate. The embedder may turn it on
+  for its own isolates (`set_allow_generation_from_strings` on the context).
+- `runtime` is the kind's own JavaScript: the body of a function, evaluated once into the startup snapshot when
+  `Engine::init` runs, after the guest bundle (with `Deno.core` still there, as for the bundle). Its declarations are
+  its own, and what it returns is the second argument to `__kantel.init` in each of the kind's isolates, so they start
+  with it evaluated. No other kind's isolate can reach it: every isolate takes it off the global before `init`, and
+  only the kind's own hands it on (`init` gets one argument otherwise, as before). With `runtime` empty, `init` gets
+  no second argument.
+- The runtime must leave nothing on the global: what it leaves would be every kind's, so `Engine::init` refuses a
+  runtime that adds a global property (symbols included) or pins the global the runtimes are held in, and an isolate
+  whose holder can't be taken off isn't made. What it changes in what is already there (a built-in's prototype, the guest
+  bundle's objects) it changes for every kind, which nothing can check: don't.
+- The isolate is held to its memory as the runtime's are: the one budget (`live.budget`), the GC epilogue, and the
+  near-heap-limit callback that stops it. CPU and wall-clock limits apply while the embedder runs code under
+  `limits::watch` (or `memory::enforce`).
+- The runtime binds no `Ctx` in it, so the runtime's ops that need one (the shell's files, `node`/`python` runs,
+  egress, `op_kt_wasm_reserve`) refuse there. The ops that need none (logging, randomness, digests, zlib) work, and its
+  bytes are charged to the isolate. Without the wasm reservation op, WebAssembly memory there isn't counted against
+  the budget, so an embedder kind should leave WebAssembly out.
+
+`Engine::init` refuses a kind named `shell`, `node`, `python` or nothing, and a name given twice;
+`try_new_live` answers an error for a kind the embedding doesn't have (`new_live` panics instead).
+
+Every kind's runtime is in the one snapshot that every isolate starts from, not a snapshot or a context of its own.
+The isolates of a process share V8's read-only heap, which comes from the snapshot the first live isolate started from,
+so an isolate made from another snapshot while one of those lives ends the process. And deno_core starts an isolate
+only from a snapshot's first context. So every isolate of the process, of whatever kind, deserialises every runtime,
+and the other kinds drop theirs at once. Measured in a release build: a 396 KB runtime (4,000 functions) grew the
+test's snapshot from 0.71 MB to 1.58 MB. It cost each isolate about 2–3.5 ms more to start (about 4–5.5 ms to 7–7.5
+ms), and saved its own kind's isolates about 22 ms (7.5 ms, against 30 ms evaluating it after start). Keep a runtime to
+what its kind needs. Kantel's own binary has no kinds, so its snapshot and start-up are unchanged.
 
 ### The embedder's ops
 
@@ -278,6 +320,10 @@ charges the budget on the stock V8, and Kantel's in-sandbox budget allocator on 
 when a GC found the total over the limit and the program then stopped allocating. `tests/memory.rs` runs on the V8 the
 crate is tested with (CI's: the sandboxed one).
 
+What an isolate holds is on its budget: `budget.heap()` is the V8 heap at the last GC, `budget.outside_heap()` what it
+holds outside the heap now (ArrayBuffers on either V8, the wasm memory its guest reserved, and bytes being collected
+for it), and `budget.total()` the two together, which the limit is held to.
+
 `memory::watch`'s near-heap-limit callback stops the isolate at its heap limit and lets the allocation in flight
 through, so one allocation of any size stops the run rather than the process: it raises the heap limit, by at most
 2 GiB + 128 MiB in all (README.md's known gaps say what that costs). It stops the isolate once per watch, and the limit
@@ -313,3 +359,8 @@ only when the bundle installs the guards above.
 - Everything public in the crate may change between revisions; this file says what an embedder can rely on. A change
   to it is made in the same commit as the code.
 - Kantel's own guest bundle, ops (`kt`) and HTTP protocol follow CONTRACT.md, not this file.
+- Since the embedder kinds (`Kind::Embedder`, `Embedding.kinds`), `Kind`, `Embedding` and `EmbedderKind` are
+  `#[non_exhaustive]`: a `match` on `Kind` needs a wildcard arm, and an `Embedding` is made with `Embedding::new` and
+  its `with_*` methods, not a struct literal. Code that matched all three kinds or wrote the four-field literal no
+  longer compiles. Nothing that compiles changes meaning: the three kinds, and an embedding without kinds, behave as
+  before.

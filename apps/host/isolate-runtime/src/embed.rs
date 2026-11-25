@@ -22,12 +22,33 @@ use crate::workspace::FilesystemProvider;
 ///   [`workspace`](crate::workspace)). None is Kantel's manifest per command, over the blob store bridge.
 /// - `host_commands`: programs the embedder runs natively for the guest's shell, by name (see
 ///   [`host_commands`](crate::host_commands)). Kantel's has none.
+/// - `kinds`: isolate kinds of the embedder's own ([`EmbedderKind`]), which it makes with
+///   [`isolate::try_new_live`](crate::isolate::try_new_live). Kantel's has none.
 #[derive(Clone)]
+#[non_exhaustive]
 pub struct Embedding {
     pub guest: &'static str,
     pub extensions: fn() -> Vec<Extension>,
     pub filesystem: Option<Arc<dyn FilesystemProvider>>,
     pub host_commands: Arc<HostCommands>,
+    pub kinds: Vec<EmbedderKind>,
+}
+
+/// An isolate kind of the embedder's own, next to the runtime's shell, node and python (see EMBEDDING.md, "An
+/// embedder's own kinds"). Its isolates are made with
+/// [`Kind::Embedder(name)`](crate::Kind::Embedder), start with code generation from strings off, and get their entry
+/// point from `__kantel.init(name)`.
+///
+/// - `name`: what `__kantel.init` is called with. Not `shell`, `node` or `python`, and not empty.
+/// - `runtime`: the kind's own JavaScript, the body of a function evaluated once, after the guest bundle, into the
+///   startup snapshot. What it returns is handed to `__kantel.init(name, runtime)` in each of the kind's isolates, so
+///   they start with it evaluated, and no other kind's isolate can reach it. It must leave nothing on the global
+///   ([`Engine::init`](crate::Engine::init) refuses one that does). Empty for none.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct EmbedderKind {
+    pub name: &'static str,
+    pub runtime: &'static str,
 }
 
 impl Embedding {
@@ -38,7 +59,15 @@ impl Embedding {
             extensions: Vec::new,
             filesystem: None,
             host_commands: Arc::default(),
+            kinds: Vec::new(),
         }
+    }
+
+    /// An isolate kind of the embedder's own, `name`, with its own `runtime` evaluated into the snapshot (see
+    /// [`EmbedderKind`]). [`Engine::init`](crate::Engine::init) refuses a reserved or repeated name.
+    pub fn with_kind(mut self, name: &'static str, runtime: &'static str) -> Embedding {
+        self.kinds.push(EmbedderKind { name, runtime });
+        self
     }
 
     /// A host command the guest's shell runs under `name` (see the type's docs). A name the isolate otherwise
@@ -70,6 +99,10 @@ impl std::fmt::Debug for Embedding {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Embedding")
             .field("guest", &format_args!("{} bytes", self.guest.len()))
+            .field(
+                "kinds",
+                &self.kinds.iter().map(|k| k.name).collect::<Vec<_>>(),
+            )
             .finish_non_exhaustive()
     }
 }
