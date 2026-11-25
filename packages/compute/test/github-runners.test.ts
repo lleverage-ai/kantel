@@ -20,6 +20,7 @@ import {
 	RUNNER_LABEL,
 	type RunnerPool,
 	type RunnerSandboxes,
+	STALE_QUEUED_CHECK_MS,
 	type StoredGithubRunners,
 } from "../src/github-runners.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
@@ -1285,7 +1286,10 @@ describe("GitHub runners", () => {
 			...current,
 			pools: kinds.map((kind) => ({ ...kind, poolId: "pool_new" })),
 		}));
-		github.queued.set("octo-org/app", [{ id: 2, runId: 900, name: "job 2", labels: ["kantel-8vcpu"] }]);
+		github.queued.set("octo-org/app", [
+			{ id: 1, runId: 900, name: "job 1", labels: ["kantel-8vcpu"] },
+			{ id: 2, runId: 900, name: "job 2", labels: ["kantel-8vcpu"] },
+		]);
 		clock.now += RECONCILE_EVERY_MS;
 		await runners.tick();
 		await settled();
@@ -1369,7 +1373,10 @@ describe("GitHub runners", () => {
 			...app(),
 			async queuedJobs() {
 				if (failing) throw new KantelError("exhausted", "GitHub's rate limit is low");
-				return [{ id: 2, runId: 900, name: "job 2", labels: ["kantel-8vcpu"] }];
+				return [
+					{ id: 1, runId: 900, name: "job 1", labels: ["kantel-8vcpu"] },
+					{ id: 2, runId: 900, name: "job 2", labels: ["kantel-8vcpu"] },
+				];
 			},
 		});
 		await job("queued", 1);
@@ -1382,6 +1389,61 @@ describe("GitHub runners", () => {
 		await runners.tick();
 		await settled();
 		expect(sandboxes.sandboxes.size).toBe(2);
+	});
+
+	it("clears stale queued jobs whose completed webhook was lost and retires their idle runners", async () => {
+		const { job, github, clock, runners, sandboxes, store, settled, status } = await setUp();
+		await job("queued", 1);
+		sandboxes.boot();
+		await runners.tick();
+		expect(await status()).toMatchObject({ queued: 1, idle: 1 });
+		// Job 1 was cancelled on GitHub while webhooks were missed; GitHub's queued list is now empty.
+		github.queued.set("octo-org/app", []);
+		github.jobs.set(1, { status: "completed", conclusion: "cancelled" });
+		// Reconcile once the job is older than STALE_QUEUED_CHECK_MS.
+		clock.now += Math.max(RECONCILE_EVERY_MS, STALE_QUEUED_CHECK_MS);
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:1")).toMatchObject({
+			state: "completed",
+			conclusion: "cancelled",
+			reason: expect.stringContaining("Completed on GitHub"),
+		});
+		// With phantom demand gone and the idle runner past IDLE_GRACE_MS, it is retired immediately.
+		expect(sandboxes.sandboxes.size).toBe(0);
+		expect(await status()).toMatchObject({ queued: 0, idle: 0 });
+	});
+
+	it("keeps a stored queued job when GitHub's single-job check still says queued or the job is newly queued", async () => {
+		const { job, github, clock, runners, store, settled } = await setUp();
+		await job("queued", 1);
+		// Job 1 is absent from queuedJobs (e.g. truncated list), but getJob still says queued.
+		github.queued.set("octo-org/app", []);
+		github.jobs.set(1, { status: "queued" });
+		clock.now += Math.max(RECONCILE_EVERY_MS, STALE_QUEUED_CHECK_MS);
+		// Job 2 is newly queued (younger than STALE_QUEUED_CHECK_MS), so reconcile does not query getJob for it even
+		// though fakeGithub.getJob would report it as completed.
+		github.jobs.set(2, { status: "completed", conclusion: "cancelled" });
+		await job("queued", 2);
+		await store.githubRunners.update("ghr_one", ({ reconcileAt: _due, ...current }) => current);
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:1")).toMatchObject({ state: "queued" });
+		expect(await store.githubRunnerJobs.get("ghr_one:2")).toMatchObject({ state: "queued" });
+	});
+
+	it("moves a stale queued job to in_progress when GitHub says another runner already started it", async () => {
+		const { job, github, clock, runners, store, settled } = await setUp();
+		await job("queued", 1);
+		github.queued.set("octo-org/app", []);
+		github.jobs.set(1, { status: "in_progress" });
+		clock.now += Math.max(RECONCILE_EVERY_MS, STALE_QUEUED_CHECK_MS);
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:1")).toMatchObject({
+			state: "in_progress",
+			reason: expect.stringContaining("Started on GitHub"),
+		});
 	});
 
 	it("deletes a busy runner's sandbox once it is in error, without waiting for GitHub to give up on its job", async () => {

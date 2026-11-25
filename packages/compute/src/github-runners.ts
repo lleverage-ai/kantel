@@ -93,6 +93,10 @@ export const IDLE_TICK_MS = 60_000;
 export const END_RETRY_FIRST_MS = 30_000;
 /** How often a pass reconciles the integration's queue with GitHub's (`reconcile`). */
 export const RECONCILE_EVERY_MS = 5 * 60_000;
+/** How old a stored `queued` job must be before reconciling checks GitHub when it is absent from the queued list. */
+export const STALE_QUEUED_CHECK_MS = 2 * 60_000;
+/** The most missing `queued` jobs one reconcile checks individually against GitHub. */
+const STALE_QUEUED_CHECKS_PER_RECONCILE = 25;
 /** The most failed deliveries one reconcile asks GitHub to send again. */
 const REDELIVERIES_PER_RECONCILE = 20;
 /** The longest an end waits between tries: each failure doubles the wait, up to this. */
@@ -1276,6 +1280,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		}
 		const installation = installationId;
 		let recorded = 0;
+		let staleChecksLeft = STALE_QUEUED_CHECKS_PER_RECONCILE;
 		try {
 			const served = (repository: string) =>
 				ownedBy(record, repository) &&
@@ -1283,8 +1288,15 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					record.repositories.some((name) => name.toLowerCase() === repository.toLowerCase())) &&
 				record.pools.some((kind) => poolServes(kind, repository));
 			const repositories = (record.repositories ?? (await app.listRepositories(installation))).filter(served);
+			const storedQueued =
+				repositories.length === 0
+					? []
+					: (await store.githubRunnerJobs.list({ integrationId: record.id })).filter((job) => job.state === "queued");
 			for (const repository of repositories) {
-				for (const job of await app.queuedJobs(installation, repository)) {
+				const githubQueued = await app.queuedJobs(installation, repository);
+				const githubQueuedIds = new Set<number>();
+				for (const job of githubQueued) {
+					githubQueuedIds.add(job.id);
 					// As a `queued` delivery is judged: a kind with its labels that serves its repository.
 					const kind = poolFor(record.pools, job.labels);
 					if (kind === undefined || !poolServes(kind, repository)) continue;
@@ -1319,6 +1331,60 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 					log(
 						`[github-runners] ${record.id}: job ${job.id} of ${repository} is queued on GitHub with no webhook; recorded`,
 					);
+				}
+				// Stored `queued` jobs for this repository that GitHub's queued list no longer includes (for instance, a
+				// cancelled or started job whose webhook was lost) are verified individually so phantom demand cannot pin
+				// idle runners for `QUEUED_JOB_TTL_MS`.
+				if (staleChecksLeft > 0) {
+					const checkAt = now();
+					const repoLower = repository.toLowerCase();
+					const candidates = storedQueued
+						.filter(
+							(job) =>
+								job.repository.toLowerCase() === repoLower &&
+								!githubQueuedIds.has(job.jobId) &&
+								checkAt - job.queuedAt >= STALE_QUEUED_CHECK_MS,
+						)
+						.sort((a, b) => a.queuedAt - b.queuedAt)
+						.slice(0, staleChecksLeft);
+					for (const candidate of candidates) {
+						staleChecksLeft--;
+						const status = await app.getJob(installation, candidate.repository, candidate.jobId);
+						if (status !== undefined && status.status === "queued") continue;
+						const at = now();
+						const updated = await store.githubRunnerJobs.update(candidate.id, (current) => {
+							if (current.state !== "queued") return undefined;
+							if (status === undefined || status.status === "completed") {
+								return {
+									...current,
+									state: "completed",
+									...(status?.conclusion === undefined ? {} : { conclusion: status.conclusion }),
+									completedAt: at,
+									reason:
+										status === undefined
+											? "No longer exists on GitHub (missed webhook)"
+											: "Completed on GitHub (missed webhook)",
+									updatedAt: at,
+								};
+							}
+							if (status.status === "in_progress") {
+								return {
+									...current,
+									state: "in_progress",
+									startedAt: at,
+									reason: "Started on GitHub (missed webhook)",
+									updatedAt: at,
+								};
+							}
+							return undefined;
+						});
+						if (updated !== undefined) {
+							recorded++;
+							log(
+								`[github-runners] ${record.id}: stale queued job ${candidate.jobId} of ${candidate.repository} is ${status?.status ?? "gone"} on GitHub; marked ${updated.state}`,
+							);
+						}
+					}
 				}
 			}
 		} catch (error) {

@@ -76,6 +76,22 @@ export interface Collection<T extends { readonly id: string }> {
 /** For a list, the values a field may have: a record with any one of them. An empty list matches nothing. */
 export type AnyOf<T> = { readonly [K in keyof T]?: readonly T[K][] };
 
+/**
+ * Every sandbox state except `deleted`, for indexed queries (`compute_api_records_by_account_state`,
+ * `compute_api_records_sandboxes_by_host_state`) that must never scan deleted sandbox history.
+ */
+export const UNDELETED_SANDBOX_STATES = Object.keys({
+	starting: true,
+	running: true,
+	stopping: true,
+	stopped: true,
+	paused: true,
+	moving: true,
+	error: true,
+	lost: true,
+	deleting: true,
+} satisfies Record<Exclude<computeSchema.SandboxState, "deleted">, true>) as readonly computeSchema.SandboxState[];
+
 export interface StoredUser {
 	readonly id: string;
 	readonly email?: string;
