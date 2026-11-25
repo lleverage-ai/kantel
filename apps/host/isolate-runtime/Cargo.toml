@@ -71,3 +71,8 @@ opt-level = 1
 [[test]]
 name = "hardening"
 harness = false
+
+# The out-of-memory tests fork too: a case V8 ended would otherwise end the test binary (tests/oom.rs has its own main).
+[[test]]
+name = "oom"
+harness = false
