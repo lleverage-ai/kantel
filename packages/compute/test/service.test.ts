@@ -5989,4 +5989,67 @@ describe("listing sandboxes", () => {
 		const stubAfter = hostsAfter.items.find((h) => h.id === hostId);
 		expect(stubAfter?.allocated.sandboxes).toBe(0);
 	});
+
+	it("reclaims an owed delete abandoned in deleting after its lease expires, respects a live claim, and clears intent on recovery", async () => {
+		const store = createMemoryStore();
+		const base = createStubBackend();
+		let destroyCalls = 0;
+		const backend: SandboxBackend = {
+			...base,
+			hostConnected: async () => true,
+			destroy: async (sandboxId, opts) => {
+				destroyCalls++;
+				await base.destroy(sandboxId, opts);
+			},
+		};
+		let clock = 1_700_000_000_000;
+		const first = setup(backend, { store, now: () => clock });
+		const sbx = await first.tom.createSandbox({ wait: true, name: "abandoned-delete" });
+		const saved = await first.tom.saveSnapshot({ name: "kept-save", sandboxId: sbx.id });
+		const autoSnap = await first.tom.takeSnapshot(sbx.id, {});
+		const stored = await store.sandboxes.get(sbx.id);
+		if (stored === undefined) throw new Error("missing sandbox");
+
+		// Simulate a gateway/DO crash right after finishOwedDelete claimed `error` -> `deleting`.
+		await store.sandboxes.put({
+			...stored,
+			state: "deleting",
+			deleteOwed: { at: clock, previousState: "running", actor: stored.createdBy, claimedAt: clock },
+		});
+
+		// Fresh service over the same store: while the claim lease is still live, sweep must NOT steal it.
+		const restarted = setup(backend, { store, now: () => clock });
+		await restarted.api.service.sweep();
+		await restarted.api.service.idle();
+		expect(destroyCalls).toBe(0);
+		expect((await store.sandboxes.get(sbx.id))?.state).toBe("deleting");
+
+		// Once the lease expires (past STOP_LEASE_MS), sweep reclaims it, deletes VM + auto snapshot, keeps saved snapshot.
+		clock += 10 * 60_000;
+		await restarted.api.service.sweep();
+		await restarted.api.service.idle();
+		expect(destroyCalls).toBe(1);
+		const gone = await store.sandboxes.get(sbx.id);
+		expect(gone?.state).toBe("deleted");
+		expect(gone?.deleteOwed).toBeUndefined();
+		expect(await store.snapshots.get(autoSnap.id)).toBeUndefined();
+		expect((await store.snapshots.get(saved.id))?.sandboxId).toBeUndefined();
+
+		// Explicit recovery from `error` clears an old deleteOwed marker so a later sweep does not delete it.
+		const sbx2 = await restarted.tom.createSandbox({ wait: true, name: "recovered-not-deleted" });
+		const stored2 = await store.sandboxes.get(sbx2.id);
+		if (stored2 === undefined) throw new Error("missing sandbox 2");
+		await store.sandboxes.put({
+			...stored2,
+			state: "error",
+			deleteOwed: { at: clock, previousState: "running", actor: stored2.createdBy },
+		});
+		await restarted.tom.recoverSandbox(sbx2.id);
+		await restarted.api.service.idle();
+		expect((await store.sandboxes.get(sbx2.id))?.state).toBe("running");
+		expect((await store.sandboxes.get(sbx2.id))?.deleteOwed).toBeUndefined();
+		await restarted.api.service.sweep();
+		await restarted.api.service.idle();
+		expect((await store.sandboxes.get(sbx2.id))?.state).toBe("running");
+	});
 });

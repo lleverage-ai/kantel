@@ -7405,8 +7405,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				previousState: sandbox.state,
 				at: now(),
 			});
-			// A delete that couldn't reach this host while it was away is finished as soon as the host reconnects (#967).
-			if (connected && sandbox.state === "error" && sandbox.deleteOwed !== undefined && !pending.has(sandbox.id)) {
+			// A delete that couldn't reach this host while it was away (or was interrupted mid-retry) is finished once the host
+			// reconnects (#967).
+			if (
+				connected &&
+				(sandbox.state === "error" || sandbox.state === "deleting") &&
+				sandbox.deleteOwed !== undefined &&
+				!pending.has(sandbox.id)
+			) {
 				keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
 			}
 		}
@@ -8215,10 +8221,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	/** Whether an owed delete in `error` or an abandoned `deleting` attempt is eligible to be claimed now. */
+	function owedDeleteEligible(sandbox: StoredSandbox, at: number): boolean {
+		if (
+			sandbox.deleteOwed === undefined ||
+			sandbox.moving !== undefined ||
+			sandbox.losing !== undefined ||
+			sandbox.lostEvent !== undefined
+		) {
+			return false;
+		}
+		if (sandbox.state === "error") return true;
+		if (sandbox.state === "deleting") {
+			const claimed = sandbox.deleteOwed.claimedAt;
+			return claimed === undefined || at - claimed >= STOP_LEASE_MS;
+		}
+		return false;
+	}
+
 	/** Retries an owed delete once its host is connected again (`reportHostConnection`, `sweep`). */
 	async function finishOwedDelete(sandbox: StoredSandbox): Promise<void> {
 		const owed = sandbox.deleteOwed;
-		if (owed === undefined || sandbox.state !== "error" || pending.has(sandbox.id)) return;
+		const at = now();
+		if (owed === undefined || pending.has(sandbox.id) || !owedDeleteEligible(sandbox, at)) return;
 		if (
 			sandbox.hostId !== undefined &&
 			backend.hostConnected !== undefined &&
@@ -8226,15 +8251,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		) {
 			return;
 		}
+		const claimAt = now();
 		const began = await transition(
 			sandbox.id,
-			"error",
-			(latest) => withState(latest, "deleting"),
+			["error", "deleting"],
 			(latest) =>
-				latest.deleteOwed !== undefined &&
-				latest.moving === undefined &&
-				latest.losing === undefined &&
-				latest.lostEvent === undefined,
+				withState(latest, "deleting", {
+					deleteOwed: { ...(latest.deleteOwed ?? owed), claimedAt: claimAt },
+				}),
+			(latest) => owedDeleteEligible(latest, claimAt),
 		);
 		if (!("moved" in began)) return;
 		const deleting = began.moved;
@@ -16012,6 +16037,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// failure's own kill didn't finish.
 				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
 					keepGoing(killDroppedOf(sandbox));
+				}
+			}
+			// Owed deletes interrupted mid-retry (stuck in `deleting` past their retry lease) are reclaimed too (#967).
+			for (const sandbox of await store.sandboxes.list({ state: "deleting" })) {
+				if (sandbox.deleteOwed !== undefined && !pending.has(sandbox.id) && owedDeleteEligible(sandbox, at)) {
+					keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
 				}
 			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {

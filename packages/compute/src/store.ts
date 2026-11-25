@@ -321,6 +321,8 @@ export type StoredSandbox = Omit<
 		readonly at: number;
 		readonly previousState: computeSchema.SandboxState;
 		readonly actor: StoredSandbox["createdBy"];
+		/** When a background retry (`finishOwedDelete`) last claimed this owed delete, so a stale claim can be reclaimed. */
+		readonly claimedAt?: number;
 	};
 	/**
 	 * Its `sandbox.lost` event, written with its move to `lost` and not yet stored: the ID it is stored under and the
