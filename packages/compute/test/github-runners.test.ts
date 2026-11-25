@@ -1484,6 +1484,69 @@ describe("GitHub runners", () => {
 		expect(await status()).toMatchObject({ queued: 0, idle: 0, busy: 1 });
 	});
 
+	it("schedules stale job checks fairly across repositories so ongoing jobs in an earlier repo cannot starve a later repo", async () => {
+		const { job, github, clock, runners, store, settled } = await setUp({
+			pool: { repositories: ["octo-org/app", "octo-org/other"] },
+		});
+		github.repositories.push("octo-org/other");
+		// Bind installation via an initial completed webhook, then seed 25 ongoing external in_progress jobs in repo 1
+		// and 1 stale queued job (actually cancelled) in repo 2 with a slightly newer timestamp.
+		await job("queued", 1);
+		await job("completed", 1, { conclusion: "success" });
+		const t0 = clock.now;
+		for (let i = 100; i < 125; i++) {
+			github.jobs.set(i, { status: "in_progress", runnerName: "external-runner" });
+			await store.githubRunnerJobs.put({
+				id: `ghr_one:${i}`,
+				integrationId: "ghr_one",
+				accountId: "acc_1",
+				jobId: i,
+				runId: 900,
+				repository: "octo-org/app",
+				name: `ext ${i}`,
+				labels: ["kantel-8vcpu"],
+				pool: "kantel-8vcpu",
+				installationId: 42,
+				state: "in_progress",
+				queuedAt: t0,
+				startedAt: t0,
+				updatedAt: t0,
+			});
+		}
+		github.jobs.set(200, { status: "completed", conclusion: "cancelled" });
+		await store.githubRunnerJobs.put({
+			id: "ghr_one:200",
+			integrationId: "ghr_one",
+			accountId: "acc_1",
+			jobId: 200,
+			runId: 901,
+			repository: "octo-org/other",
+			name: "cancelled later repo",
+			labels: ["kantel-8vcpu"],
+			pool: "kantel-8vcpu",
+			installationId: 42,
+			state: "queued",
+			queuedAt: t0 + 1,
+			updatedAt: t0 + 1,
+		});
+		github.queued.set("octo-org/app", []);
+		github.queued.set("octo-org/other", []);
+		// First reconcile spends its 25-check budget on the 25 older repo-1 jobs and stamps their reconciledAt.
+		clock.now += Math.max(RECONCILE_EVERY_MS, JOB_CHECK_EVERY_MS);
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:200")).toMatchObject({ state: "queued" });
+		// Second reconcile sees repo-2's unchecked job has an older check timestamp than the 25 repo-1 jobs checked in
+		// the first reconcile, so it is checked and marked completed without starvation.
+		clock.now += Math.max(RECONCILE_EVERY_MS, JOB_CHECK_EVERY_MS);
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:200")).toMatchObject({
+			state: "completed",
+			conclusion: "cancelled",
+		});
+	});
+
 	it("deletes a busy runner's sandbox once it is in error, without waiting for GitHub to give up on its job", async () => {
 		const { job, sandboxes, runners, clock, store } = await setUp();
 		await job("queued", 1);
