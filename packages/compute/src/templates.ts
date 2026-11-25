@@ -74,10 +74,12 @@ import {
 	type ComputeStore,
 	type StoredDiskHolder,
 	type StoredHost,
+	type StoredSandbox,
 	type StoredTemplate,
 	type StoredTemplateBase,
 	type StoredTemplateSnapshot,
 	type StoredTemplateVersion,
+	UNDELETED_SANDBOX_STATES,
 	UniqueViolation,
 } from "./store.ts";
 import { randomId, sha256Hex } from "./util.ts";
@@ -1202,10 +1204,13 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 		};
 	}
 
-	async function templateView(template: StoredTemplate): Promise<computeSchema.Template> {
+	async function templateView(
+		template: StoredTemplate,
+		listedSandboxes?: readonly StoredSandbox[],
+	): Promise<computeSchema.Template> {
 		const [build, sandboxes] = await Promise.all([
 			buildStatus(template),
-			store.sandboxes.list({ accountId: template.accountId }),
+			listedSandboxes ?? store.sandboxes.list({ accountId: template.accountId }, { state: UNDELETED_SANDBOX_STATES }),
 		]);
 		return {
 			id: template.id,
@@ -1648,7 +1653,11 @@ export function createTemplateService(options: TemplateServiceOptions): Template
 					return built.has(template.id) || (base !== undefined && "digest" in base && base.digest === digest);
 				});
 			}
-			return { items: await Promise.all(templates.map(templateView)) };
+			const sandboxes =
+				templates.length === 0
+					? []
+					: await store.sandboxes.list({ accountId: account.id }, { state: UNDELETED_SANDBOX_STATES });
+			return { items: await Promise.all(templates.map((template) => templateView(template, sandboxes))) };
 		},
 
 		createTemplate: async (principal, { body, idempotencyKey }) => {

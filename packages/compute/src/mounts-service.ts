@@ -28,13 +28,14 @@ import {
 	type StoredBlob,
 } from "./mounts.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
-import type {
-	Collection,
-	ComputeStore,
-	DeleteClaim,
-	StoredBucketSource,
-	StoredBundle,
-	StoredSandbox,
+import {
+	type Collection,
+	type ComputeStore,
+	type DeleteClaim,
+	type StoredBucketSource,
+	type StoredBundle,
+	type StoredSandbox,
+	UNDELETED_SANDBOX_STATES,
 } from "./store.ts";
 import { gunzipIfGzipped, TarCheck } from "./tar.ts";
 import { homeFor, randomId, randomSecret, randomSlug, resolvePath, sha256Hex } from "./util.ts";
@@ -323,7 +324,7 @@ export function createMounts(deps: MountsDeps) {
 		matches: (source: computeSchema.MountSource) => boolean,
 		listed?: readonly StoredSandbox[],
 	) {
-		const sandboxes = listed ?? (await store.sandboxes.list({ accountId }));
+		const sandboxes = listed ?? (await store.sandboxes.list({ accountId }, { state: UNDELETED_SANDBOX_STATES }));
 		return sandboxes.filter((sandbox) => mountsOfSource(sandbox, matches)).length;
 	}
 
@@ -810,7 +811,10 @@ export function createMounts(deps: MountsDeps) {
 			requireScope(principal, "sandboxes:read", role);
 			const bundles = await store.bundles.list({ accountId: account.id });
 			bundles.sort((a, b) => b.createdAt - a.createdAt);
-			const sandboxes = await store.sandboxes.list({ accountId: account.id });
+			const sandboxes =
+				bundles.length === 0
+					? []
+					: await store.sandboxes.list({ accountId: account.id }, { state: UNDELETED_SANDBOX_STATES });
 			return { items: await Promise.all(bundles.map((bundle) => bundleView(bundle, sandboxes))) };
 		},
 
@@ -876,7 +880,10 @@ export function createMounts(deps: MountsDeps) {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const sources = await store.bucketSources.list({ accountId: account.id });
-			const sandboxes = await store.sandboxes.list({ accountId: account.id });
+			const sandboxes =
+				sources.length === 0
+					? []
+					: await store.sandboxes.list({ accountId: account.id }, { state: UNDELETED_SANDBOX_STATES });
 			return { items: await Promise.all(sources.map((source) => bucketView(source, sandboxes))) };
 		},
 

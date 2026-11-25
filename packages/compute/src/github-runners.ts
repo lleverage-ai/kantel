@@ -93,6 +93,10 @@ export const IDLE_TICK_MS = 60_000;
 export const END_RETRY_FIRST_MS = 30_000;
 /** How often a pass reconciles the integration's queue with GitHub's (`reconcile`). */
 export const RECONCILE_EVERY_MS = 5 * 60_000;
+/** How old a stored `queued` job must be before reconciling checks GitHub when it is absent from the queued list. */
+export const STALE_QUEUED_CHECK_MS = 2 * 60_000;
+/** The most missing `queued` jobs one reconcile checks individually against GitHub. */
+const STALE_QUEUED_CHECKS_PER_RECONCILE = 25;
 /** The most failed deliveries one reconcile asks GitHub to send again. */
 const REDELIVERIES_PER_RECONCILE = 20;
 /** The longest an end waits between tries: each failure doubles the wait, up to this. */
@@ -254,6 +258,8 @@ export interface StoredGithubRunnerJob {
 	readonly queuedAt: number;
 	readonly startedAt?: number;
 	readonly completedAt?: number;
+	/** When reconciling last checked this job individually against GitHub (`app.getJob`), for fair scheduling across repos. */
+	readonly reconciledAt?: number;
 	readonly reason?: string;
 	readonly updatedAt: number;
 }
@@ -1276,6 +1282,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		}
 		const installation = installationId;
 		let recorded = 0;
+		const queuedByRepo = new Map<string, Set<number>>();
 		try {
 			const served = (repository: string) =>
 				ownedBy(record, repository) &&
@@ -1284,7 +1291,10 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 				record.pools.some((kind) => poolServes(kind, repository));
 			const repositories = (record.repositories ?? (await app.listRepositories(installation))).filter(served);
 			for (const repository of repositories) {
-				for (const job of await app.queuedJobs(installation, repository)) {
+				const githubQueued = await app.queuedJobs(installation, repository);
+				const githubQueuedIds = new Set<number>();
+				for (const job of githubQueued) {
+					githubQueuedIds.add(job.id);
 					// As a `queued` delivery is judged: a kind with its labels that serves its repository.
 					const kind = poolFor(record.pools, job.labels);
 					if (kind === undefined || !poolServes(kind, repository)) continue;
@@ -1320,9 +1330,128 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 						`[github-runners] ${record.id}: job ${job.id} of ${repository} is queued on GitHub with no webhook; recorded`,
 					);
 				}
+				queuedByRepo.set(repository.toLowerCase(), githubQueuedIds);
 			}
 		} catch (error) {
 			log(`[github-runners] ${record.id}: reconciling with GitHub stopped: ${messageOf(error)}`);
+		}
+		// Verify stored `queued` jobs absent from GitHub's queued list (e.g. missed `in_progress`/`completed` webhooks) and
+		// `in_progress` jobs with no busy Kantel machine across all served repositories that were read cleanly, ordered
+		// globally by least-recently checked (`reconciledAt`) so no repository can starve another of the shared budget.
+		if (queuedByRepo.size > 0) {
+			try {
+				const [allJobs, allMachines] = await Promise.all([
+					store.githubRunnerJobs.list({ integrationId: record.id }),
+					store.githubRunnerMachines.list({ integrationId: record.id }),
+				]);
+				const busyMachines = new Set(
+					allMachines.filter((machine) => machine.state === "busy").map((machine) => machine.id),
+				);
+				const checkAt = now();
+				const checkedAt = (job: StoredGithubRunnerJob) =>
+					job.reconciledAt ?? (job.state === "in_progress" ? job.updatedAt : job.queuedAt);
+				const candidates = allJobs
+					.filter((job) => {
+						const githubQueuedIds = queuedByRepo.get(job.repository.toLowerCase());
+						if (githubQueuedIds === undefined) return false;
+						if (job.installationId !== undefined && job.installationId !== installation) return false;
+						if (job.state === "queued") {
+							return !githubQueuedIds.has(job.jobId) && checkAt - job.queuedAt >= STALE_QUEUED_CHECK_MS;
+						}
+						if (job.state === "in_progress") {
+							return (
+								(job.sandboxId === undefined || !busyMachines.has(job.sandboxId)) &&
+								checkAt - (job.reconciledAt ?? job.updatedAt) >= JOB_CHECK_EVERY_MS
+							);
+						}
+						return false;
+					})
+					.sort((a, b) => checkedAt(a) - checkedAt(b) || a.jobId - b.jobId)
+					.slice(0, STALE_QUEUED_CHECKS_PER_RECONCILE);
+				for (const candidate of candidates) {
+					const status = await app.getJob(installation, candidate.repository, candidate.jobId);
+					const at = now();
+					if (status !== undefined && status.status === "queued") {
+						await store.githubRunnerJobs.update(candidate.id, (current) =>
+							current.state === "queued" ? { ...current, reconciledAt: at } : undefined,
+						);
+						continue;
+					}
+					const found =
+						status?.runnerName === undefined ? undefined : await store.githubRunnerMachines.get(status.runnerName);
+					const machine =
+						found !== undefined &&
+						registeredBy(found, record.id, installation, candidate.repository) &&
+						(status?.runnerId === undefined || found.runnerId === undefined || status.runnerId === found.runnerId)
+							? found
+							: undefined;
+					if (status === undefined || status.status === "completed") {
+						const completed = await completeJob(
+							record,
+							candidate.jobId,
+							status?.conclusion,
+							machine?.id,
+							installation,
+							status === undefined
+								? undefined
+								: {
+										runId: status.runId ?? candidate.runId,
+										repository: candidate.repository,
+										...(status.runnerId === undefined ? {} : { runnerId: status.runnerId }),
+									},
+							status === undefined
+								? "No longer exists on GitHub (missed webhook)"
+								: "Completed on GitHub (missed webhook)",
+						);
+						if (completed) {
+							recorded++;
+							log(
+								`[github-runners] ${record.id}: stale ${candidate.state} job ${candidate.jobId} of ${candidate.repository} is ${status?.status ?? "gone"} on GitHub; marked completed`,
+							);
+						}
+					} else if (status.status === "in_progress") {
+						const updated = await store.githubRunnerJobs.update(candidate.id, (current) => {
+							if (current.installationId !== undefined && current.installationId !== installation) return undefined;
+							if (current.state === "queued") {
+								return {
+									...current,
+									state: "in_progress",
+									...(machine === undefined ? {} : { sandboxId: machine.id }),
+									startedAt: at,
+									reconciledAt: at,
+									reason: "Started on GitHub (missed webhook)",
+									updatedAt: at,
+								};
+							}
+							if (current.state === "in_progress") {
+								return {
+									...current,
+									...(machine !== undefined && current.sandboxId === undefined ? { sandboxId: machine.id } : {}),
+									reconciledAt: at,
+									updatedAt: at,
+								};
+							}
+							return undefined;
+						});
+						if (machine !== undefined && updated?.state === "in_progress") {
+							await markMachineBusy(machine.id, candidate.jobId, at);
+							busyMachines.add(machine.id);
+						}
+						if (updated !== undefined && (candidate.state === "queued" || machine !== undefined)) {
+							recorded++;
+							log(
+								`[github-runners] ${record.id}: stale ${candidate.state} job ${candidate.jobId} of ${candidate.repository} is in_progress on GitHub${machine === undefined ? "" : ` (runner ${machine.id})`}`,
+							);
+						}
+					} else {
+						await store.githubRunnerJobs.update(candidate.id, (current) =>
+							current.state === candidate.state ? { ...current, reconciledAt: at } : undefined,
+						);
+					}
+				}
+			} catch (error) {
+				log(`[github-runners] ${record.id}: reconciling stale jobs stopped: ${messageOf(error)}`);
+			}
 		}
 		try {
 			const t = now();
@@ -1485,6 +1614,27 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		return machine;
 	}
 
+	/** Marks a registered runner busy with `jobId`, rescuing one being ended only for want of a job. */
+	async function markMachineBusy(machineId: string, jobId: number, at: number): Promise<void> {
+		await store.githubRunnerMachines.update(machineId, (current) => {
+			const busy = { state: "busy" as const, tookJob: true, jobId, busyAt: at, updatedAt: at };
+			if (current.state !== "ending") return { ...current, ...busy };
+			// Being ended only for want of a job, and not yet off GitHub: the job keeps it, and the end's waits go with it.
+			if (current.unused === true && current.unregistered !== true) {
+				const {
+					unused: _unused,
+					endingAt: _at,
+					endReason: _why,
+					endFailures: _failures,
+					endRetryAt: _retry,
+					...rest
+				} = current;
+				return { ...rest, ...busy };
+			}
+			return { ...current, tookJob: true };
+		});
+	}
+
 	/**
 	 * Marks a job ended, and its runner to end (which the next pass does). Its sticky disks are to be committed only for
 	 * a job that succeeded on that very runner: GitHub's ID for the runner that ran it (`run.runnerId`, from a signed
@@ -1499,9 +1649,10 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 		/** The installation a delivery came from: a job another installation recorded is left as it is. */
 		installationId?: number,
 		run?: { readonly runId: number; readonly repository: string; readonly runnerId?: number },
-	): Promise<void> {
+		reason?: string,
+	): Promise<boolean> {
 		const t = now();
-		await store.githubRunnerJobs.update(jobRecordId(record.id, jobId), (current) =>
+		const updated = await store.githubRunnerJobs.update(jobRecordId(record.id, jobId), (current) =>
 			current.state === "completed" ||
 			(installationId !== undefined &&
 				current.installationId !== undefined &&
@@ -1512,13 +1663,14 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 						state: "completed",
 						...(conclusion === undefined ? {} : { conclusion }),
 						...(runnerName === undefined ? {} : { sandboxId: runnerName }),
+						...(reason === undefined ? {} : { reason }),
 						completedAt: t,
 						updatedAt: t,
 					},
 		);
-		if (runnerName === undefined) return;
+		if (runnerName === undefined) return updated !== undefined;
 		const machine = await store.githubRunnerMachines.get(runnerName);
-		if (machine?.integrationId !== record.id) return;
+		if (machine?.integrationId !== record.id) return updated !== undefined;
 		const pool = machine.poolConfig ?? record.pools.find((candidate) => candidate.label === machine.pool);
 		const commits =
 			conclusion === "success" &&
@@ -1530,6 +1682,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			tookJob: true,
 			...(commits ? { commit: { runId: run.runId, repository: run.repository } } : {}),
 		});
+		return updated !== undefined;
 	}
 
 	async function onWorkflowJob(
@@ -1619,23 +1772,7 @@ export function createGithubRunners(options: GithubRunnersOptions): GithubRunner
 			});
 		}
 		if (state === "in_progress" && ours) {
-			await store.githubRunnerMachines.update(machine.id, (current) => {
-				const busy = { state: "busy" as const, tookJob: true, jobId: event.job.id, busyAt: t, updatedAt: t };
-				if (current.state !== "ending") return { ...current, ...busy };
-				// Being ended only for want of a job, and not yet off GitHub: the job keeps it, and the end's waits go with it.
-				if (current.unused === true && current.unregistered !== true) {
-					const {
-						unused: _unused,
-						endingAt: _at,
-						endReason: _why,
-						endFailures: _failures,
-						endRetryAt: _retry,
-						...rest
-					} = current;
-					return { ...rest, ...busy };
-				}
-				return { ...current, tookJob: true };
-			});
+			await markMachineBusy(machine.id, event.job.id, t);
 		}
 		if (state === "completed") {
 			await completeJob(record, event.job.id, event.job.conclusion, runner, installationId, {

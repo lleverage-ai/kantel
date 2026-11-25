@@ -166,47 +166,46 @@ import {
 import { createPoolService, defaultPoolOf, type PoolRunners, poolOwnerOf } from "./pools.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import { COPY_RETRY_MS, type CopyHost, copyTarget, keepingCopies, SNAPSHOT_COPIES } from "./snapshot-copies.ts";
-import type {
-	ComputeStore,
-	OOMPending,
-	ProvisionWork,
-	RunPeriod,
-	StoredAccount,
-	StoredApiKey,
-	StoredCommand,
-	StoredDeletion,
-	StoredDeviceLogin,
-	StoredDiskHolder,
-	StoredEgressEntry,
-	StoredEnvironment,
-	StoredEnvironmentFile,
-	StoredEnvironmentVariable,
-	StoredEvacuation,
-	StoredEvacuationSandbox,
-	StoredEvent,
-	StoredHost,
-	StoredIdempotency,
-	StoredInvite,
-	StoredJoinToken,
-	StoredPeak,
-	StoredPersonalToken,
-	StoredPool,
-	StoredProxy,
-	StoredSample,
-	StoredSandbox,
-	StoredSnapshot,
-	StoredStickyDisk,
-	StoredStickyDiskVersion,
-	StoredTelemetry,
-	StoredUsageClaim,
-	StoredUser,
-	StoredWebhook,
-} from "./store.ts";
 import {
+	type ComputeStore,
 	diskHolderId,
+	type OOMPending,
 	OPERATOR_POOLS,
+	type ProvisionWork,
+	type RunPeriod,
 	STICKY_PREFETCH_MS,
+	type StoredAccount,
+	type StoredApiKey,
+	type StoredCommand,
+	type StoredDeletion,
+	type StoredDeviceLogin,
+	type StoredDiskHolder,
+	type StoredEgressEntry,
+	type StoredEnvironment,
+	type StoredEnvironmentFile,
+	type StoredEnvironmentVariable,
+	type StoredEvacuation,
+	type StoredEvacuationSandbox,
+	type StoredEvent,
+	type StoredHost,
+	type StoredIdempotency,
+	type StoredInvite,
+	type StoredJoinToken,
+	type StoredPeak,
+	type StoredPersonalToken,
+	type StoredPool,
+	type StoredProxy,
+	type StoredSample,
+	type StoredSandbox,
+	type StoredSnapshot,
+	type StoredStickyDisk,
+	type StoredStickyDiskVersion,
+	type StoredTelemetry,
+	type StoredUsageClaim,
+	type StoredUser,
+	type StoredWebhook,
 	stickyDiskNameId,
+	UNDELETED_SANDBOX_STATES,
 	UniqueViolation,
 	usageClaimId,
 } from "./store.ts";
@@ -1672,17 +1671,7 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
  * Every state a sandbox list may show, each a stored record may hold but `deleted`: the list reads only these
  * (`listSandboxes`). A record, so a new state can't be left out of it.
  */
-const LISTED_STATES = Object.keys({
-	starting: true,
-	running: true,
-	stopping: true,
-	stopped: true,
-	paused: true,
-	moving: true,
-	error: true,
-	lost: true,
-	deleting: true,
-} satisfies Record<Exclude<computeSchema.SandboxState, "deleted">, true>) as readonly computeSchema.SandboxState[];
+const LISTED_STATES = UNDELETED_SANDBOX_STATES;
 /**
  * The states a host's sandbox is in while it still counts as the host's (`sandboxRecordsOn`): every one but deleting,
  * and lost (its host was lost, and its placement fenced: `markLostHosts`).
@@ -10140,7 +10129,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				// Bundles too: deleting one (`deleteBundle`) removes its bytes from the deployment's store, which only it checks.
 				if (
-					(await store.sandboxes.list({ accountId: personal })).some((sandbox) => sandbox.state !== "deleted") ||
+					(await undeleted({ accountId: personal })).length > 0 ||
 					(await store.snapshots.list({ accountId: personal, kind: "saved" })).length > 0 ||
 					(await store.bundles.list({ accountId: personal })).length > 0
 				) {
@@ -10266,9 +10255,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (account.kind === "personal") throw new KantelError("invalid", "A personal account can't be deleted here");
 			if (role !== "owner") throw new KantelError("forbidden", "Only an owner deletes an organisation");
 			requireScope(principal, "account:admin", role);
-			const sandboxes = (await store.sandboxes.list({ accountId: account.id })).filter(
-				(sandbox) => sandbox.state !== "deleted",
-			);
+			const sandboxes = await undeleted({ accountId: account.id });
 			const saved = await store.snapshots.list({ accountId: account.id, kind: "saved" });
 			if (sandboxes.length > 0 || saved.length > 0) {
 				throw new KantelError("conflict", "Delete the organisation's sandboxes and saved snapshots first");
@@ -12598,9 +12585,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// protected hosts and grants.
 			if (backend.updateEgress !== undefined) {
 				// Each one's revision moves on first, so a boot under way reconciles, and an egress read before is ignored.
-				const live = (await store.sandboxes.list({ accountId: account.id })).filter(
-					(sandbox) => sandbox.state === "running" || sandbox.state === "starting",
-				);
+				const live = await store.sandboxes.list({ accountId: account.id }, { state: ["running", "starting"] });
 				const bumped = await Promise.all(live.map((sandbox) => bumpEgress(sandbox.id)));
 				pushEgress(
 					bumped.filter((sandbox): sandbox is StoredSandbox => sandbox !== undefined && sandbox.state === "running"),
@@ -15040,7 +15025,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Drained first, so no new sandbox lands on it as its sandboxes go.
 		if (host.state !== "draining") await changeHost(host, { draining: true });
 		// Its sandboxes listed as it begins, so the answer has them: written with the record, before any gateway holds it.
-		const sandboxes = (await store.sandboxes.list({ hostId: host.id })).flatMap((sandbox) => {
+		const sandboxes = (await store.sandboxes.list({ hostId: host.id }, { state: LISTED_STATES })).flatMap((sandbox) => {
 			const item = evacuationSandboxOf(host.id, undefined, sandbox, false);
 			return item === undefined ? [] : [item];
 		});
@@ -15170,7 +15155,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<StoredEvacuation | undefined> {
 		const read = await store.evacuations.get(hostId);
 		if (read === undefined || read.run !== run || read.state !== "running") return undefined;
-		const onHost = await store.sandboxes.list({ hostId });
+		const onHost = await store.sandboxes.list({ hostId }, { state: LISTED_STATES });
 		const records = new Map(onHost.map((sandbox) => [sandbox.id, sandbox]));
 		for (const item of read.sandboxes) {
 			if (!records.has(item.sandboxId) && !evacuationDone(item)) {
