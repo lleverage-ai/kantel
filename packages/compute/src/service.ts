@@ -5477,8 +5477,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
 		// Read in those states only: GET /v1/hosts views every host, and each has its deleted sandboxes too.
 		const placed = (
-			await store.sandboxes.list({ hostId: host.id }, { state: ["running", "starting", "paused"] })
-		).filter((sandbox) => sandbox.state === "running" || sandbox.state === "starting" || sandbox.state === "paused");
+			await store.sandboxes.list({ hostId: host.id }, { state: ["running", "starting", "paused", "deleting", "error"] })
+		).filter(
+			(sandbox) =>
+				sandbox.state === "running" ||
+				sandbox.state === "starting" ||
+				sandbox.state === "paused" ||
+				sandbox.state === "deleting" ||
+				(sandbox.state === "error" && sandbox.deleteOwed !== undefined),
+		);
 		const machines = placed.filter((sandbox) => sandbox.type !== "isolate");
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
 			machines.reduce((total, sandbox) => total + pickOf(sandbox), 0);
@@ -5736,6 +5743,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
+			// An owed delete stays attached only across `deleting`/`error` retries; deleting or recovering clears it.
+			deleteOwed:
+				state === "deleting" || state === "error"
+					? "deleteOwed" in extra
+						? extra.deleteOwed
+						: sandbox.deleteOwed
+					: undefined,
 			...(sandbox.health === "unresponsive" && extra.health === undefined && !stillUnresponsive
 				? { health: "ok" as const }
 				: {}),
@@ -7379,7 +7393,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** `ComputeService.reportHostConnection`: its sandboxes, published as they are, for a console to read again. */
-	async function reportHostConnection(hostId: string, _connected: boolean): Promise<void> {
+	async function reportHostConnection(hostId: string, connected: boolean): Promise<void> {
 		// Never its deleted sandboxes, which it isn't told of anyway: every host connects again at once after the stack
 		// object restarts, and a runner pool's host has thousands.
 		for (const sandbox of await store.sandboxes.list({ hostId }, { state: LISTED_STATES })) {
@@ -7391,6 +7405,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				previousState: sandbox.state,
 				at: now(),
 			});
+			// A delete that couldn't reach this host while it was away (or was interrupted mid-retry) is finished once the host
+			// reconnects (#967).
+			if (
+				connected &&
+				(sandbox.state === "error" || sandbox.state === "deleting") &&
+				sandbox.deleteOwed !== undefined &&
+				!pending.has(sandbox.id)
+			) {
+				keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
+			}
 		}
 	}
 
@@ -8134,6 +8158,116 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * state `sandbox` was read in: when another call (on any gateway) moved it first, it is `conflict` and nothing is
 	 * stopped.
 	 */
+	/**
+	 * Runs the backend destroy, automatic-snapshot cleanup, and `deleting` → `deleted` transition for a sandbox already
+	 * moved to `deleting`. On an `unavailable` failure, records `deleteOwed` on the resulting `error` record so the host's
+	 * next reconnect (`reportHostConnection`) or the sweep finishes the delete instead of leaving a running VM stranded.
+	 */
+	async function completeDelete(
+		current: StoredSandbox,
+		was: SandboxState,
+		actor: StoredSandbox["createdBy"],
+	): Promise<void> {
+		try {
+			// A paused one's commands, kept in its memory, go with it, as its guest can't be asked.
+			await killCommandsOf(
+				current.id,
+				was === "paused"
+					? { note: pausedMemoryGone("deleted"), reconcile: false }
+					: // A lost one's host can't be asked.
+						was === "lost"
+						? { reconcile: false }
+						: {},
+			);
+			// With the host its record names: a backend whose placement of it went (its host deleted it, and the answer was
+			// lost) settles it by that host, rather than leave it in error with nothing to delete.
+			// A lost one is deleted on its host by its fence when the host is back (`markLostHosts`): one that host can't
+			// be asked about now is deleted all the same.
+			await backend
+				.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId })
+				.catch((error: unknown) => {
+					if (was !== "lost") throw error;
+				});
+			for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
+				if (snapshot.kind === "automatic") {
+					await forgetSnapshot(snapshot);
+					await releaseRef(snapshot);
+				} else {
+					// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
+					await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
+				}
+			}
+			const result = await transition(current.id, "deleting", (latest) =>
+				withState(latest, "deleted", {
+					ports: [],
+					latestSnapshotId: undefined,
+					latestSnapshotAt: undefined,
+					pausedSnapshotId: undefined,
+				}),
+			);
+			if (!("moved" in result)) return;
+			const deleted = result.moved;
+			await emit("sandbox.deleted", deleted.accountId, {
+				sandbox: deleted,
+				data: { previousState: current.deleteOwed?.previousState ?? was, actor },
+			});
+		} catch (error) {
+			await fail(current.id, error, "deleting", undefined, (latest) =>
+				error instanceof KantelError && error.code === "unavailable"
+					? { deleteOwed: latest.deleteOwed ?? { at: now(), previousState: was, actor } }
+					: {},
+			);
+			throw error;
+		}
+	}
+
+	/** Whether an owed delete in `error` or an abandoned `deleting` attempt is eligible to be claimed now. */
+	function owedDeleteEligible(sandbox: StoredSandbox, at: number): boolean {
+		if (
+			sandbox.deleteOwed === undefined ||
+			sandbox.moving !== undefined ||
+			sandbox.losing !== undefined ||
+			sandbox.lostEvent !== undefined
+		) {
+			return false;
+		}
+		if (sandbox.state === "error") return true;
+		if (sandbox.state === "deleting") {
+			const claimed = sandbox.deleteOwed.claimedAt;
+			return claimed === undefined || at - claimed >= STOP_LEASE_MS;
+		}
+		return false;
+	}
+
+	/** Retries an owed delete once its host is connected again (`reportHostConnection`, `sweep`). */
+	async function finishOwedDelete(sandbox: StoredSandbox): Promise<void> {
+		const owed = sandbox.deleteOwed;
+		const at = now();
+		if (owed === undefined || pending.has(sandbox.id) || !owedDeleteEligible(sandbox, at)) return;
+		if (
+			sandbox.hostId !== undefined &&
+			backend.hostConnected !== undefined &&
+			!(await backend.hostConnected(sandbox.hostId).catch(() => false))
+		) {
+			return;
+		}
+		const claimAt = now();
+		const began = await transition(
+			sandbox.id,
+			["error", "deleting"],
+			(latest) =>
+				withState(latest, "deleting", {
+					deleteOwed: { ...(latest.deleteOwed ?? owed), claimedAt: claimAt },
+				}),
+			(latest) => owedDeleteEligible(latest, claimAt),
+		);
+		if (!("moved" in began)) return;
+		const deleting = began.moved;
+		await track([deleting.id], async () => {
+			await completeDelete(deleting, owed.previousState, owed.actor).catch(() => undefined);
+		});
+	}
+
 	async function beginStop(
 		sandbox: StoredSandbox,
 		keepMemory: boolean,
@@ -11554,53 +11688,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					return sandboxView(began.lost, principal);
 				}
 				await track([current.id], async () => {
-					try {
-						// A paused one's commands, kept in its memory, go with it, as its guest can't be asked.
-						await killCommandsOf(
-							current.id,
-							was === "paused"
-								? { note: pausedMemoryGone("deleted"), reconcile: false }
-								: // A lost one's host can't be asked.
-									was === "lost"
-									? { reconcile: false }
-									: {},
-						);
-						// With the host its record names: a backend whose placement of it went (its host deleted it, and the answer was
-						// lost) settles it by that host, rather than leave it in error with nothing to delete.
-						// A lost one is deleted on its host by its fence when the host is back (`markLostHosts`): one that host can't
-						// be asked about now is deleted all the same.
-						await backend
-							.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId })
-							.catch((error: unknown) => {
-								if (was !== "lost") throw error;
-							});
-						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
-							if (snapshot.kind === "automatic") {
-								await forgetSnapshot(snapshot);
-								await releaseRef(snapshot);
-							} else {
-								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
-								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
-							}
-						}
-						const result = await transition(current.id, "deleting", (latest) =>
-							withState(latest, "deleted", {
-								ports: [],
-								latestSnapshotId: undefined,
-								latestSnapshotAt: undefined,
-								pausedSnapshotId: undefined,
-							}),
-						);
-						if (!("moved" in result)) return;
-						const deleted = result.moved;
-						await emit("sandbox.deleted", deleted.accountId, {
-							sandbox: deleted,
-							data: { previousState: current.state, actor: actorOf(principal) },
-						});
-					} catch (error) {
-						await fail(current.id, error, "deleting");
-						throw error;
-					}
+					await completeDelete(current, was, actorOf(principal));
 				});
 				return sandboxView(await mustGetSandbox(current.id), principal);
 			}),
@@ -15941,10 +16029,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
 					await settleStuckMove(sandbox).catch(() => undefined);
 				}
+				// A delete whose host was away is retried once the host is connected again (#967).
+				if (sandbox.deleteOwed !== undefined && !pending.has(sandbox.id)) {
+					keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
+				}
 				// A boot that failed after its backend let go of its memory, lately: as for a running one below, in case the
 				// failure's own kill didn't finish.
 				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
 					keepGoing(killDroppedOf(sandbox));
+				}
+			}
+			// Owed deletes interrupted mid-retry (stuck in `deleting` past their retry lease) are reclaimed too (#967).
+			for (const sandbox of await store.sandboxes.list({ state: "deleting" })) {
+				if (sandbox.deleteOwed !== undefined && !pending.has(sandbox.id) && owedDeleteEligible(sandbox, at)) {
+					keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
 				}
 			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
