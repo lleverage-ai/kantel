@@ -146,7 +146,10 @@ function fakeGithub() {
 	const state: { failRemove: boolean; onRegister?: (name: string) => Promise<void> } = { failRemove: false };
 	const runs = new Map<number, { event: string; headBranch?: string; headRepository?: string }>();
 	/** What GitHub says of a job when it is asked (polling); absent, it is in progress. */
-	const jobs = new Map<number, { status: string; conclusion?: string; runId?: number; runnerId?: number }>();
+	const jobs = new Map<
+		number,
+		{ status: string; conclusion?: string; runId?: number; runnerId?: number; runnerName?: string }
+	>();
 	/** The installation's repositories, and the jobs GitHub has queued in each, as reconciling reads them. */
 	const repositories = ["octo-org/app"];
 	const queued = new Map<string, QueuedJob[]>();
@@ -1432,11 +1435,11 @@ describe("GitHub runners", () => {
 		expect(await store.githubRunnerJobs.get("ghr_one:2")).toMatchObject({ state: "queued" });
 	});
 
-	it("moves a stale queued job to in_progress when GitHub says another runner already started it", async () => {
+	it("moves a stale queued job on another runner to in_progress and keeps observing it until completed", async () => {
 		const { job, github, clock, runners, store, settled } = await setUp();
 		await job("queued", 1);
 		github.queued.set("octo-org/app", []);
-		github.jobs.set(1, { status: "in_progress" });
+		github.jobs.set(1, { status: "in_progress", runnerName: "external-runner" });
 		clock.now += Math.max(RECONCILE_EVERY_MS, STALE_QUEUED_CHECK_MS);
 		await runners.tick();
 		await settled();
@@ -1444,6 +1447,41 @@ describe("GitHub runners", () => {
 			state: "in_progress",
 			reason: expect.stringContaining("Started on GitHub"),
 		});
+		// Later, without a completed webhook, reconciling observes its completion on GitHub.
+		github.jobs.set(1, { status: "completed", conclusion: "success", runnerName: "external-runner" });
+		clock.now += Math.max(RECONCILE_EVERY_MS, JOB_CHECK_EVERY_MS);
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:1")).toMatchObject({
+			state: "completed",
+			conclusion: "success",
+		});
+	});
+
+	it("marks a matching Kantel runner busy when reconciling discovers an in_progress job whose webhook was lost", async () => {
+		const { job, github, clock, runners, sandboxes, store, settled, status } = await setUp();
+		await job("queued", 1);
+		const [sandboxId] = [...sandboxes.sandboxes.keys()];
+		sandboxes.boot();
+		await runners.tick();
+		expect(await status()).toMatchObject({ queued: 1, idle: 1, busy: 0 });
+		// GitHub handed job 1 to our registered runner (runnerId 1, name sandboxId), but the in_progress webhook was lost.
+		github.queued.set("octo-org/app", []);
+		github.jobs.set(1, { status: "in_progress", runnerId: 1, runnerName: sandboxId });
+		clock.now += Math.max(RECONCILE_EVERY_MS, STALE_QUEUED_CHECK_MS);
+		await runners.tick();
+		await settled();
+		expect(await store.githubRunnerJobs.get("ghr_one:1")).toMatchObject({
+			state: "in_progress",
+			sandboxId,
+		});
+		expect(await store.githubRunnerMachines.get(sandboxId ?? "")).toMatchObject({
+			state: "busy",
+			jobId: 1,
+		});
+		// Not retired as an unused idle runner.
+		expect(sandboxes.sandboxes.has(sandboxId ?? "")).toBe(true);
+		expect(await status()).toMatchObject({ queued: 0, idle: 0, busy: 1 });
 	});
 
 	it("deletes a busy runner's sandbox once it is in error, without waiting for GitHub to give up on its job", async () => {
