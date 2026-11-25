@@ -204,9 +204,14 @@ impl Budget {
         }
         0
     }
+    /// What the isolate holds outside the V8 heap, now: ArrayBuffers (in either build), the wasm memory its guest
+    /// reserved, and host-side bytes being collected for it. `total()` less `heap()`, read at once.
+    pub fn outside_heap(&self) -> usize {
+        self.used.load(Ordering::SeqCst) + self.sandbox_buffers()
+    }
     /// Everything the isolate holds: heap + buffers + wasm (+ bodies in flight).
     pub fn total(&self) -> usize {
-        self.used.load(Ordering::SeqCst) + self.heap() + self.sandbox_buffers()
+        self.outside_heap() + self.heap()
     }
     pub fn reset_exceeded(&self) {
         self.exceeded.store(false, Ordering::SeqCst);

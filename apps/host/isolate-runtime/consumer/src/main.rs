@@ -63,10 +63,15 @@ impl HostCommand for Peek {
 // the request gives.
 const GUEST: &str = r#"
 globalThis.__kantel = {
-  init(kind) {
+  init(kind, runtime) {
     const core = Deno.core;
     const ops = core.ops;
     for (const name of ["Deno", "__bootstrap", "__kantel"]) delete globalThis[name];
+    if (kind !== "shell") {
+      let codegen = true;
+      try { eval("1"); } catch { codegen = false; }
+      return { describe: () => `${kind} codegen=${codegen} runtime=${runtime?.name}` };
+    }
     return {
       exec: async (json) => {
         const { command, file, size } = JSON.parse(json);
@@ -110,7 +115,8 @@ fn main() -> Result<()> {
     let embedding = Embedding::new(GUEST)
         .with_extensions(|| vec![consumer::init()])
         .with_filesystem(records)
-        .with_host_command("peek", Arc::new(Peek));
+        .with_host_command("peek", Arc::new(Peek))
+        .with_kind("consumer-program", "return { name: \"consumer-runtime\" };");
     Engine::init(cfg, embedding, io.handle().clone(), false)?;
     let workspace = kantel_isolate::engine()
         .filesystem
@@ -139,6 +145,27 @@ fn main() -> Result<()> {
         reply["peek"] == "workspace 10 4567 10",
         "unexpected host command reply {reply}"
     );
+    // The embedder's own isolate kind: its own init, codegen off, its runtime from its snapshot, and the memory it
+    // holds outside the heap.
+    let local = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()?;
+    let (described, outside) = {
+        let _entered = local.enter();
+        let mut live = kantel_isolate::isolate::try_new_live(Kind::Embedder("consumer-program"), 64)?;
+        let value = live.rt.execute_script(
+            "consumer",
+            "globalThis.kept = new ArrayBuffer(1 << 20); globalThis.__kantelEntry.describe()",
+        )?;
+        deno_core::scope!(scope, &mut live.rt);
+        let local = deno_core::v8::Local::new(scope, value);
+        (local.to_rust_string_lossy(scope), live.budget.outside_heap())
+    };
+    ensure!(
+        described == "consumer-program codegen=false runtime=consumer-runtime",
+        "unexpected embedder kind {described}"
+    );
+    ensure!(outside >= 1 << 20, "a kept buffer isn't counted outside the heap: {outside}");
     ensure!(
         kantel_isolate::v8_sandbox_enabled() == cfg!(feature = "v8-sandbox"),
         "V8's heap sandbox is {} in a build {} the v8-sandbox feature",

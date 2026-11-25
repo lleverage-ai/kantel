@@ -40,7 +40,7 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use config::Config;
-pub use embed::Embedding;
+pub use embed::{EmbedderKind, Embedding};
 pub use isolate::{Ctx, Engine, Kind, engine};
 
 /// Entropy mixed into V8's per-isolate RNG seed on top of the OS source, set by /reseed after a VM restore.

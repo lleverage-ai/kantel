@@ -29,20 +29,34 @@ use crate::workspace::{CommitReply, FilesystemProvider, ManifestProvider, Worksp
 /// How long a terminated shell command may take to unwind before it is abandoned (see spawn_shell).
 const STUCK_GRACE: Duration = Duration::from_secs(1);
 
+/// An isolate's kind: the runtime's own three, or one of the embedder's ([`EmbedderKind`], by name).
+///
+/// [`EmbedderKind`]: crate::EmbedderKind
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Kind {
     Shell,
     Node,
     Python,
+    /// An isolate kind of the embedder's own, by its [`EmbedderKind`](crate::EmbedderKind) name.
+    Embedder(&'static str),
 }
 
+/// The names `__kantel.init` takes for the runtime's own kinds, which an embedder's kind can't have.
+const RESERVED_KINDS: [&str; 3] = ["shell", "node", "python"];
+
 impl Kind {
-    fn init_arg(self) -> &'static str {
+    /// What `__kantel.init` is called with for this kind.
+    pub fn name(self) -> &'static str {
         match self {
             Kind::Shell => "shell",
             Kind::Node => "node",
             Kind::Python => "python",
+            Kind::Embedder(name) => name,
         }
+    }
+    fn init_arg(self) -> &'static str {
+        self.name()
     }
 }
 
@@ -427,6 +441,14 @@ impl Engine {
         debug: bool,
     ) -> Result<&'static Engine> {
         let store = Arc::new(Store::new(cfg.store.clone()));
+        for (i, kind) in embedding.kinds.iter().enumerate() {
+            if kind.name.is_empty() || RESERVED_KINDS.contains(&kind.name) {
+                bail!("an embedder's isolate kind can't be named {:?}", kind.name);
+            }
+            if embedding.kinds[..i].iter().any(|k| k.name == kind.name) {
+                bail!("the isolate kind {:?} is given twice", kind.name);
+            }
+        }
         let snapshot = build_snapshot(&embedding)?;
         let filesystem = embedding
             .filesystem
@@ -454,8 +476,14 @@ impl Engine {
         Ok(engine())
     }
 
+    /// The startup snapshot every isolate starts from: the guest bundle evaluated, and the embedder's kinds' runtimes.
     pub fn snapshot(&self) -> &'static [u8] {
         self.snapshot
+    }
+
+    /// The embedder's kind of this name, if the embedding has one.
+    fn embedder_kind(&self, name: &str) -> Option<&crate::EmbedderKind> {
+        self.embedding.kinds.iter().find(|k| k.name == name)
     }
 
     /// A Pyodide asset, by absolute path or relative to `--assets/pyodide`, read once and cached. Only inside that
@@ -540,17 +568,36 @@ fn module_loader(kind: Kind) -> Option<Rc<dyn ModuleLoader>> {
     match kind {
         Kind::Node => Some(Rc::new(NodeModuleLoader::new())),
         Kind::Python => Some(Rc::new(AssetModuleLoader)),
-        Kind::Shell => None,
+        Kind::Shell | Kind::Embedder(_) => None,
     }
 }
 
+/// A new isolate of `kind` held to `mem_mib` of memory, with its entry point from `__kantel.init`. Panics where
+/// [`try_new_live`] answers an error.
 pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
+    try_new_live(kind, mem_mib).expect("guest init")
+}
+
+/// A new isolate of `kind` held to `mem_mib` of memory (on this thread, inside a tokio runtime), from the startup
+/// snapshot, with `globalThis.__kantelEntry` set to what `__kantel.init(kind)` returns (`__kantel.init(name, runtime)`
+/// for an embedder kind with a runtime: what its runtime returned). Code generation from strings is off in a shell
+/// isolate and in an embedder's. An error for an embedder kind the embedding doesn't have, or if `init` throws.
+pub fn try_new_live(kind: Kind, mem_mib: usize) -> Result<Live> {
+    let eng = engine();
+    let own = match kind {
+        Kind::Embedder(name) => Some(
+            eng.embedder_kind(name)
+                .ok_or_else(|| anyhow!("the embedding has no isolate kind {name:?}"))?,
+        ),
+        _ => None,
+    };
+    let snapshot = eng.snapshot();
     let limit = mem_mib * MIB;
     let budget = Budget::new(limit);
     let params = crate::memory::create_params(&budget);
     let mut rt = JsRuntime::new(RuntimeOptions {
         extensions: extensions(&engine().embedding),
-        startup_snapshot: Some(engine().snapshot()),
+        startup_snapshot: Some(snapshot),
         create_params: Some(params),
         module_loader: module_loader(kind),
         ..Default::default()
@@ -563,28 +610,51 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
     budget.set_handle(handle.clone());
     rt.add_near_heap_limit_callback(near_heap_limit(&budget, handle.clone()));
     let gc = gc_watch(rt.v8_isolate(), &budget);
-    if kind == Kind::Shell {
-        // The shell never needs JS eval, and its isolate is long-lived, so eval and new Function throw there. A
-        // node/python isolate is single-use (one run, then discarded) and its CommonJS loader builds a function from
-        // the run's own source, so codegen stays on for those.
+    if matches!(kind, Kind::Shell | Kind::Embedder(_)) {
+        // The shell never needs JS eval, and its isolate is long-lived, so eval and new Function throw there; an
+        // embedder's kind starts the same way (the embedder may turn it on for its own isolates). A node/python isolate
+        // is single-use (one run, then discarded) and its CommonJS loader builds a function from the run's own source,
+        // so codegen stays on for those.
         deno_core::scope!(scope, &mut rt);
         scope
             .get_current_context()
             .set_allow_generation_from_strings(false);
     }
-    // Keep only this kind's entry; init removes Deno/__bootstrap/__infra/__kantel so guest code can't reach the ops.
-    let init = format!(
-        "globalThis.__kantelEntry = globalThis.__kantel.init({:?});",
-        kind.init_arg()
-    );
-    rt.execute_script("kt:init", init).expect("guest init");
-    Live {
+    // Made before init runs, so an isolate whose init fails is dropped with its GC watch removed.
+    let mut live = Live {
         rt,
         handle,
         budget,
         kind,
         gc,
-    }
+    };
+    // Keep only this kind's entry; init removes Deno/__bootstrap/__infra/__kantel so guest code can't reach the ops.
+    // With embedder kinds' runtimes in the snapshot, every isolate takes their holder off the global first, and only
+    // a kind's own isolates hand its runtime to init.
+    let init = if has_kind_runtimes(&eng.embedding) {
+        let runtime = match own {
+            Some(k) if !k.runtime.is_empty() => format!(", kinds[{}]", lit(k.name)),
+            _ => String::new(),
+        };
+        // Fails closed: an isolate whose holder couldn't be taken off isn't made.
+        format!(
+            "{{ const kinds = globalThis.{KINDS_HOLDER}; \
+             if (!(delete globalThis.{KINDS_HOLDER}) || Object.hasOwn(globalThis, {holder})) \
+             throw new Error(\"the embedder kinds' runtimes couldn't be taken off the global\"); \
+             globalThis.__kantelEntry = globalThis.__kantel.init({}{runtime}); }}",
+            lit(kind.init_arg()),
+            holder = lit(KINDS_HOLDER),
+        )
+    } else {
+        format!(
+            "globalThis.__kantelEntry = globalThis.__kantel.init({});",
+            lit(kind.init_arg())
+        )
+    };
+    live.rt
+        .execute_script("kt:init", init)
+        .map_err(|e| anyhow!("{} isolate: guest init: {e}", kind.name()))?;
+    Ok(live)
 }
 
 /// Call `globalThis.__kantelEntry.<method>(args...)` and await the result as a string. The ops the guest used run on
@@ -1571,6 +1641,20 @@ fn extensions(embedding: &Embedding) -> Vec<deno_core::Extension> {
     all
 }
 
+/// The global that holds the embedder kinds' runtimes in the snapshot, until each isolate takes it off before `init`.
+const KINDS_HOLDER: &str = "__kantelKinds";
+
+fn has_kind_runtimes(embedding: &Embedding) -> bool {
+    embedding.kinds.iter().any(|k| !k.runtime.is_empty())
+}
+
+/// The startup snapshot: the guest bundle evaluated, then each embedder kind's runtime, as the body of a function whose
+/// result is kept for that kind's isolates (see [`try_new_live`]).
+///
+/// One snapshot for every kind, not one per kind: the isolates of a process share V8's read-only heap, which comes
+/// from the snapshot the first live isolate started from, so an isolate can't start from another snapshot while one
+/// of those is alive (V8 fails a check and ends the process). Nor one context per kind in a shared snapshot: deno_core
+/// starts an isolate only from a snapshot's first context.
 fn build_snapshot(embedding: &Embedding) -> Result<&'static [u8]> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1583,6 +1667,45 @@ fn build_snapshot(embedding: &Embedding) -> Result<&'static [u8]> {
     snap_rt
         .execute_script("kt:guest", embedding.guest)
         .map_err(|e| anyhow!("guest bundle failed to load: {e}"))?;
+    if has_kind_runtimes(embedding) {
+        snap_rt
+            .execute_script(
+                "kt:kinds",
+                format!(
+                    "Object.defineProperty(globalThis, {}, {{ value: Object.create(null), configurable: true }});",
+                    lit(KINDS_HOLDER)
+                ),
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+    }
+    for kind in embedding.kinds.iter().filter(|k| !k.runtime.is_empty()) {
+        // A function body, so its declarations are its own. What it returns goes only to its kind's init; anything it
+        // left on the global would be every kind's, so that is refused.
+        let script = format!(
+            "{{ const before = new Set(Reflect.ownKeys(globalThis));\n\
+             globalThis.{KINDS_HOLDER}[{name}] = (function () {{\n{runtime}\n}})();\n\
+             const left = Reflect.ownKeys(globalThis).filter((key) => !before.has(key));\n\
+             if (left.length) throw new Error(`it left globals behind: ${{left.map(String).join(\", \")}}`); }}",
+            name = lit(kind.name),
+            runtime = kind.runtime,
+        );
+        snap_rt
+            .execute_script("kt:kind", script)
+            .map_err(|e| anyhow!("the {:?} kind's runtime failed to load: {e}", kind.name))?;
+    }
+    if has_kind_runtimes(embedding) {
+        // Every isolate takes the holder off before init, so it must still be the configurable property made above.
+        snap_rt
+            .execute_script(
+                "kt:kinds-check",
+                format!(
+                    "if (Object.getOwnPropertyDescriptor(globalThis, {0})?.configurable !== true) \
+                     throw new Error(\"a kind's runtime changed \" + {0});",
+                    lit(KINDS_HOLDER)
+                ),
+            )
+            .map_err(|e| anyhow!("the embedder kinds' runtimes failed to load: {e}"))?;
+    }
     Ok(Box::leak(snap_rt.snapshot()))
 }
 
