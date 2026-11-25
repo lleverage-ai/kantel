@@ -63,6 +63,14 @@ export interface Collection<T extends { readonly id: string }> {
 	 * `anyOf`, oldest first: one read, so a record that changes between two of the values is answered once.
 	 */
 	list(where?: Partial<T>, anyOf?: AnyOf<T>): Promise<T[]>;
+	/**
+	 * At most `limit` matching records, newest first (`seq` descending), starting strictly older than `beforeSeq` when
+	 * given. Implemented by SQL stores so callers can stream or page large kinds without reading every row into memory.
+	 */
+	listNewest?(
+		where: Partial<T> | undefined,
+		options: { readonly limit: number; readonly beforeSeq?: number },
+	): Promise<{ readonly items: T[]; readonly nextBeforeSeq?: number }>;
 }
 
 /** For a list, the values a field may have: a record with any one of them. An empty list matches nothing. */
@@ -1179,6 +1187,17 @@ export interface ComputeStore {
 	readonly templateBases: Collection<StoredTemplateBase>;
 	/** Which replica exports each numbered usage tick (`StoredUsageClaim`). */
 	readonly usageClaims: Collection<StoredUsageClaim>;
+	/**
+	 * Counts how many of `accountId`'s sandboxes (deleted included) name each snapshot in `source.snapshotId` or
+	 * `upgradedFrom.snapshotId`. SQL stores answer this from an index over snapshot-backed sandboxes without loading
+	 * template-backed runner sandboxes into memory.
+	 */
+	snapshotUses?(accountId: string): Promise<Map<string, number>>;
+	/**
+	 * Deletes up to `limit` expired `usageClaims` (`keepUntil < before`) in the database without loading them into
+	 * memory; answers how many rows were removed.
+	 */
+	pruneUsageClaims?(before: number, limit: number): Promise<number>;
 	/** Account deletions under way (`StoredDeletion`). */
 	readonly deletions: Collection<StoredDeletion>;
 	/** Each host's last evacuation (`StoredEvacuation`), by the host's ID. */
@@ -1796,9 +1815,11 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 			if (record === undefined || accountId === undefined || (await open(accountId))) return;
 			await refuse(record);
 		};
+		const listNewest = collection.listNewest;
 		return {
 			get: (id) => collection.get(id),
 			list: (where, anyOf) => collection.list(where, anyOf),
+			...(listNewest === undefined ? {} : { listNewest: (where, options) => listNewest(where, options) }),
 			delete: (id) => collection.delete(id),
 			deleteIf: (id, should) => collection.deleteIf(id, should),
 			async put(record) {

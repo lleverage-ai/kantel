@@ -183,6 +183,7 @@ import type {
 	StoredEnvironmentVariable,
 	StoredEvacuation,
 	StoredEvacuationSandbox,
+	StoredEvent,
 	StoredHost,
 	StoredIdempotency,
 	StoredInvite,
@@ -227,6 +228,7 @@ import {
 	HOME,
 	homeFor,
 	paginate,
+	parsePage,
 	randomId,
 	randomSecret,
 	randomSlug,
@@ -4397,6 +4399,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * `uses`.
 	 */
 	async function usesIn(accountId: string): Promise<Map<string, number>> {
+		if (store.snapshotUses !== undefined) return store.snapshotUses(accountId);
 		const uses = new Map<string, number>();
 		for (const sandbox of await store.sandboxes.list({ accountId })) {
 			const from = sandbox.source?.snapshotId;
@@ -6390,7 +6393,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function dependents(snapshotIds: ReadonlySet<string>): Promise<Set<string>> {
 		const needed = new Set<string>();
-		for (const sandbox of await store.sandboxes.list()) {
+		for (const sandbox of await store.sandboxes.list(undefined, { state: LISTED_STATES })) {
 			if (sandbox.state === "deleted") continue;
 			for (const id of [
 				sandbox.latestSnapshotId,
@@ -6546,25 +6549,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await settleSnapshot(deleting).catch(() => "kept");
 				}
 				if (!expiring) return;
-				// One read for the pass: the expired, and how many records name each ref.
-				const all = await store.snapshots.list();
-				const named = new Map<string, number>();
-				for (const snapshot of all) {
-					if (snapshot.ref !== undefined) named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
-				}
-				const expired = all.filter(
-					(snapshot) =>
-						snapshot.kind === "automatic" &&
-						snapshot.expiresAt !== undefined &&
-						snapshot.expiresAt <= at &&
-						snapshot.state === "ready",
-				);
+				const ready = await store.snapshots.list({ kind: "automatic", state: "ready" });
+				const expired = ready.filter((snapshot) => snapshot.expiresAt !== undefined && snapshot.expiresAt <= at);
 				if (expired.length === 0) return;
 				const hosts = new Map((await backend.capabilities()).hosts.map((host) => [host.id, host]));
-				const marked: StoredSnapshot[] = [];
+				const candidates: StoredSnapshot[] = [];
 				for (const snapshot of expired) {
 					if (snapshot.ref === undefined || !(await keepsCopies(snapshot, hosts))) continue;
-					if ((named.get(snapshot.ref) ?? 0) > 1) continue;
+					candidates.push(snapshot);
+				}
+				if (candidates.length === 0) return;
+				// Count how many snapshot records name each candidate ref in one bulk read (indexed by snapshots_by_ref on
+				// SQLite; a single pass on Postgres rather than one full scan per expired ref).
+				const candidateRefs = [...new Set(candidates.flatMap((snapshot) => (snapshot.ref ? [snapshot.ref] : [])))];
+				const named = new Map<string, number>();
+				if (candidateRefs.length <= 500) {
+					for (const snapshot of await store.snapshots.list(undefined, { ref: candidateRefs })) {
+						if (snapshot.ref !== undefined) named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+					}
+				} else if (store.snapshots.listNewest !== undefined) {
+					const wanted = new Set(candidateRefs);
+					let beforeSeq: number | undefined;
+					for (;;) {
+						const batch = await store.snapshots.listNewest(undefined, { limit: 500, beforeSeq });
+						for (const snapshot of batch.items) {
+							if (snapshot.ref !== undefined && wanted.has(snapshot.ref)) {
+								named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+							}
+						}
+						if (batch.nextBeforeSeq === undefined) break;
+						beforeSeq = batch.nextBeforeSeq;
+					}
+				} else {
+					const wanted = new Set(candidateRefs);
+					for (const snapshot of await store.snapshots.list()) {
+						if (snapshot.ref !== undefined && wanted.has(snapshot.ref)) {
+							named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+						}
+					}
+				}
+				const marked: StoredSnapshot[] = [];
+				for (const snapshot of candidates) {
+					if (snapshot.ref === undefined || (named.get(snapshot.ref) ?? 0) > 1) continue;
 					const written = await markExpiring(snapshot.id).catch(() => undefined);
 					if (written !== undefined) marked.push(written);
 				}
@@ -8991,7 +9017,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const sandbox of unattributed) {
 			if ((await backend.placedOn?.(sandbox.id)) === hostId) placedHere.push(sandbox);
 		}
-		for (const sandbox of [...(await store.sandboxes.list({ hostId })), ...placedHere]) {
+		for (const sandbox of [...(await store.sandboxes.list({ hostId }, { state: LISTED_STATES })), ...placedHere]) {
 			// From whatever it is when written, not as listed: a boot or stop that lands in between is still caught.
 			let previous: SandboxState | undefined;
 			await store.sandboxes.update(sandbox.id, (current) => {
@@ -9484,6 +9510,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		claimsSweptAt = now();
 		keepGoing(
 			(async () => {
+				if (store.pruneUsageClaims !== undefined) {
+					while (!closing) {
+						const removed = await store.pruneUsageClaims(now(), CLAIM_SWEEP_BATCH).catch(() => 0);
+						if (removed < CLAIM_SWEEP_BATCH) break;
+						await new Promise((resolve) => setTimeout(resolve, CLAIM_SWEEP_PAUSE_MS));
+					}
+					return;
+				}
 				const expired = (await store.usageClaims.list()).filter((claim) => claim.keepUntil < now());
 				for (let from = 0; from < expired.length && !closing; from += CLAIM_SWEEP_BATCH) {
 					const batch = expired.slice(from, from + CLAIM_SWEEP_BATCH);
@@ -9783,13 +9817,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** The cost and running time of an account's sandboxes since `since`. */
 	async function accountUsage(account: StoredAccount, since: number) {
-		const sandboxes = await store.sandboxes.list({ accountId: account.id });
 		const at = now();
 		let seconds = 0;
 		let total = 0;
-		for (const sandbox of sandboxes) {
+		let running = 0;
+		const count = (sandbox: StoredSandbox) => {
 			seconds += runningMs(sandbox.runs, since, at) / 1000;
 			total += costOf(sandbox, since, at);
+			if (sandbox.state === "running") running++;
+		};
+		if (store.sandboxes.listNewest !== undefined) {
+			let beforeSeq: number | undefined;
+			for (;;) {
+				const batch = await store.sandboxes.listNewest({ accountId: account.id }, { limit: 500, beforeSeq });
+				for (const sandbox of batch.items) count(sandbox);
+				if (batch.nextBeforeSeq === undefined) break;
+				beforeSeq = batch.nextBeforeSeq;
+			}
+		} else {
+			for (const sandbox of await store.sandboxes.list({ accountId: account.id })) count(sandbox);
 		}
 		const hasLimits =
 			limits.concurrentSandboxes !== undefined ||
@@ -9798,7 +9844,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return {
 			accountId: account.id,
 			since,
-			running: sandboxes.filter((sandbox) => sandbox.state === "running").length,
+			running,
 			runningSeconds: round(seconds),
 			cost: { currency: rates.currency, total: round(total), ratePerHour: 0 },
 			limits: hasLimits ? { ...limits } : undefined,
@@ -12035,10 +12081,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "snapshots:read", role);
 			const visible: StoredSnapshot[] = [];
-			const all = await store.snapshots.list({ accountId: account.id });
-			// The bytes that hold memory, from the same read (`holdsMemory`): a save shares its source's ref, in its account.
-			const memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			// When a sandbox is named, seek by sandboxId (compute_api_records_by_sandbox) rather than reading every
+			// snapshot in the account; otherwise seek by (accountId, kind).
+			const all =
+				query.sandboxId !== undefined
+					? await store.snapshots.list({ sandboxId: query.sandboxId })
+					: await store.snapshots.list({
+							accountId: account.id,
+							...(query.kind !== undefined ? { kind: query.kind } : {}),
+						});
 			for (const snapshot of all) {
+				if (snapshot.accountId !== account.id) continue;
 				if (query.kind !== undefined && snapshot.kind !== query.kind) continue;
 				if (query.sandboxId !== undefined && snapshot.sandboxId !== query.sandboxId) continue;
 				if (snapshot.state === "deleting") continue;
@@ -12046,6 +12099,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			const uses = page.items.length === 0 ? new Map<string, number>() : await usesIn(account.id);
+			// The bytes that hold memory (`holdsMemory`): derive from `all` when the account's whole snapshot list was
+			// already read; otherwise resolve every missing ref in one bulk read (indexed on SQLite, one pass on Postgres).
+			let memoryRefs: Set<string>;
+			if (query.sandboxId === undefined && query.kind === undefined) {
+				memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			} else {
+				const missingRefs = [
+					...new Set(page.items.flatMap((snapshot) => (!snapshot.memory && snapshot.ref ? [snapshot.ref] : []))),
+				];
+				memoryRefs =
+					missingRefs.length === 0
+						? new Set()
+						: new Set(
+								(await store.snapshots.list({ memory: true }, { ref: missingRefs })).flatMap((snapshot) =>
+									snapshot.ref ? [snapshot.ref] : [],
+								),
+							);
+			}
 			const items = page.items.map((snapshot) =>
 				snapshotView(
 					{
@@ -12873,21 +12944,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listEvents: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:read", role);
-			const matching = (await store.events.list({ accountId: account.id })).filter(
-				(event) =>
-					(query.sandboxId === undefined || event.sandboxId === query.sandboxId) &&
-					(query.type === undefined || event.type === query.type) &&
-					(query.since === undefined || event.createdAt >= query.since),
-			);
+			const { offset, size } = parsePage(query.limit, query.cursor);
 			// A sandbox's events are seen only by who may see the sandbox (a private one, a limited key's list); one whose
 			// sandbox is gone stays with the account's admins and unlimited keys.
 			const seen = new Map<string, boolean>();
-			const events = [];
-			for (const event of matching) {
-				if (event.sandboxId === undefined) {
-					events.push(event);
-					continue;
-				}
+			const canSeeEvent = async (event: StoredEvent): Promise<boolean> => {
+				if (event.sandboxId === undefined) return true;
 				let visible = seen.get(event.sandboxId);
 				if (visible === undefined) {
 					const sandbox = await store.sandboxes.get(event.sandboxId);
@@ -12898,7 +12960,41 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							: await canSee(principal, sandbox, role);
 					seen.set(event.sandboxId, visible);
 				}
-				if (visible) events.push(event);
+				return visible;
+			};
+			if (store.events.listNewest !== undefined) {
+				const need = offset + size + 1;
+				const where = query.sandboxId !== undefined ? { sandboxId: query.sandboxId } : { accountId: account.id };
+				const visible: StoredEvent[] = [];
+				let beforeSeq: number | undefined;
+				while (visible.length < need) {
+					const batch = await store.events.listNewest(where, { limit: Math.max(200, size + 1), beforeSeq });
+					for (const event of batch.items) {
+						if (event.accountId !== account.id) continue;
+						if (query.sandboxId !== undefined && event.sandboxId !== query.sandboxId) continue;
+						if (query.type !== undefined && event.type !== query.type) continue;
+						if (query.since !== undefined && event.createdAt < query.since) continue;
+						if (await canSeeEvent(event)) {
+							visible.push(event);
+							if (visible.length >= need) break;
+						}
+					}
+					if (batch.nextBeforeSeq === undefined) break;
+					beforeSeq = batch.nextBeforeSeq;
+				}
+				const items = visible.slice(offset, offset + size);
+				const next = offset + size;
+				return next < visible.length ? { items, nextCursor: btoa(String(next)) } : { items };
+			}
+			const matching = (await store.events.list({ accountId: account.id })).filter(
+				(event) =>
+					(query.sandboxId === undefined || event.sandboxId === query.sandboxId) &&
+					(query.type === undefined || event.type === query.type) &&
+					(query.since === undefined || event.createdAt >= query.since),
+			);
+			const events: StoredEvent[] = [];
+			for (const event of matching) {
+				if (await canSeeEvent(event)) events.push(event);
 			}
 			const page = paginate([...events].reverse(), query.limit, query.cursor);
 			return { items: page.items, nextCursor: page.nextCursor };

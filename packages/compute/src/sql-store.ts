@@ -28,10 +28,12 @@ import {
 	type StickyDiskWrites,
 	type StoredDiskHolder,
 	type StoredDiskReport,
+	type StoredSandbox,
 	type StoredStickyDisk,
 	type StoredStickyDiskVersion,
 	type StoredTemplate,
 	type StoredTemplateVersion,
+	type StoredUsageClaim,
 	stickyDiskNameId,
 	stickyRunNoted,
 	type TemplateWrites,
@@ -149,7 +151,14 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 			: [
 					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_state ON compute_api_records (kind, json_extract(data, '$.state'), seq) WHERE kind = 'sandboxes'",
 					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_host_state ON compute_api_records (kind, json_extract(data, '$.hostId'), json_extract(data, '$.state'), seq) WHERE kind = 'sandboxes'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_account_seq ON compute_api_records (kind, json_extract(data, '$.accountId'), seq) WHERE kind = 'sandboxes'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_snapshot_source ON compute_api_records (kind, json_extract(data, '$.accountId'), json_extract(data, '$.source.snapshotId'), json_extract(data, '$.upgradedFrom.snapshotId')) WHERE kind = 'sandboxes' AND (json_extract(data, '$.source.snapshotId') IS NOT NULL OR json_extract(data, '$.upgradedFrom.snapshotId') IS NOT NULL)",
 					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_ref ON compute_api_records (kind, json_extract(data, '$.ref'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_account_kind ON compute_api_records (kind, json_extract(data, '$.accountId'), json_extract(data, '$.kind'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_kind_state ON compute_api_records (kind, json_extract(data, '$.kind'), json_extract(data, '$.state'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_state ON compute_api_records (kind, json_extract(data, '$.state'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_events_by_account_seq ON compute_api_records (kind, json_extract(data, '$.accountId'), seq) WHERE kind = 'events'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_usage_claims_keep_until ON compute_api_records (kind, json_extract(data, '$.keepUntil')) WHERE kind = 'usageClaims'",
 					"CREATE INDEX IF NOT EXISTS compute_api_records_runner_jobs_by_integration ON compute_api_records (kind, json_extract(data, '$.integrationId'), seq) WHERE kind = 'githubRunnerJobs'",
 					"CREATE INDEX IF NOT EXISTS compute_api_records_runner_machines_by_integration ON compute_api_records (kind, json_extract(data, '$.integrationId'), seq) WHERE kind = 'githubRunnerMachines'",
 				]),
@@ -296,6 +305,39 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 			const rows =
 				clauses.length === 0 ? await select([], []) : await select(clauses, params).catch(() => select([], []));
 			return rows.map((row) => parse<T>(row)).filter((record) => matches(record, where, anyOf));
+		},
+		async listNewest(where, options) {
+			const limit = Math.max(1, options.limit);
+			const clauses: string[] = [];
+			const params: SqlValue[] = [];
+			for (const [name, value] of Object.entries(where ?? {})) {
+				if (value === undefined) continue;
+				const column = field(name);
+				if (typeof value !== "string") continue;
+				clauses.push(`${column} = ?`);
+				params.push(value);
+			}
+			if (options.beforeSeq !== undefined) {
+				clauses.push("seq < ?");
+				params.push(options.beforeSeq);
+			}
+			const run = (whereClauses: readonly string[], whereParams: readonly SqlValue[]) =>
+				driver.query(
+					`SELECT seq, data FROM compute_api_records WHERE ${[ofKind, ...whereClauses].join(" AND ")} ORDER BY seq DESC LIMIT ?`,
+					[...whereParams, limit],
+				);
+			const rows =
+				clauses.length === 0
+					? await run([], [])
+					: await run(clauses, params).catch(() =>
+							options.beforeSeq === undefined ? run([], []) : run(["seq < ?"], [options.beforeSeq]),
+						);
+			const items = rows.map((row) => parse<T>(row)).filter((record) => matches(record, where));
+			const last = rows.at(-1);
+			return {
+				items,
+				...(rows.length === limit && last !== undefined ? { nextBeforeSeq: sqlNumber(last.seq) } : {}),
+			};
 		},
 	};
 }
@@ -796,13 +838,44 @@ function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
 
 /** A `ComputeStore` in SQL. Run `migrateComputeStore` first. */
 export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
+	const postgres = driver.dialect === "postgres";
+	const sandboxes = sqlCollection<StoredSandbox>(driver, "sandboxes");
+	const usageClaims = sqlCollection<StoredUsageClaim>(driver, "usageClaims");
+	const snapshotUsesSql = postgres
+		? `SELECT data::jsonb -> 'source' ->> 'snapshotId' AS src,
+				data::jsonb -> 'upgradedFrom' ->> 'snapshotId' AS upg
+			FROM compute_api_records
+			WHERE kind = 'sandboxes'
+				AND (data::jsonb ->> 'accountId') = ?
+				AND ((data::jsonb -> 'source' ->> 'snapshotId') IS NOT NULL
+					OR (data::jsonb -> 'upgradedFrom' ->> 'snapshotId') IS NOT NULL)`
+		: `SELECT json_extract(data, '$.source.snapshotId') AS src,
+				json_extract(data, '$.upgradedFrom.snapshotId') AS upg
+			FROM compute_api_records
+			WHERE kind = 'sandboxes'
+				AND json_extract(data, '$.accountId') = ?
+				AND (json_extract(data, '$.source.snapshotId') IS NOT NULL
+					OR json_extract(data, '$.upgradedFrom.snapshotId') IS NOT NULL)`;
+	const pruneUsageClaimsSql = postgres
+		? `DELETE FROM compute_api_records
+			WHERE kind = 'usageClaims' AND id IN (
+				SELECT id FROM compute_api_records
+				WHERE kind = 'usageClaims' AND (data::jsonb ->> 'keepUntil')::double precision < ?
+				LIMIT ?
+			) RETURNING id`
+		: `DELETE FROM compute_api_records
+			WHERE kind = 'usageClaims' AND id IN (
+				SELECT id FROM compute_api_records
+				WHERE kind = 'usageClaims' AND json_extract(data, '$.keepUntil') < ?
+				LIMIT ?
+			) RETURNING id`;
 	return {
 		persistent: true,
 		users: sqlCollection(driver, "users"),
 		accounts: sqlCollection(driver, "accounts"),
 		members: sqlCollection(driver, "members"),
 		invites: sqlCollection(driver, "invites"),
-		sandboxes: sqlCollection(driver, "sandboxes"),
+		sandboxes,
 		commands: sqlCollection(driver, "commands"),
 		snapshots: sqlCollection(driver, "snapshots"),
 		apiKeys: sqlCollection(driver, "apiKeys"),
@@ -825,7 +898,41 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		bucketSources: sqlCollection(driver, "bucketSources"),
 		fileUrls: sqlCollection(driver, "fileUrls"),
 		settings: sqlCollection(driver, "settings"),
-		usageClaims: sqlCollection(driver, "usageClaims"),
+		usageClaims,
+		async snapshotUses(accountId) {
+			const uses = new Map<string, number>();
+			try {
+				const rows = await driver.query(snapshotUsesSql, [accountId]);
+				for (const row of rows) {
+					if (typeof row.src === "string") uses.set(row.src, (uses.get(row.src) ?? 0) + 1);
+					if (typeof row.upg === "string") uses.set(row.upg, (uses.get(row.upg) ?? 0) + 1);
+				}
+				return uses;
+			} catch {
+				// Postgres jsonb fails on a row holding an escaped NUL; fall back to scanning in JS.
+				for (const sandbox of await sandboxes.list({ accountId })) {
+					const from = sandbox.source?.snapshotId;
+					if (from !== undefined) uses.set(from, (uses.get(from) ?? 0) + 1);
+					const into = sandbox.upgradedFrom?.snapshotId;
+					if (into !== undefined) uses.set(into, (uses.get(into) ?? 0) + 1);
+				}
+				return uses;
+			}
+		},
+		async pruneUsageClaims(before, limit) {
+			const batch = Math.max(1, limit);
+			try {
+				const rows = await driver.query(pruneUsageClaimsSql, [before, batch]);
+				return rows.length;
+			} catch {
+				const expired = (await usageClaims.list()).filter((claim) => claim.keepUntil < before).slice(0, batch);
+				let removed = 0;
+				for (const claim of expired) {
+					if (await usageClaims.delete(claim.id).catch(() => false)) removed++;
+				}
+				return removed;
+			}
+		},
 		deletions: sqlCollection(driver, "deletions"),
 		evacuations: sqlCollection(driver, "evacuations"),
 		personWrites: sqlPersonWrites(driver),

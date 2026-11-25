@@ -5176,8 +5176,11 @@ describe("snapshot expiry", () => {
 			sandboxes: {
 				...base.sandboxes,
 				// Every read of what depends on it, the mark is put back and made again (another token) while it reads.
-				list: async (where?: Parameters<typeof base.sandboxes.list>[0]) => {
-					const read = await base.sandboxes.list(where);
+				list: async (
+					where?: Parameters<typeof base.sandboxes.list>[0],
+					anyOf?: Parameters<typeof base.sandboxes.list>[1],
+				) => {
+					const read = await base.sandboxes.list(where, anyOf);
 					if (where === undefined && target !== undefined) {
 						remarks += 1;
 						const token = `ret_again_${remarks}`;
@@ -5351,11 +5354,11 @@ describe("snapshot expiry", () => {
 				sandboxes: {
 					...sandboxes,
 					// Expiry's read of every sandbox, once its snapshots are marked: the fork lands just before or just after it.
-					list: async (where?: Parameters<typeof sandboxes.list>[0]) => {
+					list: async (where?: Parameters<typeof sandboxes.list>[0], anyOf?: Parameters<typeof sandboxes.list>[1]) => {
 						const run = where === undefined ? hook : undefined;
 						if (run !== undefined) hook = undefined;
 						if (run !== undefined && when === "before") await run();
-						const read = await sandboxes.list(where);
+						const read = await sandboxes.list(where, anyOf);
 						if (run !== undefined && when === "after") await run();
 						return read;
 					},
