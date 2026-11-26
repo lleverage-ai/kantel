@@ -1,7 +1,8 @@
 // Bundles the guest (main.js: the shell, node and python runtimes) into one classic script for kantel-isolate's
 // startup snapshot: <out>/guest.js (default guest/dist). Run with `bun run guest/build.ts [out-dir]`.
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { JUST_BASH_BROWSER_BUNDLE, patchJustBashBrowser } from "./just-bash-patches.ts";
 
 const out = resolve(process.argv[2] ?? `${import.meta.dir}/dist`);
 mkdirSync(out, { recursive: true });
@@ -11,6 +12,17 @@ const zlib: import("bun").BunPlugin = {
 	name: "kantel-zlib",
 	setup(build) {
 		build.onResolve({ filter: /^(node:)?zlib$/ }, () => ({ path: `${import.meta.dir}/shell/zlib.js` }));
+	},
+};
+
+// just-bash's browser bundle with guest/just-bash-patches.ts applied.
+const justBash: import("bun").BunPlugin = {
+	name: "kantel-just-bash-patches",
+	setup(build) {
+		build.onLoad({ filter: JUST_BASH_BROWSER_BUNDLE }, (args) => ({
+			contents: patchJustBashBrowser(readFileSync(args.path, "utf8")),
+			loader: "js",
+		}));
 	},
 };
 
@@ -24,7 +36,7 @@ const result = await Bun.build({
 	// Strict mode throughout: a strict function's CallSite has no getFunction()/getThis(), so a stack trace can't
 	// hand guest code one of the runtime's own functions.
 	banner: '"use strict";',
-	plugins: [zlib],
+	plugins: [zlib, justBash],
 });
 if (!result.success) throw new AggregateError(result.logs, "guest build failed");
 for (const output of result.outputs) console.log(output.path, output.size);

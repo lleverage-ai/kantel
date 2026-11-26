@@ -186,6 +186,16 @@ export interface HostHubOptions {
 	/** A connection's hello was welcomed: the host is connected (`connected`) from now on. */
 	onWelcomed?(hostId: string): void;
 	/**
+	 * The host has its welcome, and isn't connected (`connected`) yet: nothing else reaches it, and nothing is placed on
+	 * it, until this resolves. `call` reaches this connection alone, as `call` would once it is connected: the fence of a
+	 * lost host (`HostsService.sandboxes.fence`) deletes its sandboxes with it, before it is used again. Throwing refuses
+	 * the connection, as a hello's refusal does, so the host connects again later and is fenced then.
+	 */
+	onFence?(
+		hostId: string,
+		call: <T = unknown>(method: string, params: unknown, options?: CallOptions) => Promise<T>,
+	): Promise<void>;
+	/**
 	 * A host's `secrets.fetch`: the sandbox's protected values, or `undefined` unless the sandbox is on `hostId` (answered
 	 * `not_found`). Absent, every fetch is answered `unavailable`.
 	 */
@@ -466,6 +476,60 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		connection.silence = setTimeout(check, deadline);
 	};
 
+	/** Sends a call on `connection`, whether or not it is connected yet (`onFence`'s calls are, before it is). */
+	const callOn = <T>(connection: Connection, method: string, params: unknown, callOptions: CallOptions = {}) =>
+		new Promise<T>((resolve, reject) => {
+			if (connection.closed) {
+				reject(
+					new HostCallError(
+						{ code: "unavailable", message: `Host ${connection.hostId} is not connected` },
+						{ disconnected: true },
+					),
+				);
+				return;
+			}
+			// Aborted before it was sent: never sent (its abort event has been and gone).
+			if (callOptions.signal?.aborted === true) {
+				reject(new HostCallError({ code: "timeout", message: `${method} was aborted` }));
+				return;
+			}
+			nextCall += 1;
+			const id = `c${nextCall}`;
+			const timeoutMs = callOptions.timeoutMs ?? callTimeout;
+			const signal = callOptions.signal;
+			const onAbort = () => {
+				if (!connection.pending.delete(id)) return;
+				clearTimeout(timer);
+				reject(new HostCallError({ code: "timeout", message: `${method} was aborted`, unanswered: true }));
+			};
+			// However it settles, its listener goes: a signal shared by many calls (a detached command's every poll)
+			// would otherwise keep one per call, and the connection each closes over.
+			const settled =
+				<A>(settle: (value: A) => void) =>
+				(value: A) => {
+					signal?.removeEventListener("abort", onAbort);
+					settle(value);
+				};
+			const timer = setTimeout(() => {
+				connection.pending.delete(id);
+				settled(reject)(
+					new HostCallError({
+						code: "timeout",
+						message: `${method} took longer than ${timeoutMs} ms`,
+						unanswered: true,
+					}),
+				);
+			}, timeoutMs);
+			connection.pending.set(id, {
+				resolve: settled(resolve as (value: unknown) => void),
+				reject: settled(reject),
+				timer,
+				...(callOptions.onEvent === undefined ? {} : { onEvent: callOptions.onEvent }),
+			});
+			signal?.addEventListener("abort", onAbort, { once: true });
+			send(connection, { type: "call", id, method, params });
+		});
+
 	const current = (hostId: string): Connection => {
 		const connection = held.get(hostId);
 		if (connection === undefined || !connection.welcomed || connection.closed) {
@@ -717,13 +781,22 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			}
 			const welcome = await options.onHello(connection.hostId, message);
 			if (connection.closed) return;
-			connection.welcomed = true;
 			// The first welcome decides it for the connection, as it does on the host: a rewelcome forwarded by an older
 			// replica, without it, changes nothing.
 			connection.usageAcks = welcome.usageAcks === true;
 			send(connection, { type: "welcome", welcome });
-			// The host beats at its first welcome's interval for as long as the connection lasts.
+			// The host beats at its first welcome's interval for as long as the connection lasts: a host that goes silent
+			// during its fence is closed as any is.
 			watchSilence(connection, welcome);
+			// The host takes calls only once it has its welcome: a lost host's fence goes first, on this connection alone,
+			// while it isn't connected to anything else.
+			if (options.onFence !== undefined) {
+				await options.onFence(connection.hostId, (method, params, callOptions) =>
+					callOn(connection, method, params, callOptions),
+				);
+				if (connection.closed) return;
+			}
+			connection.welcomed = true;
 			options.onWelcomed?.(connection.hostId);
 			const later = connection.later;
 			connection.later = undefined;
@@ -885,55 +958,13 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			return [...held.values()].filter((c) => c.welcomed && !c.closed).map((c) => c.hostId);
 		},
 		call<T>(hostId: string, method: string, params: unknown, callOptions: CallOptions = {}) {
-			return new Promise<T>((resolve, reject) => {
-				let connection: Connection;
-				try {
-					connection = current(hostId);
-				} catch (error) {
-					reject(error);
-					return;
-				}
-				// Aborted before it was sent: never sent (its abort event has been and gone).
-				if (callOptions.signal?.aborted === true) {
-					reject(new HostCallError({ code: "timeout", message: `${method} was aborted` }));
-					return;
-				}
-				nextCall += 1;
-				const id = `c${nextCall}`;
-				const timeoutMs = callOptions.timeoutMs ?? callTimeout;
-				const signal = callOptions.signal;
-				const onAbort = () => {
-					if (!connection.pending.delete(id)) return;
-					clearTimeout(timer);
-					reject(new HostCallError({ code: "timeout", message: `${method} was aborted`, unanswered: true }));
-				};
-				// However it settles, its listener goes: a signal shared by many calls (a detached command's every poll)
-				// would otherwise keep one per call, and the connection each closes over.
-				const settled =
-					<A>(settle: (value: A) => void) =>
-					(value: A) => {
-						signal?.removeEventListener("abort", onAbort);
-						settle(value);
-					};
-				const timer = setTimeout(() => {
-					connection.pending.delete(id);
-					settled(reject)(
-						new HostCallError({
-							code: "timeout",
-							message: `${method} took longer than ${timeoutMs} ms`,
-							unanswered: true,
-						}),
-					);
-				}, timeoutMs);
-				connection.pending.set(id, {
-					resolve: settled(resolve as (value: unknown) => void),
-					reject: settled(reject),
-					timer,
-					...(callOptions.onEvent === undefined ? {} : { onEvent: callOptions.onEvent }),
-				});
-				signal?.addEventListener("abort", onAbort, { once: true });
-				send(connection, { type: "call", id, method, params });
-			});
+			let connection: Connection;
+			try {
+				connection = current(hostId);
+			} catch (error) {
+				return Promise.reject(error);
+			}
+			return callOn<T>(connection, method, params, callOptions);
 		},
 		async openPort(hostId, sandboxId, port, sink) {
 			const connection = current(hostId);

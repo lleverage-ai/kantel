@@ -387,6 +387,13 @@ export interface SandboxSpec {
 	readonly mounts?: readonly BackendMount[];
 	/** Sticky disks to attach (`stickyDisks`): it goes only where the backend can attach them. */
 	readonly stickyDisks?: readonly BackendStickyDisk[];
+	/**
+	 * A sandbox made again under its ID after its host was lost (`onHostLost` `recreate`): `hostId`, whose fence
+	 * (`fenceHost`) holds its placement there. It goes on another host, and the lost host's copy stays fenced, deleted
+	 * when that host connects again and before it is used. Refused (`conflict`) where its placement is anything else; a
+	 * create that fails leaves the fence as it was. A backend whose hosts are never lost (no `fenceHost`) ignores it.
+	 */
+	readonly replacesLost?: { readonly hostId: string };
 }
 
 /**
@@ -883,6 +890,11 @@ export interface ExecResult {
 	readonly stdout: string;
 	readonly stderr: string;
 	readonly timedOut: boolean;
+	/**
+	 * Its backend cut a stream at its own cap, so `stdout` or `stderr` holds only the start of it: said even when what is
+	 * left fits the compute API's own cap (a microVM's guest keeps 1 MiB of bytes, which is 1 MiB of characters too).
+	 */
+	readonly truncated?: boolean;
 	/** In an isolate: it failed because it ran something an isolate doesn't have (`Command.needsMicrovm`). */
 	readonly needsMicrovm?: {
 		readonly command: string;
@@ -922,6 +934,20 @@ export interface CommandProgress {
 
 export function isCommandProgress(answer: ExecResult | CommandProgress): answer is CommandProgress {
 	return (answer as CommandProgress).running === true;
+}
+
+/**
+ * A part of a command's stream as its sandbox keeps it: its bytes from `offset`, how much is kept now (`size`, which only
+ * grows while the command runs), whether the command has ended, whether the stream went past `limit` (`truncated`),
+ * and the most of a stream the sandbox keeps.
+ */
+export interface CommandOutputPart {
+	readonly bytes: Uint8Array;
+	readonly offset: number;
+	readonly size: number;
+	readonly ended: boolean;
+	readonly truncated: boolean;
+	readonly limit: number;
 }
 
 /** A file being read as a stream: its size, when known up front, and its bytes. */
@@ -1037,6 +1063,16 @@ export interface DestroyOptions {
 	readonly hostId?: string;
 }
 
+/**
+ * A sandbox placed on a host (`SandboxBackend.hostSandboxes`, `fenceHost`), and the create attempt it was admitted for
+ * (`SandboxSpec`'s attempt, its record's `lifecycle`): absent for a placement that names none (a fork, or one from
+ * before attempts were kept).
+ */
+export interface HostSandboxRef {
+	readonly sandboxId: string;
+	readonly attempt?: number;
+}
+
 export interface SandboxBackend {
 	/** The types, sizes and hosts available now. */
 	capabilities(): Promise<BackendCapabilities>;
@@ -1046,6 +1082,37 @@ export interface SandboxBackend {
 	 * is (the stub).
 	 */
 	hostConnected?(hostId: string): Promise<boolean | undefined>;
+	/**
+	 * Fences a lost host's sandboxes (`ComputeServiceOptions.hostLostAfterMs`): each of `sandboxIds` it has placed on
+	 * `hostId` is kept there as lost, and the host deletes it when it connects again, before it is used. Resolves once that
+	 * is recorded, with those fenced (now or before). Only while the host hasn't been seen since `seenAt`, the `lastSeenAt`
+	 * it was judged lost by (`BackendHost.lastSeenAt`; absent, never seen), judged in the fence's own write: refused
+	 * (`conflict`) once it has, as it does when it connects, so a fence for a loss its host came back from never lands, even
+	 * one under way as it did. Absent: its hosts are never lost (the stub).
+	 */
+	fenceHost?(
+		hostId: string,
+		sandboxIds: readonly string[],
+		seenAt: number | undefined,
+	): Promise<readonly HostSandboxRef[]>;
+	/**
+	 * The sandboxes it has placed on a host, what `fenceHost` may cover there: among them one whose create or fork was
+	 * admitted there but whose answer was never seen, which its record doesn't place on any host yet. Not one moving, nor
+	 * one its host said it no longer had (unless fenced).
+	 */
+	hostSandboxes?(hostId: string): Promise<readonly HostSandboxRef[]>;
+	/**
+	 * Where a lost host's fence (`fenceHost`) holds a sandbox's placement: that host and the attempt it was admitted for.
+	 * Undefined when none does. Absent: none ever does (the stub).
+	 */
+	fencedOn?(sandboxId: string): Promise<(HostSandboxRef & { readonly hostId: string }) | undefined>;
+	/**
+	 * Whether a create of a sandbox's `attempt` was admitted on a host and holds its placement there, not under a lost
+	 * host's fence: its outcome is that host's to say (`settleCreate`), so it is never planned again over it. False where
+	 * none was (never sent, refused, or its placement gone or still a lost host's fenced copy). Absent: not known, so a
+	 * create sent again is the backend's to refuse (`conflict`).
+	 */
+	createAdmitted?(sandboxId: string, attempt: number): Promise<boolean>;
 	/**
 	 * Places and boots a new machine. `createOutcomeUnknown` when its host was sent it and didn't answer
 	 * (`settleCreate` says what came of it).
@@ -1166,6 +1233,33 @@ export interface SandboxBackend {
 		mode?: number,
 	): Promise<{ readonly size: number }>;
 	/**
+	 * Writes `body` at `offset` into the staged file of upload `upload` of `path` (a file written in parts), making its
+	 * directories; nothing is at `path` until `completeFileParts`. Answers the bytes written. Absent, or `not_supported`
+	 * (the sandbox's host or image can't), files aren't written in parts there.
+	 */
+	writeFilePart?(
+		sandboxId: string,
+		path: string,
+		upload: string,
+		offset: number,
+		body: ReadableStream<Uint8Array>,
+	): Promise<{ readonly size: number }>;
+	/**
+	 * Moves upload `upload`'s staged file over `path` once it is `size` bytes with SHA-256 `sha256` (hex), with `mode`
+	 * (default 0o644), owned by the sandbox's user. A failed check is `invalid` and discards the upload; one unknown is
+	 * `conflict`, unless `path` already has that size and SHA-256 (a repeat).
+	 */
+	completeFileParts?(
+		sandboxId: string,
+		path: string,
+		upload: string,
+		size: number,
+		sha256: string,
+		mode?: number,
+	): Promise<BackendFileEntry>;
+	/** Discards upload `upload` of `path`; one unknown is fine. */
+	abortFileParts?(sandboxId: string, path: string, upload: string): Promise<void>;
+	/**
 	 * Extracts the tar at `archive` (already checked: see `TarCheck`) into the directory `target`, making it, then
 	 * deletes the tar. The sandbox's own programs, shell and environment have no part in it, so a caller with only
 	 * `files` runs nothing in the sandbox (`PUT /sandboxes/{id}/files/archive`). Absent, or `not_supported`, archives
@@ -1196,6 +1290,17 @@ export interface SandboxBackend {
 	 * detached command's result is only what its `exec` answers.
 	 */
 	commandResult?(sandboxId: string, commandId: string): Promise<ExecResult | CommandProgress | undefined>;
+	/**
+	 * At most `range.length` bytes of a command's stream from `range.offset`, as its sandbox keeps it, past what its
+	 * result holds. `not_supported` where the sandbox keeps none (an isolate, a host or guest agent too old), and
+	 * `not_found` for a command whose output it doesn't keep. Absent, a command's output is its result's alone.
+	 */
+	commandOutput?(
+		sandboxId: string,
+		commandId: string,
+		stream: "stdout" | "stderr",
+		range: FileRange,
+	): Promise<CommandOutputPart>;
 	/** Reads a file, or with a range, at most `range.length` bytes of it from `range.offset`. */
 	readFile(sandboxId: string, path: string, range?: FileRange): Promise<FileRead>;
 	/** Writes a file, making its directories, replacing what was there. */

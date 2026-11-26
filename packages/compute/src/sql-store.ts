@@ -28,10 +28,12 @@ import {
 	type StickyDiskWrites,
 	type StoredDiskHolder,
 	type StoredDiskReport,
+	type StoredSandbox,
 	type StoredStickyDisk,
 	type StoredStickyDiskVersion,
 	type StoredTemplate,
 	type StoredTemplateVersion,
+	type StoredUsageClaim,
 	stickyDiskNameId,
 	stickyRunNoted,
 	type TemplateWrites,
@@ -134,6 +136,32 @@ export function computeStoreSchema(dialect: SqlDriver["dialect"]): string[] {
 		dialect === "postgres"
 			? "CREATE INDEX IF NOT EXISTS compute_api_records_disk_holders_object ON compute_api_records (((data::jsonb ->> 'objectId')), seq) WHERE kind = 'diskHolders'"
 			: "CREATE INDEX IF NOT EXISTS compute_api_records_by_object ON compute_api_records (kind, json_extract(data, '$.objectId'), seq)",
+		// The reads the control plane makes on every sweep, heartbeat, usage tick and runner pass, each of which read every
+		// record of its kind without one: sandboxes in a state across accounts (the sweep, usage sampling, a lost host's),
+		// a host's sandboxes in a state (its usage tick, its view, its connection), a snapshot's copies by its ref (each
+		// heartbeat's holdings), and a GitHub integration's jobs and runners (each pass). Each is over its own kind's rows
+		// alone (`WHERE kind = ...`), so the far busier kinds (commands, events, deliveries) pay nothing for them on their
+		// writes. Each still starts with `kind`, though it says nothing within the index: without it, SQLite (which has no
+		// statistics here) chose another `(kind, ...)` index over it for a read naming several states (`IN`), and read the
+		// whole kind. `list` names the kind as a literal, which is what lets SQLite use a partial index at all.
+		// SQLite only, as the account's index above: Postgres can't cast every record of these kinds to `jsonb` (a NUL in a
+		// sandbox's label, a snapshot's name or a GitHub job's name), and an index that can't would fail the write.
+		...(dialect === "postgres"
+			? []
+			: [
+					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_state ON compute_api_records (kind, json_extract(data, '$.state'), seq) WHERE kind = 'sandboxes'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_host_state ON compute_api_records (kind, json_extract(data, '$.hostId'), json_extract(data, '$.state'), seq) WHERE kind = 'sandboxes'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_account_seq ON compute_api_records (kind, json_extract(data, '$.accountId'), seq) WHERE kind = 'sandboxes'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_sandboxes_by_snapshot_source ON compute_api_records (kind, json_extract(data, '$.accountId'), json_extract(data, '$.source.snapshotId'), json_extract(data, '$.upgradedFrom.snapshotId')) WHERE kind = 'sandboxes' AND (json_extract(data, '$.source.snapshotId') IS NOT NULL OR json_extract(data, '$.upgradedFrom.snapshotId') IS NOT NULL)",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_ref ON compute_api_records (kind, json_extract(data, '$.ref'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_account_kind ON compute_api_records (kind, json_extract(data, '$.accountId'), json_extract(data, '$.kind'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_kind_state ON compute_api_records (kind, json_extract(data, '$.kind'), json_extract(data, '$.state'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_snapshots_by_state ON compute_api_records (kind, json_extract(data, '$.state'), seq) WHERE kind = 'snapshots'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_events_by_account_seq ON compute_api_records (kind, json_extract(data, '$.accountId'), seq) WHERE kind = 'events'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_usage_claims_keep_until ON compute_api_records (kind, json_extract(data, '$.keepUntil')) WHERE kind = 'usageClaims'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_runner_jobs_by_integration ON compute_api_records (kind, json_extract(data, '$.integrationId'), seq) WHERE kind = 'githubRunnerJobs'",
+					"CREATE INDEX IF NOT EXISTS compute_api_records_runner_machines_by_integration ON compute_api_records (kind, json_extract(data, '$.integrationId'), seq) WHERE kind = 'githubRunnerMachines'",
+				]),
 	];
 }
 
@@ -159,6 +187,7 @@ function uniqueOf(kind: string, error: unknown): never {
  * kind's highest inside the insert, which is safe because SQLite (D1 too) has one writer at a time.
  */
 export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriver, kind: string): Collection<T> {
+	if (!FIELD_NAME.test(kind)) throw new Error(`A compute record kind is a plain name, not ${JSON.stringify(kind)}`);
 	const postgres = driver.dialect === "postgres";
 	const insert = upsertSql(driver.dialect);
 	// The same insert, but a row already there is left alone and no row comes back: one statement, so of two writers at
@@ -174,8 +203,24 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		if (!FIELD_NAME.test(name)) throw new Error(`A compute record has no field ${JSON.stringify(name)} to list by`);
 		return postgres ? `(data::jsonb ->> '${name}')` : `json_extract(data, '$.${name}')`;
 	};
+	// The kind as a literal, not a parameter: a partial index (`WHERE kind = 'sandboxes'`) is one SQLite can use only
+	// when the statement itself says the kind, and it is a plain name (above), so it is safe in the statement.
+	const ofKind = `kind = '${kind}'`;
+	/**
+	 * Oldest first. On SQLite a read that filters sorts what it finds (`+seq`, which no index can answer, so none is
+	 * chosen for it) rather than walking the kind in `seq` order: with no statistics SQLite took avoiding the sort over
+	 * every index that narrows the rows but doesn't end in `seq` straight after the fields it matches (an account's
+	 * sandboxes in several states, a key by its secret's hash), and read and parsed every record of the kind, deleted
+	 * sandboxes and all, to answer a handful. A read of the whole kind still walks it in order. Postgres plans by its
+	 * statistics, so it is asked for `seq` as before.
+	 */
 	const select = (clauses: readonly string[], params: readonly SqlValue[]) =>
-		driver.query(`SELECT data FROM compute_api_records WHERE ${clauses.join(" AND ")} ORDER BY seq`, params);
+		driver.query(
+			`SELECT data FROM compute_api_records WHERE ${[ofKind, ...clauses].join(" AND ")} ORDER BY ${
+				!postgres && clauses.length > 0 ? "+seq" : "seq"
+			}`,
+			params,
+		);
 	/** A write, its refusal by a unique index (an environment's name) answered as `UniqueViolation`. */
 	const write = async (sql: string, params: readonly SqlValue[]) => {
 		try {
@@ -237,8 +282,8 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 		async list(where, anyOf) {
 			// String fields narrow the rows in SQL; the rest (booleans, numbers) only in the check below, which every row
 			// passes through so the answer is the memory store's.
-			const clauses = ["kind = ?"];
-			const params: SqlValue[] = [kind];
+			const clauses: string[] = [];
+			const params: SqlValue[] = [];
 			for (const [name, value] of Object.entries(where ?? {})) {
 				if (value === undefined) continue;
 				const column = field(name);
@@ -258,10 +303,41 @@ export function sqlCollection<T extends { readonly id: string }>(driver: SqlDriv
 			// hold, or a lone surrogate), and one such row fails the whole query: then the kind is read whole and checked
 			// below alone.
 			const rows =
-				clauses.length === 1
-					? await select(clauses, params)
-					: await select(clauses, params).catch(() => select(clauses.slice(0, 1), params.slice(0, 1)));
+				clauses.length === 0 ? await select([], []) : await select(clauses, params).catch(() => select([], []));
 			return rows.map((row) => parse<T>(row)).filter((record) => matches(record, where, anyOf));
+		},
+		async listNewest(where, options) {
+			const limit = Math.max(1, options.limit);
+			const clauses: string[] = [];
+			const params: SqlValue[] = [];
+			for (const [name, value] of Object.entries(where ?? {})) {
+				if (value === undefined) continue;
+				const column = field(name);
+				if (typeof value !== "string") continue;
+				clauses.push(`${column} = ?`);
+				params.push(value);
+			}
+			if (options.beforeSeq !== undefined) {
+				clauses.push("seq < ?");
+				params.push(options.beforeSeq);
+			}
+			const run = (whereClauses: readonly string[], whereParams: readonly SqlValue[]) =>
+				driver.query(
+					`SELECT seq, data FROM compute_api_records WHERE ${[ofKind, ...whereClauses].join(" AND ")} ORDER BY seq DESC LIMIT ?`,
+					[...whereParams, limit],
+				);
+			const rows =
+				clauses.length === 0
+					? await run([], [])
+					: await run(clauses, params).catch(() =>
+							options.beforeSeq === undefined ? run([], []) : run(["seq < ?"], [options.beforeSeq]),
+						);
+			const items = rows.map((row) => parse<T>(row)).filter((record) => matches(record, where));
+			const last = rows.at(-1);
+			return {
+				items,
+				...(rows.length === limit && last !== undefined ? { nextBeforeSeq: sqlNumber(last.seq) } : {}),
+			};
 		},
 	};
 }
@@ -762,13 +838,44 @@ function sqlDiskHolderWrites(driver: SqlDriver): DiskHolderWrites {
 
 /** A `ComputeStore` in SQL. Run `migrateComputeStore` first. */
 export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
+	const postgres = driver.dialect === "postgres";
+	const sandboxes = sqlCollection<StoredSandbox>(driver, "sandboxes");
+	const usageClaims = sqlCollection<StoredUsageClaim>(driver, "usageClaims");
+	const snapshotUsesSql = postgres
+		? `SELECT data::jsonb -> 'source' ->> 'snapshotId' AS src,
+				data::jsonb -> 'upgradedFrom' ->> 'snapshotId' AS upg
+			FROM compute_api_records
+			WHERE kind = 'sandboxes'
+				AND (data::jsonb ->> 'accountId') = ?
+				AND ((data::jsonb -> 'source' ->> 'snapshotId') IS NOT NULL
+					OR (data::jsonb -> 'upgradedFrom' ->> 'snapshotId') IS NOT NULL)`
+		: `SELECT json_extract(data, '$.source.snapshotId') AS src,
+				json_extract(data, '$.upgradedFrom.snapshotId') AS upg
+			FROM compute_api_records
+			WHERE kind = 'sandboxes'
+				AND json_extract(data, '$.accountId') = ?
+				AND (json_extract(data, '$.source.snapshotId') IS NOT NULL
+					OR json_extract(data, '$.upgradedFrom.snapshotId') IS NOT NULL)`;
+	const pruneUsageClaimsSql = postgres
+		? `DELETE FROM compute_api_records
+			WHERE kind = 'usageClaims' AND id IN (
+				SELECT id FROM compute_api_records
+				WHERE kind = 'usageClaims' AND (data::jsonb ->> 'keepUntil')::double precision < ?
+				LIMIT ?
+			) RETURNING id`
+		: `DELETE FROM compute_api_records
+			WHERE kind = 'usageClaims' AND id IN (
+				SELECT id FROM compute_api_records
+				WHERE kind = 'usageClaims' AND json_extract(data, '$.keepUntil') < ?
+				LIMIT ?
+			) RETURNING id`;
 	return {
 		persistent: true,
 		users: sqlCollection(driver, "users"),
 		accounts: sqlCollection(driver, "accounts"),
 		members: sqlCollection(driver, "members"),
 		invites: sqlCollection(driver, "invites"),
-		sandboxes: sqlCollection(driver, "sandboxes"),
+		sandboxes,
 		commands: sqlCollection(driver, "commands"),
 		snapshots: sqlCollection(driver, "snapshots"),
 		apiKeys: sqlCollection(driver, "apiKeys"),
@@ -791,7 +898,41 @@ export function createSqlComputeStore(driver: SqlDriver): ComputeStore {
 		bucketSources: sqlCollection(driver, "bucketSources"),
 		fileUrls: sqlCollection(driver, "fileUrls"),
 		settings: sqlCollection(driver, "settings"),
-		usageClaims: sqlCollection(driver, "usageClaims"),
+		usageClaims,
+		async snapshotUses(accountId) {
+			const uses = new Map<string, number>();
+			try {
+				const rows = await driver.query(snapshotUsesSql, [accountId]);
+				for (const row of rows) {
+					if (typeof row.src === "string") uses.set(row.src, (uses.get(row.src) ?? 0) + 1);
+					if (typeof row.upg === "string") uses.set(row.upg, (uses.get(row.upg) ?? 0) + 1);
+				}
+				return uses;
+			} catch {
+				// Postgres jsonb fails on a row holding an escaped NUL; fall back to scanning in JS.
+				for (const sandbox of await sandboxes.list({ accountId })) {
+					const from = sandbox.source?.snapshotId;
+					if (from !== undefined) uses.set(from, (uses.get(from) ?? 0) + 1);
+					const into = sandbox.upgradedFrom?.snapshotId;
+					if (into !== undefined) uses.set(into, (uses.get(into) ?? 0) + 1);
+				}
+				return uses;
+			}
+		},
+		async pruneUsageClaims(before, limit) {
+			const batch = Math.max(1, limit);
+			try {
+				const rows = await driver.query(pruneUsageClaimsSql, [before, batch]);
+				return rows.length;
+			} catch {
+				const expired = (await usageClaims.list()).filter((claim) => claim.keepUntil < before).slice(0, batch);
+				let removed = 0;
+				for (const claim of expired) {
+					if (await usageClaims.delete(claim.id).catch(() => false)) removed++;
+				}
+				return removed;
+			}
+		},
 		deletions: sqlCollection(driver, "deletions"),
 		evacuations: sqlCollection(driver, "evacuations"),
 		personWrites: sqlPersonWrites(driver),

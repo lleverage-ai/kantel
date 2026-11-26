@@ -230,19 +230,29 @@ One build of a base image.
 
 ### BucketAccessKey
 
-An S3 access key, or a GCS HMAC key.
+An S3 access key (temporary ones with `sessionToken` and `expiresAt`), or a GCS HMAC key.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `accessKeyId` | string | yes |  (at most 256 characters) |
 | `secretAccessKey` | string | yes |  (at most 1024 characters) |
 | `sessionToken` | string | no |  (at most 8192 characters) |
+| `expiresAt` | integer | no | When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. |
+
+### BucketAccessToken
+
+A Cloud Storage OAuth access token, such as a down-scoped one for the objects the sandboxes may read (`gcs` only). Short-lived: replace it before `expiresAt`. Experimental, as mounts are.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `accessToken` | string | yes |  (at most 8192 characters) |
+| `expiresAt` | integer | yes | When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. |
 
 ### BucketCredentials
 
 Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered.
 
-One of: [BucketAccessKey](/api/reference/types/#bucketaccesskey) or [BucketServiceAccountKey](/api/reference/types/#bucketserviceaccountkey).
+One of: [BucketAccessKey](/api/reference/types/#bucketaccesskey) or [BucketAccessToken](/api/reference/types/#bucketaccesstoken) or [BucketServiceAccountKey](/api/reference/types/#bucketserviceaccountkey).
 
 ### BucketMountSource
 
@@ -269,7 +279,7 @@ One of: `"s3"` or `"gcs"`.
 
 ### BucketSource
 
-A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only.
+A bucket an account's sandboxes may mount prefixes or manifests of, with the credentials that read it. The credentials are write-only.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -394,6 +404,22 @@ In an isolate: the command failed because it ran something an isolate doesn't ha
 | `reason` | string | yes | Why, in one sentence. |
 | `inferred` | boolean | no | Read by Kantel from the shell's answer (exit 127 and its message), not said by the isolate's runtime: a hint only. A command can print that text itself, so `autoUpgrade` never acts on it. |
 
+### CommandOutput
+
+A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `commandId` | string | yes |  |
+| `stream` | [CommandStream](/api/reference/types/#commandstream) | yes |  |
+| `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | yes |  |
+| `content` | string | yes | The part read: at most `length` bytes from `offset`. |
+| `offset` | integer | yes | The byte `content` starts at. At `size`, it's empty. |
+| `size` | integer | yes | How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` plus the part's length. |
+| `ended` | boolean | yes | The command has ended, so `size` is the whole of what is kept. |
+| `truncated` | boolean | yes | Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps in all), or the command ended with its machine, whose last output may not have reached the disk. |
+| `limit` | integer | yes | The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and 1 MiB (the command's own `stdout` and `stderr`) elsewhere. |
+
 ### CommandPage
 
 | Field | Type | Required | Description |
@@ -405,11 +431,27 @@ In an isolate: the command failed because it ran something an isolate doesn't ha
 
 One of: `"running"` or `"exited"` or `"killed"` or `"timed_out"`.
 
+### CommandStream
+
+One of a command's output streams. Reading, `stdout` is the default.
+
+One of: `"stdout"` or `"stderr"`.
+
 ### CommandTermination
 
 In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`).
 
 One of: `"cpu"` or `"memory"` or `"wall"`.
+
+### CompleteFilePartsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. (at most 4096 characters) |
+| `upload` | string | yes | Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. |
+| `size` | integer | yes | The whole file's size in bytes. (minimum 0, maximum 68719476736) |
+| `sha256` | string | yes | The whole file's SHA-256, in hex. |
+| `mode` | string | no | Octal permissions, such as `0755` (default `0644`); not `0000`. |
 
 ### Cost
 
@@ -569,6 +611,7 @@ Every field is optional: `{}` makes a running isolate in the caller's account.
 | `mounts` | [Mount](/api/reference/types/#mount)[] | no | Files from outside the sandbox, read-only inside it: at most 16, at paths that don't overlap. A bundle or bucket source it names must be the account's. microVMs only: an isolate is refused (`not_supported`). A host that can't mount a source marks that mount `failed`, and the sandbox runs without it. A fork keeps its source's mounts. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). (at most 16 items) |
 | `autoUpgrade` | boolean | no | For an isolate: when its runtime says a command needs something an isolate lacks (a program such as `tar`, a package manager, Docker), upgrade it to a microVM (`upgradeSandbox`, the deployment's default size) and run the whole command again there, once: what it did before the step that failed is done again. Setting it needs `sandboxes:write`, and with it any caller that may run commands in the sandbox (`exec`) may cause the upgrade. Only a `needsMicrovm` the runtime says counts, never one read from the command's output (`inferred`). Default false: the command answers `needsMicrovm` and the isolate stays as it is. |
 | `autoUpgradeFrom` | string | no | What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only. |
+| `onHostLost` | [SandboxOnHostLost](/api/reference/types/#sandboxonhostlost) | no |  |
 | `wait` | boolean | no | Answer once it is `running` (or `error`) rather than as soon as it is placed. |
 
 ### CreateStickyDiskBody
@@ -822,9 +865,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
-One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.oom_kill"` or `"sandbox.upgraded"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.oom_kill"` or `"sandbox.upgraded"` or `"sandbox.lost"` or `"sandbox.recreated"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
 ### ExposedPort
 
@@ -904,6 +947,17 @@ One of: `"utf8"` or `"base64"`.
 | `path` | string | yes |  |
 | `items` | [FileEntry](/api/reference/types/#fileentry)[] | yes |  |
 | `nextCursor` | string | no | Present when more items follow. |
+
+### FilePart
+
+A part written. Nothing is at `path` until the upload is completed.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `path` | string | yes | The file's absolute path. |
+| `upload` | string | yes |  |
+| `offset` | integer | yes |  |
+| `size` | integer | yes | The bytes of this part written. |
 
 ### FileUrl
 
@@ -1454,6 +1508,17 @@ A sandbox moved to `state`, whoever moved it (a call from the console, the CLI, 
 | `previousState` | [SandboxState](/api/reference/types/#sandboxstate) | no |  |
 | `at` | integer | yes | Epoch milliseconds, UTC. |
 
+### ManifestMountSource
+
+Exactly the files a manifest lists, from objects anywhere in a bucket source: for a set of files chosen per sandbox, which a prefix can't express. The manifest is a JSON object the account writes to the bucket, `{"version":1,"entries":[...]}`, one entry per file: `path` (relative to the mount), `key` (the object with its bytes), `size`, and the object's `generation` (Cloud Storage) or `etag`, or both, so a file never reads another version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never changes: mount another one for other files. The host must offer manifest mounts; on one that doesn't, the mount is `failed`.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `kind` | `"manifest"` | yes |  |
+| `bucketSourceId` | string | yes | A bucket source of the sandbox's account: it holds the manifest and every file's bytes. |
+| `manifestKey` | string | yes | The object holding the manifest, such as `manifests/session-42.json`. (at most 1024 characters) |
+| `manifestDigest` | string | yes | The manifest object's SHA-256, `sha256:` and 64 hex digits: a manifest that doesn't match isn't mounted. |
+
 ### Member
 
 | Field | Type | Required | Description |
@@ -1500,7 +1565,7 @@ Files from outside the sandbox, read-only inside it: nothing in the sandbox can 
 
 ### MountSource
 
-One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketMountSource](/api/reference/types/#bucketmountsource).
+One of: [BundleMountSource](/api/reference/types/#bundlemountsource) or [BucketMountSource](/api/reference/types/#bucketmountsource) or [ManifestMountSource](/api/reference/types/#manifestmountsource).
 
 ### MountStatus
 
@@ -1737,6 +1802,7 @@ A bucket mount as the sandbox shows it after a refresh.
 | `idleStopMinutes` | integer or null | no | How long it may go without use before it stops by itself (`idle-stop`), beside its auto-stop; `null` or absent never. Use is a command (run, followed or killed), and traffic over SSH, the desktop or browser, and its hosted ports. Stopping keeps its disk, as any stop does. |
 | `lastActiveAt` | integer | no | When it was last used, while running with an idle stop: its start, or its latest use, to within about 20 seconds. |
 | `idleStopsAt` | integer | no | When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. |
+| `onHostLost` | [SandboxOnHostLost](/api/reference/types/#sandboxonhostlost) | no |  |
 | `autoUpgrade` | boolean | no | An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. |
 | `autoUpgradeFrom` | string | no | The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM. |
 | `upgradedFrom` | [SandboxUpgrade](/api/reference/types/#sandboxupgrade) | no |  |
@@ -1950,9 +2016,15 @@ The `details` of the `conflict` (409) a call that needs a running sandbox (comma
 
 ### SandboxNotRunningCode
 
-Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again.
+Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. `sandbox_lost`: its host was lost (its state is `lost`); it can only be deleted.
 
-One of: `"sandbox_starting"` or `"sandbox_stopping"` or `"sandbox_stopped"` or `"sandbox_paused"` or `"sandbox_error"` or `"sandbox_deleting"` or `"sandbox_unresponsive"`.
+One of: `"sandbox_starting"` or `"sandbox_stopping"` or `"sandbox_stopped"` or `"sandbox_paused"` or `"sandbox_error"` or `"sandbox_deleting"` or `"sandbox_unresponsive"` or `"sandbox_lost"`.
+
+### SandboxOnHostLost
+
+What becomes of a sandbox when its host stays disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its host (its create named one). Its old host deletes its copy if it comes back, before it is used.
+
+One of: `"recreate"` or `"lost"`.
 
 ### SandboxPage
 
@@ -2071,9 +2143,9 @@ How its machine's latest start (a create, fork, start or resume) took its time, 
 
 ### SandboxState
 
-`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+`starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots.
 
-One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"moving"` or `"error"` or `"deleting"` or `"deleted"`.
+One of: `"starting"` or `"running"` or `"stopping"` or `"stopped"` or `"paused"` or `"moving"` or `"error"` or `"lost"` or `"deleting"` or `"deleted"`.
 
 ### SandboxStickyDisk
 
@@ -2185,6 +2257,12 @@ One of: `"private"` or `"organisation"`.
 ### ScanSeverity
 
 One of: `"critical"` or `"high"` or `"medium"` or `"low"` or `"unknown"`.
+
+### SetBucketSourceCredentialsBody
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `credentials` | [BucketCredentials](/api/reference/types/#bucketcredentials) | yes |  |
 
 ### SetEnvironmentFileBody
 
@@ -2715,6 +2793,7 @@ A template version's definition, never changed once made. Answered with every de
 | `labels` | Record&lt;string, string&gt; | no | Replaces its labels. |
 | `autoUpgrade` | boolean | no | Turns its `autoUpgrade` on or off: an isolate that becomes a microVM by itself when its runtime says a command needs one, and runs the whole command again there. Once on, any caller that may run commands in it may cause the upgrade. |
 | `autoUpgradeFrom` | string or null | no | Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM. |
+| `onHostLost` | [SandboxOnHostLost](/api/reference/types/#sandboxonhostlost) | no |  |
 
 ### UpdateTemplateBody
 

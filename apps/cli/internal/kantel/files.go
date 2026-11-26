@@ -61,7 +61,8 @@ func printOutput(c *cli.Context, command *api.Command) {
 		fmt.Fprint(c.IO.Stderr, command.Stderr)
 	}
 	if command.Truncated {
-		c.Note("kantel: the output was cut at 1 MiB")
+		c.Note("kantel: this shows its first 1 MiB of output; kantel attach " + command.SandboxID + " " + command.ID +
+			" reads all Kantel kept")
 	}
 	if command.State == api.CommandStateKilled {
 		c.Note("kantel: the command was killed")
@@ -138,7 +139,8 @@ type followOptions struct {
 }
 
 // follow follows a command by its ID: prints what it has written since the last look, every second or so, until it
-// ends, and answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show.
+// ends, and answers its exit code. It reads the output by range (readCommandOutput, output.go), as much as Kantel keeps
+// (64 MiB a stream in a microVM on a current kantel-host), or from the command's record (its first 1 MiB) where it can't.
 // Kantel out of reach for a while (a gateway restarting, a network blip, this connection reset) is asked again; given
 // up on, it says the command may still be running and how to follow it again.
 func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o followOptions) error {
@@ -214,22 +216,27 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 	if !c.JSON && o.announce {
 		c.Note(fmt.Sprintf("kantel: started %s; Ctrl-C leaves it running, and %s follows it again", command.ID, again))
 	}
-	shownOut, shownErr := 0, 0
+	// Its output is read by range (output.go), all Kantel keeps of it; a pseudo-shell's (marker) from its record, which
+	// holds back its trailer.
+	away := false
+	out := &outputTail{stream: api.CommandStreamStdout, away: &away}
+	errs := &outputTail{stream: api.CommandStreamStderr, away: &away}
+	if o.marker != "" {
+		out.record, errs.record = true, true
+	}
 	// Soon after its start, so a short command's end comes quickly, then every second.
 	wait := 100 * time.Millisecond
 	for {
 		if !c.JSON {
+			final := command.State != api.CommandStateRunning
+			out.more(c, client, sandboxID, command.ID, c.IO.Stdout, final)
+			errs.more(c, client, sandboxID, command.ID, c.IO.Stderr, final)
 			end := len(command.Stdout)
 			if o.marker != "" {
 				end = shownLength(command.Stdout, o.marker)
 			}
-			if end > shownOut {
-				fmt.Fprint(c.IO.Stdout, command.Stdout[shownOut:end])
-			}
-			if len(command.Stderr) > shownErr {
-				fmt.Fprint(c.IO.Stderr, command.Stderr[shownErr:])
-			}
-			shownOut, shownErr = max(shownOut, end), len(command.Stderr)
+			out.fromRecord(c.IO.Stdout, command.Stdout, end)
+			errs.fromRecord(c.IO.Stderr, command.Stderr, len(command.Stderr))
 		}
 		if command.State != api.CommandStateRunning {
 			break
@@ -263,8 +270,8 @@ func follow(c *cli.Context, client *api.Client, sandboxID, commandID string, o f
 	if c.JSON {
 		c.Out(cli.IndentJSON(raw, command))
 	} else {
-		if command.Truncated {
-			c.Note("kantel: the output was cut at 1 MiB")
+		if note := cutNote(command, out, errs); note != "" {
+			c.Note(note)
 		}
 		switch command.State {
 		case api.CommandStateTimedOut:

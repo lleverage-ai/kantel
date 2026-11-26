@@ -479,7 +479,7 @@ func commandResult(c api.Command) toolResult {
 		lines = append(lines, "The isolate stopped it for using too much "+string(*c.Terminated)+" time.")
 	}
 	if c.Truncated {
-		lines = append(lines, "Kantel kept only its first 1 MiB of output.")
+		lines = append(lines, "Only its first 1 MiB of output is shown here: kantel attach reads all Kantel kept.")
 	}
 	if c.State != api.CommandStateRunning || stdout != "" || stderr != "" {
 		shown := stdout

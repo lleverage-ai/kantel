@@ -36,6 +36,12 @@ between the workstreams so they can run in parallel. Change it only by telling t
   - `"needsMicrovm": {"command": "<name>", "reason": "<one sentence>"}` when the command failed because the isolate
     doesn't have something it ran (an unavailable command such as `git`, `tar`, `apt-get`, `docker`, `pip install`).
     The shell's message stays: `<name>: not available in an isolate... Use a microVM.`, exit 127.
+  - `"effects": "none" | "possible"` beside `needsMicrovm` (added with LLE-19852; the same field as Lleverage's isolate):
+    `"none"` when the shell's parse-before-run check saw that the command can't succeed (a plain script ending, in an
+    `&&` chain, on the program; see `guest/shell/prescan.js`) and refused it before any of it ran (`echo a > f && git
+    push` leaves `f` as it was; the reply's manifest is the request's); `"possible"` when the program was reached
+    while the command ran (`bash -c`, `eval`, a name known only at run time, any command the check isn't sure of, a
+    `pip` inside `python`), so what came before it may have run. Only a command that failed reports either. kantel-host and autoUpgrade don't read it yet.
 - Sandbox state is the manifest the host sends (path → {kind:"file", sha, size, mode} | {kind:"symlink", target} |
   {kind:"dir"}), under `/workspace`; the runtime returns the next manifest. Unchanged files keep their entries without
   being read.

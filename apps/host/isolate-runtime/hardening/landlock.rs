@@ -12,8 +12,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 use landlock::{
-    ABI, Access, AccessFs, AccessNet, CompatLevel, Compatible, NetPort, PathBeneath, PathFd,
-    Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, path_beneath_rules,
+    ABI, Access, AccessFs, AccessNet, BitFlags, CompatLevel, Compatible, NetPort, PathBeneath,
+    PathFd, Ruleset, RulesetAttr, RulesetCreatedAttr, RulesetStatus, Scope, path_beneath_rules,
 };
 
 /// How the runtime reaches its store and egress bridges, and serves its own API.
@@ -36,6 +36,13 @@ pub struct Policy {
     pub temp: PathBuf,
     /// More read-only paths, if any (a Pyodide snapshot kept outside `--assets`, in the spike).
     pub extra_read: Vec<PathBuf>,
+    /// More paths it may read and write (an embedder's own scratch or cache directory).
+    pub read_write: Vec<PathBuf>,
+    /// Programs, or directories of them, it may execute (and read): only for an embedder that starts child
+    /// processes, which seccomp must allow too ([`super::seccomp::install`]'s `spawn`). Kantel's runtime has none.
+    /// Rights add up down the tree, so none may be an ancestor of a writable path (the temporary directory,
+    /// `read_write`, the socket directory), or what is written there could be run.
+    pub execute: Vec<PathBuf>,
     /// How it talks to the store and egress, and serves its API.
     pub transport: Transport,
 }
@@ -74,8 +81,12 @@ pub struct Report {
 /// in production `--require-landlock` makes less than full enforcement fatal).
 pub fn restrict(policy: &Policy) -> Result<Report> {
     let abi = ABI::V6;
-    let read = AccessFs::from_read(abi);
     let all = AccessFs::from_all(abi);
+    // Nothing is executable but `execute`: Landlock's read rights include execution, so it is taken out of them (and
+    // out of the writable places, so what the process, or code that took it over, writes can't be run).
+    let exec = BitFlags::from(AccessFs::Execute);
+    let read = AccessFs::from_read(abi) & !exec;
+    let writable = all & !exec;
     let net_supported = ABI::V4;
     let mut ruleset = Ruleset::default()
         .set_compatibility(CompatLevel::BestEffort)
@@ -85,6 +96,8 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
         .create()?
         .add_rules(path_beneath_rules([&policy.assets], read))?
         .add_rules(path_beneath_rules(&policy.extra_read, read))?
+        .add_rules(path_beneath_rules(&policy.read_write, writable))?
+        .add_rules(path_beneath_rules(&policy.execute, read | exec))?
         .add_rules(path_beneath_rules(
             SYSTEM_READ.iter().map(Path::new).filter(|p| p.exists()),
             read,
@@ -92,7 +105,7 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
     // A directory gets every right below it; PathFd needs the directory to exist (the caller made it).
     let temp = PathFd::new(&policy.temp)
         .with_context(|| format!("landlock: temp dir {}", policy.temp.display()))?;
-    ruleset = ruleset.add_rule(PathBeneath::new(temp, all))?;
+    ruleset = ruleset.add_rule(PathBeneath::new(temp, writable))?;
     match &policy.transport {
         Transport::Tcp { listen, connect } => {
             // handle_access(Bind|Connect) above with no matching NetPort rule denies every other port.
@@ -106,7 +119,7 @@ pub fn restrict(policy: &Policy) -> Result<Report> {
             // the account's own; the runtime binds its listener and the bridges' sockets live there.
             let dir = PathFd::new(socket_dir)
                 .with_context(|| format!("landlock: socket dir {}", socket_dir.display()))?;
-            ruleset = ruleset.add_rule(PathBeneath::new(dir, all))?;
+            ruleset = ruleset.add_rule(PathBeneath::new(dir, writable))?;
         }
     }
     let status = ruleset.restrict_self().context("landlock: restrict_self")?;

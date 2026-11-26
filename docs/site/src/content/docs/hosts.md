@@ -288,6 +288,8 @@ A host is `online`, `draining`, `unreachable` (registered, but not connected now
 
 A connected host sends a heartbeat every 15 seconds. If nothing at all arrives from a host for three heartbeats (45 seconds), for example because the network between it and Kantel drops packets without closing the connection, Kantel closes the connection. The host then shows as `unreachable`, and calls to it fail straight away instead of waiting for their own timeouts. The host's sandboxes keep running, and the host reconnects as soon as it can reach Kantel again.
 
+A host that stays unreachable for more than 5 minutes (`KANTEL_HOST_LOST_AFTER_MINUTES`) counts as lost: its sandboxes move to `lost` ([When its host is lost](/sandboxes/lifecycle/#when-its-host-is-lost)). When it connects again, it first deletes those sandboxes, and only then takes new ones.
+
 Every 5 seconds a host also sends Kantel its CPU, memory and disk, and each running sandbox's CPU and memory, and a microVM's disk and IO pressure. It measures CPU and memory from its own side and runs nothing in a sandbox to do it; only the guest knows its disk and IO, so its agent answers those:
 
 - A microVM's CPU is its Firecracker process's CPU time as a share of its vCPUs. Its memory is what the guest itself counts as used, its total less its available memory, as `free -m` shows it in the guest. The guest's kernel reports those figures to Firecracker through a virtio-balloon device that only reports (it never takes memory from the guest), and the host reads them from Firecracker, so nothing runs in the sandbox. Page cache isn't counted, and the figure falls when the guest frees memory.
@@ -456,7 +458,7 @@ Uninstalling doesn't tell the control plane, so revoke the host as well.
 | --- | --- | --- |
 | `egress` | `open` | A sandbox's network when its account has no [proxy settings](/sandboxes/egress-proxy/) turned on: `open` (through the egress proxy, with no rules), `proxy`, or `none` (no network at all) |
 | `egressAllowCIDRs` | none | Private ranges the egress proxy may connect to anyway, such as `["192.168.10.0/24"]` for a package mirror on your network. Bucket mounts reach their store under the same rule, so a MinIO on your network needs its range here |
-| `mountCacheMiB` | `10240` | The host's read cache for bucket mounts (experimental), on disk in `mountCacheDir` (default `<root>/mount-cache`) and shared by every sandbox on the host; the least recently read goes first. `-1` turns bucket mounts off |
+| `mountCacheMiB` | `10240` | The host's read cache for bucket and manifest mounts (experimental), on disk in `mountCacheDir` (default `<root>/mount-cache`) and shared by every sandbox on the host; the least recently read goes first. `-1` turns bucket mounts off |
 | `proxyDataPath` | `false` | What `--proxy-data-path` sets |
 | `injectGuestAgent` | `false` | What `--inject-guest-agent` sets: `sandboxImage` may be [any Linux image](/sandboxes/custom-images/) |
 | `proxyPort` | `3129` | The egress proxy's port, on each sandbox's gateway address |

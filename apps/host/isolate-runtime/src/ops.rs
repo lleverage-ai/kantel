@@ -4,20 +4,19 @@
 //! on guest-controlled data): a panic in an op would take the whole process down.
 
 use std::cell::RefCell;
-use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use deno_core::{JsBuffer, OpState, op2, v8};
 use deno_error::JsErrorBox;
-use serde_json::Value;
 use sha2::Digest;
 
-use crate::bridges::{FetchReq, egress_fetch, valid_sha};
+use crate::bridges::{FetchReq, egress_fetch};
 use crate::hostbuf::{HeldBytes, HostBytes, budget_of};
 use crate::isolate::{Ctx, Engine, Kind, RunResult, RunState, engine, run_child};
 use crate::limits::Refusal;
+use crate::workspace::{Commit, Workspace};
 
 fn jerr(e: impl std::fmt::Display) -> JsErrorBox {
     JsErrorBox::generic(e.to_string())
@@ -151,56 +150,210 @@ fn zlib(kind: &str, data: &[u8], level: u32, cap: usize) -> Result<Vec<u8>, Stri
     Ok(out)
 }
 
-// --- STORE: the shell's lazy blob reads and uploads ---------------------------------------------------------------
+// --- the workspace: the shell's lazy reads, staging and the command's commit (the filesystem provider) ------------
+
+/// The command's workspace, for the shell only.
+fn shell_workspace(c: &Ctx) -> Result<Arc<dyn Workspace>, JsErrorBox> {
+    if c.kind != Kind::Shell {
+        return Err(JsErrorBox::generic("not available here"));
+    }
+    c.workspace
+        .clone()
+        .ok_or_else(|| JsErrorBox::generic("no workspace for this command"))
+}
 
 #[op2]
 async fn op_kt_blob_read(
     state: Rc<RefCell<OpState>>,
-    #[string] sha: String,
+    #[string] file: String,
 ) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
-    if c.kind != Kind::Shell {
-        return Err(JsErrorBox::generic("not available here"));
-    }
-    if !valid_sha(&sha) {
-        return Err(JsErrorBox::generic("blob: not a SHA-256 digest"));
-    }
-    // Only a digest this command's manifest named, or one it has written: not any blob of the account.
-    if !c.allowed.lock().unwrap().contains(&sha) {
-        return Err(JsErrorBox::generic("blob: not in this sandbox's files"));
-    }
+    let workspace = shell_workspace(&c)?;
     // Cap the read at the sandbox's memory and charge it (finding M7): the host accepts 256 MiB blobs, but an
-    // isolate can't hold a file larger than its own memory.
+    // isolate can't hold a file larger than its own memory. Only a file the command's workspace gave (its view's,
+    // or one it staged): not any blob of the account.
     let cap = c.budget.limit();
     let mut charge = crate::bridges::Charge::new(c.budget.clone());
-    let bytes = engine()
-        .store
-        .get(&sha, cap, Some(&mut charge))
+    let bytes = workspace
+        .read(&file, cap, Some(&mut charge))
         .await
-        .map_err(jerr)?;
+        .map_err(|e| JsErrorBox::generic(format!("blob: {e}")))?;
     // The read's charge becomes the buffer's: the bytes stay charged until V8 frees the guest's buffer.
     let held = charge.keep();
     HostBytes::adopt(budget_of(&state.borrow()), bytes, held)
 }
 
+/// Upload a changed file for the command's commit; answers the [`Staged`](crate::workspace::Staged) as JSON.
 #[op2]
 #[string]
-async fn op_kt_blob_put(
+async fn op_kt_stage(
     state: Rc<RefCell<OpState>>,
+    #[string] path: String,
     #[buffer] bytes: JsBuffer,
 ) -> Result<String, JsErrorBox> {
+    let workspace = shell_workspace(&ctx(&state)?)?;
+    let staged = workspace.stage(&path, bytes.to_vec()).await.map_err(jerr)?;
+    serde_json::to_string(&staged).map_err(jerr)
+}
+
+/// The command's changes, as one commit ([`Commit`] in, [`CommitReply`](crate::workspace::CommitReply) out, both
+/// JSON). Outcomes (unknown, failed, fenced) are replies; an error is the provider's own fault. The commit runs as a
+/// task on the I/O runtime, so a command stopped while it waits doesn't cut the write off: the commit ends, and the
+/// stopped command's reply says what it did ([`CommitSlot`](crate::isolate::CommitSlot)).
+#[op2]
+#[string]
+async fn op_kt_commit(
+    state: Rc<RefCell<OpState>>,
+    #[string] commit: String,
+) -> Result<String, JsErrorBox> {
+    let c = ctx(&state)?;
+    let workspace = shell_workspace(&c)?;
+    let commit: Commit =
+        serde_json::from_str(&commit).map_err(|e| jerr(format!("bad commit: {e}")))?;
+    let slot = c.commit.clone();
+    if !slot.start(commit.removes.clone()) {
+        return Err(JsErrorBox::generic(
+            "a commit is already running for this command",
+        ));
+    }
+    let task = engine().io.spawn(async move {
+        let outcome = workspace.commit(commit).await.map_err(|e| format!("{e:#}"));
+        slot.finish(outcome.clone());
+        outcome
+    });
+    let reply = task.await.map_err(jerr)?.map_err(jerr)?;
+    serde_json::to_string(&reply).map_err(jerr)
+}
+
+/// What the command's workspace keeps besides files (`{directories, symlinks}`): the shell commits only what it
+/// can keep.
+#[op2]
+#[string]
+fn op_kt_workspace_capabilities(state: &mut OpState) -> Result<String, JsErrorBox> {
+    let c = ctx_sync(state)?;
+    if c.kind != Kind::Shell {
+        return Err(JsErrorBox::generic("not available here"));
+    }
+    // No workspace (the pool's warm-up command): nothing will be committed, so nothing is held back.
+    let caps =
+        c.workspace
+            .as_ref()
+            .map(|w| w.capabilities())
+            .unwrap_or(crate::workspace::Capabilities {
+                directories: true,
+                symlinks: true,
+                content_addressed: false,
+            });
+    Ok(serde_json::json!({
+        "directories": caps.directories,
+        "symlinks": caps.symlinks,
+        "contentAddressed": caps.content_addressed,
+    })
+    .to_string())
+}
+
+/// The workspace's changes since the version `base` the guest holds ([`CatchUp`](crate::workspace::CatchUp), JSON).
+#[op2]
+#[string]
+async fn op_kt_sync(
+    state: Rc<RefCell<OpState>>,
+    #[string] base: String,
+) -> Result<String, JsErrorBox> {
+    let workspace = shell_workspace(&ctx(&state)?)?;
+    let catch_up = workspace.sync(&base).await.map_err(jerr)?;
+    serde_json::to_string(&catch_up).map_err(jerr)
+}
+
+// --- host commands: the embedder's programs, run natively on the host -----------------------------------------
+
+/// The host commands' names, as JSON, for the shell to define.
+#[op2]
+#[string]
+fn op_kt_host_commands() -> String {
+    let names: Vec<&String> = engine().embedding.host_commands.keys().collect();
+    serde_json::to_string(&names).unwrap_or_else(|_| "[]".into())
+}
+
+/// Run one host command (crate::host_commands): `meta` is its request (name, args, cwd, env, runId, and the shell's
+/// file index and stdin as slices of `payload`); the answer is its packed reply. Runs on the engine's I/O runtime
+/// until the command's deadline (exit 124), and is aborted if the op is dropped or the shell cancels the run
+/// (`op_kt_host_cancel`). A host command never commits (see the module docs), so aborting it leaves at most a staged
+/// blob nothing names.
+#[op2]
+async fn op_kt_host_command(
+    state: Rc<RefCell<OpState>>,
+    #[string] meta: String,
+    #[buffer] payload: JsBuffer,
+) -> Result<HostBytes, JsErrorBox> {
+    use crate::host_commands::{HostReply, pack_reply, request};
     let c = ctx(&state)?;
     if c.kind != Kind::Shell {
         return Err(JsErrorBox::generic("not available here"));
     }
-    let sha = engine().store.put(bytes.to_vec()).await.map_err(jerr)?;
-    c.allowed.lock().unwrap().insert(sha.clone());
-    Ok(sha)
+    let meta: serde_json::Value =
+        serde_json::from_str(&meta).map_err(|e| jerr(format!("bad host command request: {e}")))?;
+    let name = meta["name"].as_str().unwrap_or_default().to_string();
+    let run_id = meta["runId"].as_u64().unwrap_or(0) as u32;
+    let command = engine()
+        .embedding
+        .host_commands
+        .get(&name)
+        .cloned()
+        .ok_or_else(|| jerr(format!("{name}: no such host command")))?;
+    let request = request(
+        c.sandbox_id.clone(),
+        c.command.deadline,
+        c.workspace.clone(),
+        &meta,
+        payload.to_vec(),
+    )
+    .map_err(jerr)?;
+    let cwd = request.cwd.clone();
+    let remaining = c
+        .command
+        .deadline
+        .saturating_duration_since(std::time::Instant::now());
+    let task = engine()
+        .io
+        .spawn(async move { tokio::time::timeout(remaining, command.run(request)).await });
+    c.host_runs
+        .lock()
+        .unwrap()
+        .insert(run_id, task.abort_handle());
+    let _abort = AbortOnDrop(task.abort_handle());
+    let outcome = task.await;
+    c.host_runs.lock().unwrap().remove(&run_id);
+    let failure = |code: i32, why: String| HostReply {
+        exit_code: code,
+        stderr: format!("{name}: {why}\n").into_bytes(),
+        ..Default::default()
+    };
+    let reply = match outcome {
+        Ok(Ok(Ok(reply))) => reply,
+        Ok(Ok(Err(e))) => failure(1, format!("{e:#}")),
+        Ok(Err(_)) => failure(124, "timed out".into()),
+        // Cancelled by the shell (its `timeout`): it answers for itself.
+        Err(e) if e.is_cancelled() => failure(130, "cancelled".into()),
+        Err(e) => failure(1, e.to_string()),
+    };
+    let out = match pack_reply(&cwd, &reply) {
+        Ok(out) => out,
+        Err(e) => pack_reply(&cwd, &failure(1, format!("{e:#}"))).map_err(jerr)?,
+    };
+    HostBytes::adopt(budget_of(&state.borrow()), out, 0)
+}
+
+/// Cancel a host command the shell is running (just-bash `timeout`).
+#[op2(fast)]
+fn op_kt_host_cancel(state: &mut OpState, #[smi] run_id: u32) {
+    if let Ok(c) = ctx_sync(state)
+        && let Some(handle) = c.host_runs.lock().unwrap().remove(&run_id)
+    {
+        handle.abort();
+    }
 }
 
 // --- EGRESS: one request through the host's proxy -----------------------------------------------------------------
-
-const MAX_CONCURRENT_FETCH: usize = 8;
 
 /// Decrements the isolate's in-flight fetch count when the op ends (even if cancelled).
 struct FetchSlot(Arc<std::sync::atomic::AtomicUsize>);
@@ -227,18 +380,21 @@ async fn op_kt_fetch(
 ) -> Result<HostBytes, JsErrorBox> {
     let c = ctx(&state)?;
     let req: FetchReq = serde_json::from_str(&req).map_err(jerr)?;
+    let policy = &engine().cfg.egress_policy;
+    if !policy.enabled {
+        return Err(JsErrorBox::generic(
+            "fetch: this sandbox has no network access",
+        ));
+    }
     // Allow-list methods: no CONNECT, no arbitrary verbs.
     let method = req.method.to_ascii_uppercase();
-    if !matches!(
-        method.as_str(),
-        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
-    ) {
+    if method == "CONNECT" || !policy.methods.contains(&method) {
         return Err(JsErrorBox::generic(format!(
             "fetch: method {method} is not allowed"
         )));
     }
     let before = c.fetches.fetch_add(1, Ordering::SeqCst);
-    if before >= MAX_CONCURRENT_FETCH {
+    if before >= policy.max_concurrent {
         c.fetches.fetch_sub(1, Ordering::SeqCst);
         return Err(JsErrorBox::generic(
             "fetch: too many concurrent requests from this sandbox",
@@ -257,7 +413,14 @@ async fn op_kt_fetch(
         let mut charge = crate::bridges::Charge::new(budget);
         let out = tokio::time::timeout(
             remaining,
-            egress_fetch(&engine().egress, &sandbox, req, body, Some(&mut charge)),
+            egress_fetch(
+                &engine().egress,
+                &engine().cfg.egress_policy,
+                &sandbox,
+                req,
+                body,
+                Some(&mut charge),
+            ),
         )
         .await;
         // The body and its charge, still held by the Charge (given back if the op is dropped before taking it).
@@ -561,7 +724,13 @@ deno_core::extension!(
         op_kt_encode,
         op_kt_zlib,
         op_kt_blob_read,
-        op_kt_blob_put,
+        op_kt_stage,
+        op_kt_commit,
+        op_kt_sync,
+        op_kt_workspace_capabilities,
+        op_kt_host_commands,
+        op_kt_host_command,
+        op_kt_host_cancel,
         op_kt_fetch,
         op_kt_run,
         op_kt_cancel_run,
@@ -584,22 +753,6 @@ deno_core::extension!(
         op_kt_wasm_store,
     ],
 );
-
-/// The SHA-256 digests a manifest names, for the shell's allowed-read set.
-pub fn manifest_shas(manifest: &Value) -> HashSet<String> {
-    let mut set = HashSet::new();
-    if let Some(obj) = manifest.as_object() {
-        for entry in obj.values() {
-            if entry.get("kind").and_then(Value::as_str) == Some("file")
-                && let Some(sha) = entry.get("sha").and_then(Value::as_str)
-                && valid_sha(sha)
-            {
-                set.insert(sha.to_string());
-            }
-        }
-    }
-    set
-}
 
 #[cfg(test)]
 mod tests {

@@ -406,6 +406,17 @@ export const DEV_STACK = sandbox({
 			},
 			status: "pending",
 		},
+		{
+			path: "/workspace/files",
+			source: {
+				kind: "manifest",
+				bucketSourceId: ORG_FILES_ID,
+				manifestKey: "manifests/dev-stack.json",
+				bucketSourceName: "org files",
+				bucket: "lleverage-org-files",
+			},
+			status: "ready",
+		},
 	],
 	image: KANTEL_IMAGE,
 });
@@ -2416,7 +2427,8 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 			(box) => box.accountId === accountId && (box.mounts ?? []).some((mount) => uses(mount.source)),
 		).length;
 	const bundleUses = (digest: string) => (from: MountSource) => from.kind === "bundle" && from.digest === digest;
-	const bucketUses = (id: string) => (from: MountSource) => from.kind === "bucket" && from.bucketSourceId === id;
+	const bucketUses = (id: string) => (from: MountSource) =>
+		(from.kind === "bucket" || from.kind === "manifest") && from.bucketSourceId === id;
 	/** Refuses a delete while a sandbox that still exists mounts it, as Kantel's API does with `conflict`. */
 	const requireUnmounted = (count: number) => {
 		const refusal = inUseText(count);

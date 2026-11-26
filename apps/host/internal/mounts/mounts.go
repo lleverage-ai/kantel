@@ -58,6 +58,14 @@ const ListTimeout = 10 * time.Minute
 // sourceTTL is how long the host keeps a bucket source it resolved before asking again.
 const sourceTTL = 10 * time.Minute
 
+// expiryMargin is how long before short-lived credentials expire the host asks for the source again, so an account
+// that refreshes them ahead of time (createBucketSource's credentials replaced) never has a read see them expire.
+const expiryMargin = time.Minute
+
+// resolveBackoff is how soon after resolving a source whose credentials were already expired the host asks again:
+// reads of a mount whose account let its credentials lapse fail at once, rather than each asking Kantel.
+const resolveBackoff = 5 * time.Second
+
 // Config is the host's setup for bucket mounts.
 type Config struct {
 	Cache *Cache
@@ -93,12 +101,19 @@ type Manager struct {
 	slots chan struct{}
 	// writeTimeout is ChunkWriteTimeout (tests give another).
 	writeTimeout time.Duration
+	// resolveBackoff is resolveBackoff (tests give another).
+	resolveBackoff time.Duration
+	// clock is what bucket sources' credentials expire by, and how old a resolved source is (tests give another).
+	clock func() time.Time
 }
 
 type source struct {
 	client  *bucket.Client
 	src     proto.BucketSource
 	fetched time.Time
+	// tried is when the host last asked for the source and Kantel didn't answer (with m.mu): the backoff on expired
+	// credentials counts from it too, so an outage doesn't have every read ask again.
+	tried time.Time
 }
 
 func New(cfg Config) *Manager {
@@ -119,7 +134,7 @@ func New(cfg Config) *Manager {
 	if cfg.MaxOpenChunks <= 0 {
 		cfg.MaxOpenChunks = DefaultMaxOpenChunks
 	}
-	return &Manager{cfg: cfg, log: cfg.Log.With("part", "mounts"), sandboxes: map[string]*Sandbox{}, sources: map[string]*source{}, now: time.Now, proofKey: key, slots: make(chan struct{}, cfg.MaxOpenChunks), writeTimeout: ChunkWriteTimeout}
+	return &Manager{cfg: cfg, log: cfg.Log.With("part", "mounts"), sandboxes: map[string]*Sandbox{}, sources: map[string]*source{}, now: time.Now, proofKey: key, slots: make(chan struct{}, cfg.MaxOpenChunks), writeTimeout: ChunkWriteTimeout, resolveBackoff: resolveBackoff, clock: time.Now}
 }
 
 // Cache is the host's read cache.
@@ -154,6 +169,17 @@ func Validate(mounts []proto.Mount) error {
 		case proto.MountBundle:
 			if !bundles.ValidDigest(mt.Digest) {
 				return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the bundle mount at %s has no digest (sha256:<64 hex digits>)", mt.Path)}
+			}
+		case proto.MountManifest:
+			switch {
+			case mt.BucketSourceID == "":
+				return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the manifest mount at %s names no bucket source", mt.Path)}
+			case mt.ManifestKey == "" || len(mt.ManifestKey) > maxKey:
+				return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the manifest mount at %s names no manifest object (a key of at most 1024 bytes)", mt.Path)}
+			case !bundles.ValidDigest(mt.Digest):
+				return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the manifest mount at %s has no digest of its manifest (sha256:<64 hex digits>)", mt.Path)}
+			case mt.Prefix != "" || mt.RefreshTTLSeconds != nil:
+				return &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the manifest mount at %s has a prefix or refresh TTL, which only a bucket mount takes", mt.Path)}
 			}
 		default:
 			return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("this host has no %q mounts", mt.Kind)}
@@ -217,22 +243,38 @@ func sameSpecs(a, b []proto.Mount) bool {
 // specKey is a digest of what a mount shows: its source and prefix.
 func specKey(mt proto.Mount) string {
 	parts := []string{mt.Kind}
-	if mt.Kind == proto.MountBucket {
+	switch mt.Kind {
+	case proto.MountBucket:
 		parts = append(parts, mt.BucketSourceID, normalPrefix(mt.Prefix))
+	case proto.MountManifest:
+		parts = append(parts, mt.BucketSourceID, mt.ManifestKey, mt.Digest)
 	}
 	h := sha256.Sum256([]byte(strings.Join(parts, "\x00")))
 	return hex.EncodeToString(h[:12])
 }
 
-// client is the bucket source's client for a sandbox, resolved through the control plane when the host has none or
-// had it too long (or fresh is set: the store refused the one it had).
+// client is the bucket source's client for a sandbox, resolved through the control plane when the host has none,
+// had it too long, or holds credentials that expire within expiryMargin (or fresh is set: the store refused the one
+// it had). Credentials that were already expired when resolved are asked for again only after resolveBackoff.
 func (m *Manager) client(ctx context.Context, sandboxID, sourceID string, fresh bool) (*source, error) {
 	key := sandboxID + "\x00" + sourceID
 	m.mu.Lock()
 	s, ok := m.sources[key]
 	m.mu.Unlock()
-	if ok && !fresh && time.Since(s.fetched) < sourceTTL {
-		return s, nil
+	if ok {
+		now := m.clock()
+		if !fresh && !s.client.Expired(expiryMargin) && now.Sub(s.fetched) < sourceTTL {
+			return s, nil
+		}
+		m.mu.Lock()
+		asked := s.fetched
+		if s.tried.After(asked) {
+			asked = s.tried
+		}
+		m.mu.Unlock()
+		if s.client.Expired(0) && now.Sub(asked) < m.resolveBackoff {
+			return s, nil
+		}
 	}
 	if m.cfg.Resolve == nil {
 		return nil, errors.New("this host can't resolve bucket sources")
@@ -242,20 +284,29 @@ func (m *Manager) client(ctx context.Context, sandboxID, sourceID string, fresh 
 		if ok {
 			// The control plane can't be asked now: keep using what the host has.
 			m.log.Warn("bucket source re-resolve failed; keeping the one held", "sandbox", sandboxID, "error", err)
+			m.mu.Lock()
+			s.tried = m.clock()
+			m.mu.Unlock()
 			return s, nil
 		}
 		return nil, fmt.Errorf("bucket source %s: %w", sourceID, err)
 	}
-	bs := bucket.Source{Provider: src.Provider, Bucket: src.Bucket, Endpoint: src.Endpoint, Region: src.Region}
+	// The source the host asked for, whatever the answer says: its cache's principal may be named by it (principal).
+	src.ID = sourceID
+	bs := bucket.Source{Provider: src.Provider, Bucket: src.Bucket, Endpoint: src.Endpoint, Region: src.Region, Now: m.clock}
 	if c := src.Credentials; c != nil {
 		bs.Credentials = bucket.Credentials{AccessKeyID: c.AccessKeyID, SecretAccessKey: c.SecretAccessKey, SessionToken: c.SessionToken}
 		bs.ServiceAccountKey = c.ServiceAccountKey
+		bs.AccessToken = c.AccessToken
+		if c.ExpiresAt > 0 {
+			bs.ExpiresAt = time.UnixMilli(c.ExpiresAt)
+		}
 	}
 	client, err := bucket.NewClient(bs, m.cfg.HTTP)
 	if err != nil {
 		return nil, err
 	}
-	s = &source{client: client, src: src, fetched: time.Now()}
+	s = &source{client: client, src: src, fetched: m.clock()}
 	m.mu.Lock()
 	m.sources[key] = s
 	m.mu.Unlock()
@@ -265,11 +316,21 @@ func (m *Manager) client(ctx context.Context, sandboxID, sourceID string, fresh 
 // principal names who reads a bucket source, for the cache's keys: a digest of the whole credential (an access key's
 // ID, secret and session token; or a service account's key), never the secret itself. Two sources share cached bytes
 // only with the same credential, so naming another account's key ID with another secret reads none of its cache.
+//
+// Short-lived credentials (an access token, or any that expire) are replaced every so often by the account that
+// holds the source, so they are named by the source instead: its mounts keep its cached bytes across a refresh of its
+// credentials, and no other source, of this account or another, ever reads them. A source's ID is Kantel's, unique
+// across accounts, and the host resolves it for a sandbox only when Kantel says that sandbox may mount it.
 func principal(src proto.BucketSource) string {
 	c := src.Credentials
 	switch {
 	case c == nil:
 		return ""
+	case (c.AccessToken != "" || c.ExpiresAt > 0) && src.ID != "":
+		return "source:" + src.ID
+	case c.AccessToken != "":
+		h := sha256.Sum256([]byte("kantel-bucket-token\x00" + c.AccessToken))
+		return "token:" + hex.EncodeToString(h[:16])
 	case c.AccessKeyID != "":
 		h := sha256.New()
 		for _, part := range []string{"kantel-bucket-principal", c.AccessKeyID, c.SecretAccessKey, c.SessionToken} {

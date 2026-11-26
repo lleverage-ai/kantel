@@ -1,0 +1,20 @@
+# The smallest program that embeds kantel-isolate from outside this repository: CI builds and runs it against the
+# library at the commit under test, fetched as a pinned git revision (check.sh rewrites the dependency below), on the
+# stock V8 and on the sandboxed one. Here it is a path dependency, for trying it in a checkout.
+[package]
+name = "kantel-isolate-consumer"
+version = "0.0.0"
+edition = "2024"
+license = "Apache-2.0"
+publish = false
+
+[dependencies]
+anyhow = "1"
+deno_core = "0.412"
+deno_error = "0.7"
+serde_json = "1"
+tokio = { version = "1", features = ["rt-multi-thread"] }
+kantel-isolate = { path = "..", default-features = false }
+
+[features]
+v8-sandbox = ["kantel-isolate/v8-sandbox"]

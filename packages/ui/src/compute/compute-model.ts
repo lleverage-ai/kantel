@@ -607,6 +607,14 @@ export type MountSource =
 			/** The bucket source's name and bucket, where the console knows them. */
 			readonly bucketSourceName?: string;
 			readonly bucket?: string;
+	  }
+	| {
+			/** Exactly the files a manifest object in the bucket source lists. */
+			readonly kind: "manifest";
+			readonly bucketSourceId: string;
+			readonly manifestKey: string;
+			readonly bucketSourceName?: string;
+			readonly bucket?: string;
 	  };
 
 export interface SandboxMount {
@@ -1899,6 +1907,8 @@ export type WebhookEvent =
 	| "sandbox.environments_changed"
 	| "sandbox.oom_kill"
 	| "sandbox.upgraded"
+	| "sandbox.lost"
+	| "sandbox.recreated"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1914,6 +1924,8 @@ export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly l
 	{ event: "sandbox.environments_changed", label: "A sandbox's environments changed" },
 	{ event: "sandbox.oom_kill", label: "A sandbox ran out of memory" },
 	{ event: "sandbox.upgraded", label: "An isolate was upgraded to a microVM" },
+	{ event: "sandbox.lost", label: "A sandbox was lost with its host" },
+	{ event: "sandbox.recreated", label: "A sandbox was made again on another host" },
 	{ event: "sandbox.deleted", label: "A sandbox was deleted" },
 	{ event: "snapshot.saved", label: "A snapshot was saved" },
 	{ event: "snapshot.deleted", label: "A snapshot was deleted" },

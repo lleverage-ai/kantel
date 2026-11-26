@@ -378,6 +378,12 @@ test each (`test/integration.test.ts`, run on both the stock and `v8-sandbox` bu
 - **Heap guard after a reused isolate (H1):** a shell isolate terminated for CPU/memory is reused, so its one-shot
   near-heap callback is re-armed, and the watchdog no longer skips an isolate whose budget is marked exceeded —
   repeated breaches and a following CPU loop all stay contained.
+- **One oversized allocation:** an allocation larger than the headroom the near-heap callback granted (64 MiB) ended
+  the whole process, every isolate in it. The callback now raises the limit by V8's largest single object (1 GiB)
+  plus unwind headroom at each hit, bounded at 2 GiB + 128 MiB past the initial limit, and a reused shell isolate's limit is
+  restored. `tests/oom.rs` checks, in forked children, that node runs, a reused shell isolate and an embedder's own
+  isolate are each stopped (`terminated: memory`) and the process serves the next command; the README's known gaps
+  say what the stop can take.
 - **Guest-mutable intrinsics (H2):** the buffer and wasm guards use primordials captured at snapshot time
   (`guest/common/primordials.js`), so replacing `Reflect.construct` or `WeakMap.prototype.get` can't smuggle a
   resizable buffer past the guard or fake a wasm-growth reservation. (Extended after PR #837's review; see below.)

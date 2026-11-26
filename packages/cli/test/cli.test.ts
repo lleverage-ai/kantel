@@ -1,5 +1,6 @@
 // The kantel command line, through `run`, with a fake Kantel behind an injected fetch and a temporary config directory.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -24,6 +25,8 @@ interface Call {
 	readonly path: string;
 	readonly query: URLSearchParams;
 	readonly body: unknown;
+	/** A raw body's bytes (a part of a file). */
+	readonly raw?: Uint8Array;
 	readonly authorization: string | null;
 }
 
@@ -45,7 +48,16 @@ function fakeKantel(routes: { readonly [route: string]: Route }) {
 		const method = init?.method ?? "GET";
 		const body: unknown = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
 		const authorization = new Headers(init?.headers).get("authorization");
-		const call: Call = { method, url: url.href, path: url.pathname, query: url.searchParams, body, authorization };
+		const raw = init?.body instanceof Uint8Array ? init.body : undefined;
+		const call: Call = {
+			method,
+			url: url.href,
+			path: url.pathname,
+			query: url.searchParams,
+			body,
+			...(raw === undefined ? {} : { raw }),
+			authorization,
+		};
 		calls.push(call);
 		keys.push(new Headers(init?.headers).get("idempotency-key"));
 		const route = routes[`${method} ${url.pathname}`];
@@ -59,14 +71,18 @@ function fakeKantel(routes: { readonly [route: string]: Route }) {
 
 function capture(isTTY = false) {
 	const chunks: string[] = [];
+	const raw: Uint8Array[] = [];
 	const decoder = new TextDecoder();
 	return {
 		isTTY,
 		write(chunk: string | Uint8Array) {
 			chunks.push(typeof chunk === "string" ? chunk : decoder.decode(chunk));
+			raw.push(typeof chunk === "string" ? new TextEncoder().encode(chunk) : chunk);
 			return true;
 		},
 		text: () => chunks.join(""),
+		/** What was written, as bytes. */
+		bytes: () => Uint8Array.from(raw.flatMap((chunk) => [...chunk])),
 	};
 }
 
@@ -190,7 +206,17 @@ async function kantel(argv: readonly string[], options: KantelOptions = {}) {
 			return 0;
 		},
 	});
-	return { code, stdout: stdout.text(), stderr: stderr.text(), calls: api.calls, keys: api.keys, opened, slept, ssh };
+	return {
+		code,
+		stdout: stdout.text(),
+		stdoutBytes: stdout.bytes(),
+		stderr: stderr.text(),
+		calls: api.calls,
+		keys: api.keys,
+		opened,
+		slept,
+		ssh,
+	};
 }
 
 describe("parsing", () => {
@@ -342,9 +368,11 @@ describe("retries", () => {
 		});
 		expect(result.code).toBe(0);
 		expect(result.stdout).toBe("built\n");
-		expect(result.calls).toHaveLength(3);
-		expect(result.keys[0]).toMatch(/^[0-9a-f-]{36}$/);
-		expect(new Set(result.keys)).toEqual(new Set([result.keys[0]]));
+		// The start, sent three times under one key (then its output, asked for once a stream, has none of this fake's).
+		const starts = result.calls.flatMap((call, i) => (call.method === "POST" ? [result.keys[i]] : []));
+		expect(starts).toHaveLength(3);
+		expect(starts[0]).toMatch(/^[0-9a-f-]{36}$/);
+		expect(new Set(starts)).toEqual(new Set([starts[0]]));
 		expect(result.slept).toEqual([500, 1_000]);
 	});
 
@@ -643,6 +671,102 @@ describe("exec", () => {
 		expect(attached.stderr).toBe("warn\n");
 	});
 
+	it("attach reads output past 1 MiB by range, and says where the rest is when it can't", async () => {
+		const MiB = 1024 * 1024;
+		const record = "a".repeat(MiB);
+		const whole = `${record}${"b".repeat(MiB)}end\n`;
+		const kept =
+			(stdout: string, extra: { truncated?: boolean } = {}) =>
+			(call: Call) => {
+				const text = call.query.get("stream") === "stderr" ? "" : stdout;
+				const offset = Math.min(Number(call.query.get("offset") ?? 0), text.length);
+				const part = text.slice(offset, offset + MiB);
+				return {
+					commandId: "cmd_1",
+					stream: call.query.get("stream"),
+					encoding: "base64",
+					content: btoa(part),
+					offset,
+					size: text.length,
+					ended: true,
+					truncated: extra.truncated === true && call.query.get("stream") === "stdout",
+					limit: 64 * MiB,
+				};
+			};
+		const ended = command({ state: "exited", exitCode: 0, stdout: record, truncated: true });
+		const views = [command({ state: "running", exitCode: undefined, stdout: record, truncated: true }), ended];
+		const read = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => views.shift() ?? ended,
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": kept(whole),
+			},
+		});
+		expect(read.code).toBe(0);
+		expect(read.stdout).toBe(whole);
+		expect(read.stderr).toBe("");
+		const first = read.calls.find((call) => call.path.endsWith("/output") && call.query.get("stream") === "stdout");
+		// From its start, never from its record.
+		expect(first?.query.get("offset")).toBe("0");
+		expect(first?.query.get("encoding")).toBe("base64");
+
+		const cut = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => ended,
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": kept(`${record}more`, { truncated: true }),
+			},
+		});
+		expect(cut.stdout).toBe(`${record}more`);
+		// Short of its limit: it may be missing its end (it ended with its machine).
+		expect(cut.stderr).toContain("kantel: the end of its stdout may be missing");
+
+		const stopped = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => ended,
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": () =>
+					kantelError(409, "conflict", "The sandbox is stopped; resume it first"),
+			},
+		});
+		expect(stopped.stdout.length).toBe(MiB);
+		expect(stopped.stderr).toContain(
+			"the rest of its output is kept in the sandbox, which isn't running: resume it, then kantel attach sbx_test1 cmd_1",
+		);
+		expect(stopped.stderr.split("kept in the sandbox").length).toBe(2);
+
+		// A gateway from before readCommandOutput: its record is all there is.
+		const old = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: { "GET /v1/sandboxes/sbx_test1/commands/cmd_1": () => ended },
+		});
+		expect(old.stdout.length).toBe(MiB);
+		expect(old.stderr).toBe("kantel: the output was cut at 1 MiB\n");
+	});
+
+	it("attach writes the bytes it reads by range as they are, a BOM and bytes that aren't UTF-8 too", async () => {
+		const kept = new Uint8Array([0xef, 0xbb, 0xbf, 0xff, 0x41, 0x0a]);
+		const result = await kantel(["attach", "sbx_test1", "cmd_1"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1": () =>
+					command({ state: "exited", exitCode: 0, stdout: "\uFFFDA\n" }),
+				"GET /v1/sandboxes/sbx_test1/commands/cmd_1/output": (call) => {
+					const bytes = call.query.get("stream") === "stdout" ? kept : new Uint8Array();
+					const offset = Math.min(Number(call.query.get("offset")), bytes.length);
+					return {
+						commandId: "cmd_1",
+						stream: call.query.get("stream"),
+						encoding: "base64",
+						content: btoa(String.fromCharCode(...bytes.subarray(offset))),
+						offset,
+						size: bytes.length,
+						ended: true,
+						truncated: false,
+						limit: 64 * 1024 * 1024,
+					};
+				},
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(result.stdoutBytes).toEqual(kept);
+	});
+
 	it("with --timeout 0 runs it detached and follows it", async () => {
 		const views = [command({ state: "exited", exitCode: 0, stdout: "built\n" })];
 		const result = await kantel(["exec", "sbx_test1", "--timeout", "0", "--", "make"], {
@@ -721,7 +845,8 @@ describe("exec", () => {
 		expect(result.stdout).toBe("Reading package lists...\nSetting up gcc\n");
 		// Nothing of kantel's own on a plain exec's stderr: only the command's.
 		expect(result.stderr).toBe("E: broken\n");
-		expect(result.calls.map((call) => call.method)).toEqual(["POST", "GET", "GET", "GET"]);
+		// A gateway with no readCommandOutput (this fake's 404) is asked once a stream, then its record is shown.
+		expect(result.calls.map((call) => call.method)).toEqual(["POST", "GET", "GET", "GET", "GET", "GET"]);
 		// Looked at soon after its start, so a short command's end comes quickly.
 		expect(result.slept[0]).toBeLessThanOrEqual(100);
 	});
@@ -2503,6 +2628,84 @@ describe("copying files", () => {
 		expect(dockerTop.code).toBe(0);
 		expect(dockerTop.written).toEqual([".docker/daemon.json"]);
 		expect(dockerTop.stderr).toContain("kantel: left out config.json (credentials)");
+	});
+
+	it("scp sends a large file in raw parts, completed with its size and SHA-256", async () => {
+		const big = Buffer.alloc(16 * 1024 * 1024 + 1024 * 1024 + 10);
+		for (let i = 0; i < big.length; i++) big[i] = (i * 31) & 0xff;
+		await writeFile(join(configDir, "big.bin"), big);
+		const got = Buffer.alloc(big.length);
+		const result = await kantel(["scp", "big.bin", "sbx_test1:/srv/big.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({ path: "/srv", items: [] }),
+				"PUT /v1/sandboxes/sbx_test1/files/parts": (call) => {
+					const offset = Number(call.query.get("offset"));
+					got.set(call.raw ?? new Uint8Array(0), offset);
+					return { path: "/srv/big.bin", upload: call.query.get("upload"), offset, size: call.raw?.length ?? 0 };
+				},
+				"POST /v1/sandboxes/sbx_test1/files/parts/complete": () => ({
+					name: "big.bin",
+					path: "/srv/big.bin",
+					kind: "file",
+					size: big.length,
+				}),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(got.equals(big)).toBe(true);
+		const uploads = new Set(
+			result.calls.filter((call) => call.method === "PUT").map((call) => call.query.get("upload")),
+		);
+		expect(uploads.size).toBe(1);
+		expect(result.calls.find((call) => call.path.endsWith("/complete"))?.body).toMatchObject({
+			path: "/srv/big.bin",
+			size: big.length,
+			sha256: createHash("sha256").update(big).digest("hex"),
+		});
+		expect(result.calls.some((call) => call.path.endsWith("/commands"))).toBe(false);
+
+		// A part that fails: no more start, and the upload is aborted once those under way have ended.
+		const order: string[] = [];
+		const failed = await kantel(["scp", "big.bin", "sbx_test1:/srv/big.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({ path: "/srv", items: [] }),
+				"PUT /v1/sandboxes/sbx_test1/files/parts": async (call) => {
+					order.push("part");
+					if (call.query.get("offset") === String(1024 * 1024)) {
+						return kantelError(507, "exhausted", "the sandbox's disk is full");
+					}
+					await new Promise((resolve) => setImmediate(resolve));
+					return { path: "/srv/big.bin", upload: "u", offset: 0, size: call.raw?.length ?? 0 };
+				},
+				"DELETE /v1/sandboxes/sbx_test1/files/parts": () => {
+					order.push("abort");
+					return undefined;
+				},
+			},
+		});
+		expect(failed.code).not.toBe(0);
+		expect(order.at(-1)).toBe("abort");
+		expect(order.filter((step) => step === "abort")).toHaveLength(1);
+	});
+
+	it("scp falls back to base64 parts when a gateway from before parts refuses the first as too large", async () => {
+		const big = Buffer.alloc(5 * 1024 * 1024, 3);
+		await writeFile(join(configDir, "big.bin"), big);
+		let first = 0;
+		const result = await kantel(["scp", "big.bin", "sbx_test1:/srv/big.bin"], {
+			routes: {
+				"GET /v1/sandboxes/sbx_test1/files/list": () => ({ path: "/srv", items: [] }),
+				"PUT /v1/sandboxes/sbx_test1/files/parts": (call) => {
+					first = call.raw?.length ?? 0;
+					return kantelError(413, "invalid", "Request body too large");
+				},
+				"PUT /v1/sandboxes/sbx_test1/files": () => ({ path: "x", size: 1 }),
+				"POST /v1/sandboxes/sbx_test1/commands": () => command({}),
+			},
+		});
+		expect(result.code).toBe(0);
+		expect(first).toBeLessThanOrEqual(1024 * 1024);
+		expect(result.calls.some((call) => call.path.endsWith("/commands"))).toBe(true);
 	});
 
 	it("scp sends a file over 1 MiB in parts and joins them with one command", async () => {

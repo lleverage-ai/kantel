@@ -500,6 +500,34 @@ describe("bucket sources", () => {
 			.catch((error: unknown) => error);
 		expect(other).toMatchObject({ code: "refused" });
 	});
+
+	it("have their credentials replaced by the account's admins only, never with expired ones or a token for S3", async () => {
+		const { api, tom, ann } = setup();
+		const source = await tom.createBucketSource({ name: "org", provider: "gcs", bucket: "org" });
+		const s3 = await tom.createBucketSource({ name: "s3", provider: "s3", bucket: "s3" });
+		const soon = Date.now() + 60 * 60_000;
+		const token = { accessToken: "ya29.short-lived", expiresAt: soon };
+		const set = await tom.setBucketSourceCredentials(source.id, { credentials: token });
+		expect(set).toMatchObject({ id: source.id, hasCredentials: true });
+		expect(JSON.stringify(set)).not.toContain("ya29");
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [{ path: "/mnt/files", source: { kind: "bucket", bucketSourceId: source.id, prefix: "" } }],
+			wait: true,
+		});
+		expect((await api.service.bucketSourceForHost(STUB_HOST_ID, sandbox.id, source.id))?.credentials).toEqual(token);
+		// Refreshed: the host's next ask gets the new ones.
+		const later = { accessToken: "ya29.next", expiresAt: soon + 60 * 60_000 };
+		await tom.setBucketSourceCredentials(source.id, { credentials: later });
+		expect((await api.service.bucketSourceForHost(STUB_HOST_ID, sandbox.id, source.id))?.credentials).toEqual(later);
+		const expired = { accessToken: "ya29.old", expiresAt: Date.now() - 1 };
+		expect((await failure(tom.setBucketSourceCredentials(source.id, { credentials: expired }))).code).toBe("invalid");
+		expect((await failure(tom.setBucketSourceCredentials(s3.id, { credentials: token }))).code).toBe("invalid");
+		expect(
+			(await failure(tom.createBucketSource({ name: "x", provider: "s3", bucket: "x", credentials: token }))).code,
+		).toBe("invalid");
+		expect((await failure(ann.setBucketSourceCredentials(source.id, { credentials: later }))).code).toBe("not_found");
+	});
 });
 
 describe("a sandbox's mounts", () => {
@@ -624,6 +652,52 @@ describe("a sandbox's mounts", () => {
 			["/mnt/org", "failed"],
 		]);
 		expect((await failure(tom.deleteBucketSource(source.id))).code).toBe("conflict");
+	});
+
+	it("take a manifest mount of a bucket source of the account's, and handle it like a bucket mount of its source", async () => {
+		const { api, tom, ann, specs } = setup({ backend: () => ({ refreshMounts: async () => [] }) });
+		const source = await tom.createBucketSource({
+			name: "org files",
+			provider: "s3",
+			bucket: "org",
+			credentials: {
+				accessKeyId: "AKIA",
+				secretAccessKey: "s3cret",
+				sessionToken: "t",
+				expiresAt: Date.now() + 3_600_000,
+			},
+		});
+		const manifest = {
+			kind: "manifest" as const,
+			bucketSourceId: source.id,
+			manifestKey: "manifests/session-1.json",
+			manifestDigest: `sha256:${"b".repeat(64)}`,
+		};
+		const sandbox = await tom.createSandbox({
+			type: "microvm",
+			mounts: [{ path: "/workspace/files", source: manifest }],
+			wait: true,
+		});
+		expect(specs.at(-1)?.mounts).toEqual([{ path: "/workspace/files", source: manifest }]);
+		// Another account's source: not this account's to mount.
+		const theirs = await ann.createBucketSource({ name: "theirs", provider: "s3", bucket: "theirs" });
+		const refused = await failure(
+			tom.createSandbox({
+				type: "microvm",
+				mounts: [{ path: "/mnt/x", source: { ...manifest, bucketSourceId: theirs.id } }],
+			}),
+		);
+		expect(refused.code).toBe("not_found");
+		expect((await api.service.bucketSourceForHost(STUB_HOST_ID, sandbox.id, source.id))?.bucket).toBe("org");
+		expect((await tom.getBucketSource(source.id)).mountedBy).toBe(1);
+		expect((await failure(tom.deleteBucketSource(source.id))).code).toBe("conflict");
+		expect((await failure(tom.refreshSandboxMounts(sandbox.id, { path: "/workspace/files" }))).code).toBe("invalid");
+		// A stop and start hands it to the backend as it is.
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		await tom.startSandbox(sandbox.id, { wait: true });
+		expect((await tom.getSandbox(sandbox.id)).mounts).toEqual([
+			{ path: "/workspace/files", source: manifest, status: "failed", error: "This host can't mount manifests yet" },
+		]);
 	});
 });
 

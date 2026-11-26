@@ -30,9 +30,11 @@ import {
 	BundlePath,
 	Caller,
 	Command,
+	CommandOutput,
 	CommandPage,
 	CommandPath,
 	CommitStickyDiskPath,
+	CompleteFilePartsBody,
 	CreateAccountJoinTokenBody,
 	CreateAccountPoolBody,
 	CreateApiKeyBody,
@@ -69,6 +71,8 @@ import {
 	FileContent,
 	FileEntry,
 	FileList,
+	FilePart,
+	FilePartsQuery,
 	FilePathQuery,
 	FileUrl,
 	FileUrlBody,
@@ -120,6 +124,7 @@ import {
 	PutEnvironmentReposBody,
 	PutProxySettingsBody,
 	PutTelemetryBody,
+	ReadCommandOutputQuery,
 	ReadFileQuery,
 	ReadSnapshotFileQuery,
 	RefreshedMountList,
@@ -140,6 +145,7 @@ import {
 	SandboxShapesQuery,
 	SandboxUsage,
 	SaveSnapshotBody,
+	SetBucketSourceCredentialsBody,
 	SetEnvironmentFileBody,
 	SetEnvironmentVariableBody,
 	SetPublicUrlBody,
@@ -185,6 +191,7 @@ import {
 	WebhookPath,
 	WebhookWithSecret,
 	WriteFileBody,
+	WriteFilePartQuery,
 } from "./compute-schema.ts";
 import { defineRoute } from "./route.ts";
 
@@ -830,6 +837,26 @@ export const getCommand = defineRoute({
 	errors: readErrors,
 });
 
+export const readCommandOutput = defineRoute({
+	operationId: "readCommandOutput",
+	method: "GET",
+	path: "/sandboxes/{sandboxId}/commands/{commandId}/output",
+	tag: "commands",
+	summary: "Read a command's output",
+	description: describe(
+		"Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after",
+		"it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its",
+		"machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a",
+		"`SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8).",
+		"Elsewhere it reads what the command holds: its first 1 MiB.",
+		scope("exec"),
+	),
+	params: CommandPath,
+	query: ReadCommandOutputQuery,
+	answer: { status: 200, description: "The part read.", schema: CommandOutput },
+	errors: ["invalid", "forbidden", "not_found", "conflict"],
+});
+
 export const killCommand = defineRoute({
 	operationId: "killCommand",
 	method: "DELETE",
@@ -972,12 +999,79 @@ export const extractArchive = defineRoute({
 	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
 });
 
-export const commandRoutes = { runCommand, listCommands, getCommand, killCommand } as const;
+// Files in parts: any size, without base64.
+
+const PARTS =
+	"A file goes up in parts, in any order and at once if you like, each the raw bytes from its `offset`, under an " +
+	"`upload` ID of yours; then one completion with its size and SHA-256. Nothing is at `path` until the completion " +
+	"has checked both, and then the file replaces what was there in one step. microVMs only.";
+
+export const writeFilePart = defineRoute({
+	operationId: "writeFilePart",
+	method: "PUT",
+	path: "/sandboxes/{sandboxId}/files/parts",
+	tag: "files",
+	summary: "Write a part of a file",
+	description: describe(
+		PARTS,
+		"A part is the request's raw body, at most 64 MiB (67108864 bytes); the file is at most 64 GiB, and no more than",
+		"the sandbox's disk has free (`exhausted`). Sending a part again writes it again. The parts are kept beside the",
+		"file, on the sandbox's disk, until the upload is completed or aborted; an upload with no part for an hour, and",
+		"every upload of a sandbox that stops without its memory, is discarded.",
+		scope("files"),
+	),
+	params: SandboxPath,
+	query: WriteFilePartQuery,
+	rawBody: { media: ["application/octet-stream"], description: "The part's bytes, at most 64 MiB." },
+	answer: { status: 200, description: "The part written.", schema: FilePart },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "exhausted", "not_supported", "unavailable"],
+});
+
+export const completeFileParts = defineRoute({
+	operationId: "completeFileParts",
+	method: "POST",
+	path: "/sandboxes/{sandboxId}/files/parts/complete",
+	tag: "files",
+	summary: "Complete a file written in parts",
+	description: describe(
+		"Checks that the parts written come to `size` bytes with the SHA-256 `sha256`, then moves the file into place",
+		"with `mode` (default `0644`), owned by the sandbox's user, replacing what was at `path`. A check that fails is",
+		"`invalid`, and the upload is discarded with nothing at `path`: send it again under a new `upload` ID. Completing",
+		"again answers as the first time while `path` still has that size and SHA-256, so a lost answer can be asked",
+		"for again; an upload that isn't known is `conflict`.",
+		scope("files"),
+	),
+	params: SandboxPath,
+	body: CompleteFilePartsBody,
+	answer: { status: 200, description: "The file written.", schema: FileEntry },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
+export const abortFileParts = defineRoute({
+	operationId: "abortFileParts",
+	method: "DELETE",
+	path: "/sandboxes/{sandboxId}/files/parts",
+	tag: "files",
+	summary: "Abort a file written in parts",
+	description: describe(
+		"Discards an upload's parts. What is at `path` is untouched. An upload that isn't known is fine too.",
+		scope("files"),
+	),
+	params: SandboxPath,
+	query: FilePartsQuery,
+	answer: { status: 204, description: "Discarded." },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported", "unavailable"],
+});
+
+export const commandRoutes = { runCommand, listCommands, getCommand, readCommandOutput, killCommand } as const;
 export const fileRoutes = {
 	readFile,
 	writeFile,
 	deleteFile,
 	listFiles,
+	writeFilePart,
+	completeFileParts,
+	abortFileParts,
 	createUploadUrl,
 	createDownloadUrl,
 	extractArchive,
@@ -2973,7 +3067,8 @@ export const createBucketSource = defineRoute({
 	tag: "mounts",
 	summary: "Create a bucket source",
 	description: describe(
-		"A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it.",
+		"A bucket the account's sandboxes may mount prefixes or manifests of (`mounts` on create), with the credentials",
+		"that read it.",
 		"The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is",
 		"given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one).",
 		scope("account:admin"),
@@ -3009,6 +3104,27 @@ export const getBucketSource = defineRoute({
 	errors: [...readErrors, "not_supported"],
 });
 
+export const setBucketSourceCredentials = defineRoute({
+	operationId: "setBucketSourceCredentials",
+	method: "PUT",
+	path: "/bucket-sources/{bucketSourceId}/credentials",
+	tag: "mounts",
+	summary: "Replace a bucket source's credentials",
+	description: describe(
+		"Replaces the credentials that read the bucket, such as a short-lived token before it expires: hosts take the",
+		"new ones the next time they ask for the source, which is within ten minutes, and from a minute before the old",
+		"ones' `expiresAt`. Files already read stay in the host's cache. Credentials already past their `expiresAt` are",
+		"`invalid`, and an access token is for a `gcs` source only. Needs the deployment's secrets key (`not_supported`",
+		"without one).",
+		scope("account:admin"),
+		MOUNTS,
+	),
+	params: BucketSourcePath,
+	body: SetBucketSourceCredentialsBody,
+	answer: { status: 200, description: "The bucket source.", schema: BucketSource },
+	errors: [...changeErrors, "not_supported"],
+});
+
 export const deleteBucketSource = defineRoute({
 	operationId: "deleteBucketSource",
 	method: "DELETE",
@@ -3038,8 +3154,8 @@ export const refreshSandboxMounts = defineRoute({
 		"deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill,",
 		"before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the",
 		"listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the",
-		"mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another",
-		"digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped",
+		"mount carries on with what it showed before. A bundle or manifest mount at `path` is `invalid` (it never changes:",
+		"mount another digest or manifest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped",
 		"or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items.",
 		scope("sandboxes:write"),
 		MOUNTS,
@@ -3059,6 +3175,7 @@ export const mountRoutes = {
 	createBucketSource,
 	listBucketSources,
 	getBucketSource,
+	setBucketSourceCredentials,
 	deleteBucketSource,
 } as const;
 

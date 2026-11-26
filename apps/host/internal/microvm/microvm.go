@@ -875,11 +875,12 @@ func (m *Manager) mountStatus(s *sandbox) ([]proto.MountStatus, int64) {
 	return out, s.meta.MountsAt
 }
 
-// bucketMounts are the sandbox's bucket mounts: the part of its one list of mounts the host's mounts.Manager serves.
+// bucketMounts are the sandbox's bucket and manifest mounts: the part of its one list of mounts the host's
+// mounts.Manager serves.
 func bucketMounts(s *sandbox) []proto.Mount {
 	var out []proto.Mount
 	for _, mt := range s.meta.Mounts {
-		if mt.Kind == proto.MountBucket {
+		if mt.Kind == proto.MountBucket || mt.Kind == proto.MountManifest {
 			out = append(out, mt)
 		}
 	}
@@ -974,6 +975,9 @@ func (m *Manager) syncMounts(ctx context.Context, s *sandbox, path string, since
 		for _, mount := range s.meta.Mounts {
 			if mount.Path == path && mount.Kind == proto.MountBundle {
 				return nil, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the mount at %s is a bundle, which never changes: mount another digest for other files", path)}
+			}
+			if mount.Path == path && mount.Kind == proto.MountManifest {
+				return nil, &proto.Error{Code: proto.ErrInvalid, Message: fmt.Sprintf("the mount at %s is a manifest, which never changes: mount another manifest for other files", path)}
 			}
 		}
 	}
@@ -1081,12 +1085,12 @@ func (m *Manager) reconcileMounts(ctx context.Context, s *sandbox) (done bool) {
 }
 
 // SupportsMount says which mounts this tier takes on this host: bundles while the host can build their images and its
-// microVMs have drives for them, buckets while it has a mounts.Manager.
+// microVMs have drives for them, buckets and manifests while it has a mounts.Manager.
 func (m *Manager) SupportsMount(kind string) bool {
 	switch kind {
 	case proto.MountBundle:
 		return m.cfg.Bundles != nil && m.cfg.BundleDrives > 0
-	case proto.MountBucket:
+	case proto.MountBucket, proto.MountManifest:
 		return m.cfg.Mounts != nil
 	}
 	return false
@@ -4430,6 +4434,27 @@ func (m *Manager) CommandStatus(ctx context.Context, sandboxID, commandID string
 	return out, nil
 }
 
+// CommandOutput is a part of a command's output as the guest keeps it on the sandbox's disk (guest.OutputDir). One whose
+// output the guest doesn't keep is not_found; a guest from before kept output is unsupported.
+func (m *Manager) CommandOutput(ctx context.Context, p proto.ExecOutputParams) (proto.ExecOutput, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return proto.ExecOutput{}, err
+	}
+	out, err := client.CommandOutput(ctx, p.CommandID, p.Stream, p.Offset, p.Length)
+	switch {
+	case guest.IsUnknownRoute(err):
+		return proto.ExecOutput{}, &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's guest agent keeps no command output; it is kept from its next boot on a current image"}
+	case guest.IsRefused(err):
+		return proto.ExecOutput{}, &proto.Error{Code: proto.ErrInvalid, Message: guest.RefusalMessage(err)}
+	case err != nil:
+		return proto.ExecOutput{}, err
+	case !out.Known:
+		return proto.ExecOutput{}, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("sandbox %s keeps no output of command %s", p.SandboxID, p.CommandID)}
+	}
+	return proto.ExecOutput{Data: out.Data, Offset: out.Offset, Size: out.Size, Ended: out.Ended, Truncated: out.Cut, Limit: out.Limit}, nil
+}
+
 // KillCommand kills a command the guest knows by its ID, and its process group, saying whether it was running. One the
 // guest doesn't know, or a guest from before, is not killed.
 func (m *Manager) KillCommand(ctx context.Context, sandboxID, commandID string) (bool, error) {
@@ -4519,6 +4544,52 @@ func (m *Manager) ExtractArchive(ctx context.Context, p proto.FileExtractParams)
 		return &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's image predates archive extraction; make it from a newer image"}
 	}
 	return err
+}
+
+// filePartError is a guest agent's refusal of an upload in parts as the host's error.
+func filePartError(err error) error {
+	switch {
+	case err == nil:
+		return nil
+	case guest.IsUnknownRoute(err):
+		return &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox's image predates writing files in parts; make it from a newer image"}
+	case guest.IsRefused(err):
+		return &proto.Error{Code: proto.ErrInvalid, Message: guest.RefusalMessage(err)}
+	case guest.IsConflict(err):
+		return &proto.Error{Code: proto.ErrConflict, Message: guest.RefusalMessage(err)}
+	case guest.IsFull(err):
+		return &proto.Error{Code: proto.ErrCapacity, Message: "the sandbox's disk is full: " + guest.RefusalMessage(err)}
+	}
+	return err
+}
+
+// WriteFilePart writes data at p.Offset into the staged file of upload p.Upload of p.Path (sandbox.files.part).
+func (m *Manager) WriteFilePart(ctx context.Context, p proto.FilePartParams, data []byte) (int64, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, err
+	}
+	n, err := client.WritePart(ctx, p.Path, p.Upload, p.Offset, data)
+	return n, filePartError(err)
+}
+
+// CompleteFileParts moves upload p.Upload over p.Path once its size and SHA-256 are p's (sandbox.files.complete).
+func (m *Manager) CompleteFileParts(ctx context.Context, p proto.FilePartParams) (int64, uint32, error) {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return 0, 0, err
+	}
+	size, mode, err := client.CompleteUpload(ctx, p.Path, p.Upload, p.Size, p.SHA256, p.Mode)
+	return size, mode, filePartError(err)
+}
+
+// AbortFileParts discards upload p.Upload of p.Path (sandbox.files.abort).
+func (m *Manager) AbortFileParts(ctx context.Context, p proto.FilePartParams) error {
+	client, err := m.running(p.SandboxID)
+	if err != nil {
+		return err
+	}
+	return filePartError(client.AbortUpload(ctx, p.Path, p.Upload))
 }
 
 // GuestFeatures is what a running sandbox's guest agent reports it can do (guest.Health.Features), asked now: after a

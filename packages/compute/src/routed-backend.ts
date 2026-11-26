@@ -170,6 +170,44 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						return (await primary.hostConnected?.(hostId)) ?? fallback.hostConnected?.(hostId);
 					},
 				}),
+		// Each backend fences what it placed there; one whose hosts are never lost has none.
+		...(primary.fenceHost === undefined && fallback.fenceHost === undefined
+			? {}
+			: {
+					async fenceHost(hostId: string, sandboxIds: readonly string[], seenAt: number | undefined) {
+						return [
+							...((await primary.fenceHost?.(hostId, sandboxIds, seenAt)) ?? []),
+							...((await fallback.fenceHost?.(hostId, sandboxIds, seenAt)) ?? []),
+						];
+					},
+				}),
+		...(primary.hostSandboxes === undefined && fallback.hostSandboxes === undefined
+			? {}
+			: {
+					async hostSandboxes(hostId: string) {
+						return [
+							...((await primary.hostSandboxes?.(hostId)) ?? []),
+							...((await fallback.hostSandboxes?.(hostId)) ?? []),
+						];
+					},
+				}),
+		...(primary.fencedOn === undefined && fallback.fencedOn === undefined
+			? {}
+			: {
+					async fencedOn(sandboxId: string) {
+						return (await primary.fencedOn?.(sandboxId)) ?? fallback.fencedOn?.(sandboxId);
+					},
+				}),
+		...(primary.createAdmitted === undefined && fallback.createAdmitted === undefined
+			? {}
+			: {
+					async createAdmitted(sandboxId: string, attempt: number) {
+						return (
+							(await primary.createAdmitted?.(sandboxId, attempt)) === true ||
+							(await fallback.createAdmitted?.(sandboxId, attempt)) === true
+						);
+					},
+				}),
 		async capabilities(): Promise<BackendCapabilities> {
 			const [first, second] = await Promise.all([primary.capabilities(), fallback.capabilities()]);
 			const sizes = new Map<string, BackendSize>();
@@ -310,10 +348,38 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 			}
 			return backend.commandResult(id, commandId);
 		},
+		async commandOutput(id, commandId, stream, range) {
+			const backend = await on(id);
+			if (backend.commandOutput === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend keeps no command output past its result");
+			}
+			return backend.commandOutput(id, commandId, stream, range);
+		},
 		readFile: async (id, path, range) => (await on(id)).readFile(id, path, range),
 		writeFile: async (id, path, content, mode, options) => (await on(id)).writeFile(id, path, content, mode, options),
 		deleteFile: async (id, path) => (await on(id)).deleteFile(id, path),
 		listFiles: async (id, path) => (await on(id)).listFiles(id, path),
+		async writeFilePart(id, path, upload, offset, body) {
+			const backend = await on(id);
+			if (backend.writeFilePart === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't take files in parts");
+			}
+			return backend.writeFilePart(id, path, upload, offset, body);
+		},
+		async completeFileParts(id, path, upload, size, sha256, mode) {
+			const backend = await on(id);
+			if (backend.completeFileParts === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't take files in parts");
+			}
+			return backend.completeFileParts(id, path, upload, size, sha256, mode);
+		},
+		async abortFileParts(id, path, upload) {
+			const backend = await on(id);
+			if (backend.abortFileParts === undefined) {
+				throw new KantelError("not_supported", "This sandbox's backend can't take files in parts");
+			}
+			return backend.abortFileParts(id, path, upload);
+		},
 		async processes(id, limit) {
 			const backend = await on(id);
 			if (backend.processes === undefined) {

@@ -10,6 +10,9 @@
       },
     },
   },
+  "patchedDependencies": {
+    "just-bash@3.6.0": "guest/patches/just-bash@3.6.0.patch",
+  },
   "overrides": {
     "undici": "7.30.1",
   },

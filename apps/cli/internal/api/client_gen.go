@@ -14,6 +14,24 @@ var (
 	_ io.Reader
 )
 
+// AbortFilePartsQuery is AbortFileParts's query.
+type AbortFilePartsQuery struct {
+	// The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
+	Path *string
+	// Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload.
+	Upload *string
+}
+
+func (q *AbortFilePartsQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "path", q.Path)
+	setQuery(v, "upload", q.Upload)
+	return v
+}
+
 // DeleteBundleQuery is DeleteBundle's query.
 type DeleteBundleQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
@@ -348,7 +366,7 @@ type ListEventsQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account   *string
 	SandboxID *string
-	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 	Type  *EventType
 	Since *int64
 	// At most this many; default 50.
@@ -426,7 +444,7 @@ func (q *ListSandboxProcessesQuery) values() url.Values {
 type ListSandboxesQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account *string
-	// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots.
+	// `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots.
 	State *SandboxState
 	// Include stopped, paused and errored sandboxes. Default: only active ones.
 	All *bool
@@ -571,6 +589,29 @@ func (q *ListWebhooksQuery) values() url.Values {
 	return v
 }
 
+// ReadCommandOutputQuery is ReadCommandOutput's query.
+type ReadCommandOutputQuery struct {
+	// One of a command's output streams. Reading, `stdout` is the default.
+	Stream   *CommandStream
+	Encoding *FileEncoding
+	// Read from this byte (default 0).
+	Offset *int64
+	// Read at most this many bytes: default, and at most, 1 MiB (1048576).
+	Length *int64
+}
+
+func (q *ReadCommandOutputQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "stream", q.Stream)
+	setQuery(v, "encoding", q.Encoding)
+	setQuery(v, "offset", q.Offset)
+	setQuery(v, "length", q.Length)
+	return v
+}
+
 // ReadFileQuery is ReadFile's query.
 type ReadFileQuery struct {
 	Path     *string
@@ -639,6 +680,27 @@ func (q *WatchEventsQuery) values() url.Values {
 		return v
 	}
 	setQuery(v, "account", q.Account)
+	return v
+}
+
+// WriteFilePartQuery is WriteFilePart's query.
+type WriteFilePartQuery struct {
+	// The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.
+	Path *string
+	// Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload.
+	Upload *string
+	// The byte of the file this part starts at.
+	Offset *int64
+}
+
+func (q *WriteFilePartQuery) values() url.Values {
+	v := url.Values{}
+	if q == nil {
+		return v
+	}
+	setQuery(v, "path", q.Path)
+	setQuery(v, "upload", q.Upload)
+	setQuery(v, "offset", q.Offset)
 	return v
 }
 
@@ -1023,7 +1085,7 @@ func (c *Client) ListBucketSources(ctx context.Context, query *ListBucketSources
 	return &out, nil
 }
 
-// CreateBucketSource POST /bucket-sources: Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+// CreateBucketSource POST /bucket-sources: Create a bucket source. A bucket the account's sandboxes may mount prefixes or manifests of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 func (c *Client) CreateBucketSource(ctx context.Context, body CreateBucketSourceBody, opts ...CallOption) (*BucketSource, error) {
 	var out BucketSource
 	if err := c.Do(ctx, Call{Method: "POST", Path: "/bucket-sources", Query: nil, Body: body, Idempotent: true, Out: &out}, opts...); err != nil {
@@ -1041,6 +1103,15 @@ func (c *Client) DeleteBucketSource(ctx context.Context, bucketSourceID string, 
 func (c *Client) GetBucketSource(ctx context.Context, bucketSourceID string, opts ...CallOption) (*BucketSource, error) {
 	var out BucketSource
 	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/bucket-sources/%s", url.PathEscape(bucketSourceID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetBucketSourceCredentials PUT /bucket-sources/{bucketSourceId}/credentials: Replace a bucket source's credentials. Replaces the credentials that read the bucket, such as a short-lived token before it expires: hosts take the new ones the next time they ask for the source, which is within ten minutes, and from a minute before the old ones' `expiresAt`. Files already read stay in the host's cache. Credentials already past their `expiresAt` are `invalid`, and an access token is for a `gcs` source only. Needs the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+func (c *Client) SetBucketSourceCredentials(ctx context.Context, bucketSourceID string, body SetBucketSourceCredentialsBody, opts ...CallOption) (*BucketSource, error) {
+	var out BucketSource
+	if err := c.Do(ctx, Call{Method: "PUT", Path: fmt.Sprintf("/bucket-sources/%s/credentials", url.PathEscape(bucketSourceID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil
@@ -1498,6 +1569,15 @@ func (c *Client) GetCommand(ctx context.Context, sandboxID string, commandID str
 	return &out, nil
 }
 
+// ReadCommandOutput GET /sandboxes/{sandboxId}/commands/{commandId}/output: Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`.
+func (c *Client) ReadCommandOutput(ctx context.Context, sandboxID string, commandID string, query *ReadCommandOutputQuery, opts ...CallOption) (*CommandOutput, error) {
+	var out CommandOutput
+	if err := c.Do(ctx, Call{Method: "GET", Path: fmt.Sprintf("/sandboxes/%s/commands/%s/output", url.PathEscape(sandboxID), url.PathEscape(commandID)), Query: query.values(), Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // OpenDesktop POST /sandboxes/{sandboxId}/desktop: Open the desktop. A short-lived URL that streams the sandbox's Linux desktop to a browser, to watch or drive. microVMs only. A key needs `access`.
 func (c *Client) OpenDesktop(ctx context.Context, sandboxID string, body ViewAccessBody, opts ...CallOption) (*DesktopAccess, error) {
 	var out DesktopAccess
@@ -1593,6 +1673,29 @@ func (c *Client) ListFiles(ctx context.Context, sandboxID string, query *ListFil
 	return &out, nil
 }
 
+// AbortFileParts DELETE /sandboxes/{sandboxId}/files/parts: Abort a file written in parts. Discards an upload's parts. What is at `path` is untouched. An upload that isn't known is fine too. A key needs `files`.
+func (c *Client) AbortFileParts(ctx context.Context, sandboxID string, query *AbortFilePartsQuery, opts ...CallOption) error {
+	return c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/sandboxes/%s/files/parts", url.PathEscape(sandboxID)), Query: query.values()}, opts...)
+}
+
+// WriteFilePart PUT /sandboxes/{sandboxId}/files/parts: Write a part of a file. A file goes up in parts, in any order and at once if you like, each the raw bytes from its `offset`, under an `upload` ID of yours; then one completion with its size and SHA-256. Nothing is at `path` until the completion has checked both, and then the file replaces what was there in one step. microVMs only. A part is the request's raw body, at most 64 MiB (67108864 bytes); the file is at most 64 GiB, and no more than the sandbox's disk has free (`exhausted`). Sending a part again writes it again. The parts are kept beside the file, on the sandbox's disk, until the upload is completed or aborted; an upload with no part for an hour, and every upload of a sandbox that stops without its memory, is discarded. A key needs `files`.
+func (c *Client) WriteFilePart(ctx context.Context, sandboxID string, query *WriteFilePartQuery, body io.Reader, contentType string, opts ...CallOption) (*FilePart, error) {
+	var out FilePart
+	if err := c.Do(ctx, Call{Method: "PUT", Path: fmt.Sprintf("/sandboxes/%s/files/parts", url.PathEscape(sandboxID)), Query: query.values(), Raw: body, ContentType: contentType, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// CompleteFileParts POST /sandboxes/{sandboxId}/files/parts/complete: Complete a file written in parts. Checks that the parts written come to `size` bytes with the SHA-256 `sha256`, then moves the file into place with `mode` (default `0644`), owned by the sandbox's user, replacing what was at `path`. A check that fails is `invalid`, and the upload is discarded with nothing at `path`: send it again under a new `upload` ID. Completing again answers as the first time while `path` still has that size and SHA-256, so a lost answer can be asked for again; an upload that isn't known is `conflict`. A key needs `files`.
+func (c *Client) CompleteFileParts(ctx context.Context, sandboxID string, body CompleteFilePartsBody, opts ...CallOption) (*FileEntry, error) {
+	var out FileEntry
+	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/files/parts/complete", url.PathEscape(sandboxID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CreateUploadURL POST /sandboxes/{sandboxId}/files/upload-url: Get an upload URL for a file. A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 func (c *Client) CreateUploadURL(ctx context.Context, sandboxID string, body FileURLBody, opts ...CallOption) (*FileURL, error) {
 	var out FileURL
@@ -1620,7 +1723,7 @@ func (c *Client) PutSandboxGrants(ctx context.Context, sandboxID string, body Pu
 	return &out, nil
 }
 
-// RefreshSandboxMounts POST /sandboxes/{sandboxId}/mounts/refresh: Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
+// RefreshSandboxMounts POST /sandboxes/{sandboxId}/mounts/refresh: Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle or manifest mount at `path` is `invalid` (it never changes: mount another digest or manifest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`).
 func (c *Client) RefreshSandboxMounts(ctx context.Context, sandboxID string, body RefreshMountsBody, opts ...CallOption) (*RefreshedMountList, error) {
 	var out RefreshedMountList
 	if err := c.Do(ctx, Call{Method: "POST", Path: fmt.Sprintf("/sandboxes/%s/mounts/refresh", url.PathEscape(sandboxID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {

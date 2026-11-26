@@ -147,11 +147,33 @@ The same goes for a start, resume or fork, and for a create from a snapshot. The
 | `paused` | Like `stopped`, but its memory is kept too (microVMs only) |
 | `moving` | Being moved to another host, then started there; its `move` says how far (`copying`, `stopping`, `final-copy`, `starting`) |
 | `error` | The last operation failed or its machine was lost |
+| `lost` | Its host stayed disconnected past the deadline, so Kantel no longer counts on its machine or disk. It can only be deleted |
 | `deleting`, `deleted` | Erased for good |
 
 A running sandbox can also report `health: "degraded"` when its host can't fully reach it. It keeps running, and `reason` says why.
 
 A microVM whose host ends it without being asked goes from `running` to `error`, with a `sandbox.error` event. That happens when the host runs short of memory and stops it, when the kernel kills it at the host's memory limit, when it crashes, or when the host restarts. Its `reason` gives the host's words, such as `Out of memory: …`. Its disk is kept on its host, so a start or a recovery boots it from there. Anything that was in memory is lost.
+
+### When its host is lost
+
+While a sandbox's host is disconnected, the sandbox keeps its last state, with `hostReachable: false`. If the host connects again within 5 minutes, nothing changes. If it stays away longer, the host counts as lost: each sandbox on it moves to `lost`, with a `sandbox.lost` event (`data.previousState` says what it was), and its running commands are ended. A self-hosted install sets the deadline with `KANTEL_HOST_LOST_AFTER_MINUTES` ([Install](/self-hosting/install/)). The time counts from when the host was last seen, and never from before the control plane started, so restarting the control plane doesn't lose anything.
+
+A lost sandbox can only be deleted. Any other call answers `409` `conflict`, with `details.code` `sandbox_lost`. If the lost host connects again, it deletes those sandboxes before Kantel uses it for anything else, so none of them comes back running.
+
+#### Make it again on another host
+
+A microVM can ask to be made again instead, with `onHostLost: "recreate"` on its create or a later update (`kantel new --on-host-lost recreate`). When its host is lost, it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and the event is `sandbox.recreated` (`snapshotId` names the snapshot, `data.previousState` the state it was lost in) rather than `sandbox.lost`. It comes back running if it was running or starting, and stopped otherwise. Anything it did after that snapshot was on the lost host and is gone, its memory too. When the old host connects again, it deletes its copy before Kantel uses it for anything else.
+
+It is lost as usual, its `reason` saying why, when it can't be made again: it has no saved snapshot, no other host in its pool can take it or holds the snapshot (or can fetch it), or it is an isolate or was made on a named host (`host`). The default, `onHostLost: "lost"`, always leaves it lost.
+
+If the host it is being made again on is lost too before it runs, it is lost with that host, and made again on another host the same way, or lost with one `sandbox.lost` event saying why (`data.previousState` is the state its first loss found it in). It is also lost, rather than made again, while the first lost host is still away and owed the removal of its copy. Each host deletes its copy when it connects again.
+
+```bash
+curl -X PATCH "$KANTEL_URL/v1/sandboxes/$SANDBOX_ID" \
+  -H "Authorization: Bearer $KANTEL_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"onHostLost": "recreate"}'
+```
 
 ## List and find sandboxes
 

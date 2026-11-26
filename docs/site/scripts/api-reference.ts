@@ -200,7 +200,7 @@ const TAGS: {
 		title: "Mounts",
 		order: 14,
 		about:
-			"What sandboxes mount read-only: bundles (tars stored once, by digest) and bucket sources (object-store buckets, with write-only credentials).",
+			"What sandboxes mount read-only: bundles (tars stored once, by digest) and bucket sources (object-store buckets, with write-only credentials, mounted by prefix or as exactly the files of a manifest).",
 		note: "Experimental: a deployment serves these only with `KANTEL_MOUNTS=experimental`.",
 	},
 };

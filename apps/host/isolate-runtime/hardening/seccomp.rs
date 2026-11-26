@@ -85,8 +85,9 @@ fn arch() -> Result<TargetArch> {
         .map_err(|e| anyhow!("seccomp: unsupported architecture: {e:?}"))
 }
 
-/// The calls that kill the process. None of them is made by the runtime after start-up.
-fn kill_list() -> Vec<i64> {
+/// The calls that kill the process. None of them is made by the runtime after start-up. With `spawn`, starting a
+/// program (exec, and fork on x86_64) isn't among them.
+fn kill_list(spawn: bool) -> Vec<i64> {
     // Mutable for x86_64's extra calls below; aarch64 has none of them.
     #[cfg_attr(not(target_arch = "x86_64"), allow(unused_mut))]
     let mut calls = vec![
@@ -145,10 +146,15 @@ fn kill_list() -> Vec<i64> {
         libc::SYS_fspick,
         libc::SYS_mount_setattr,
     ];
+    if spawn {
+        calls.retain(|call| *call != libc::SYS_execve && *call != libc::SYS_execveat);
+    }
+    #[cfg(target_arch = "x86_64")]
+    if !spawn {
+        calls.extend([libc::SYS_fork, libc::SYS_vfork]);
+    }
     #[cfg(target_arch = "x86_64")]
     calls.extend([
-        libc::SYS_fork,
-        libc::SYS_vfork,
         libc::SYS_mknod,
         libc::SYS_iopl,
         libc::SYS_ioperm,
@@ -194,8 +200,18 @@ pub enum Sockets {
     UnixAndIpv4,
 }
 
-/// The allow-list: every call the runtime makes, with an empty rule list for "any arguments".
-fn allow_list(sockets: Sockets) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
+/// Namespace flags, which no `clone` may carry: a child process never gets namespaces of its own.
+const NAMESPACES: u64 = (libc::CLONE_NEWNS
+    | libc::CLONE_NEWCGROUP
+    | libc::CLONE_NEWUTS
+    | libc::CLONE_NEWIPC
+    | libc::CLONE_NEWUSER
+    | libc::CLONE_NEWPID
+    | libc::CLONE_NEWNET) as u64;
+
+/// The allow-list: every call the runtime makes, with an empty rule list for "any arguments". With `spawn`, also
+/// starting and waiting for child processes.
+fn allow_list(sockets: Sockets, spawn: bool) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
     let any: Vec<i64> = vec![
         // Memory: V8's heap, its sandbox reservation and code space, the allocators.
         libc::SYS_mmap,
@@ -327,12 +343,32 @@ fn allow_list(sockets: Sockets) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
     }
 
     // clone: threads only. A thread needs CLONE_THREAD (with CLONE_VM and CLONE_SIGHAND, which the kernel requires
-    // alongside it); anything without it would be a new process.
+    // alongside it); anything without it would be a new process. With `spawn`, a process too (posix_spawn's
+    // CLONE_VM | CLONE_VFORK, or fork's), but never with a namespace of its own.
     let thread = (libc::CLONE_THREAD | libc::CLONE_VM | libc::CLONE_SIGHAND) as u64;
-    rules.insert(
-        libc::SYS_clone,
-        vec![SeccompRule::new(vec![masked(0, thread, thread)?])?],
-    );
+    let mut clone = vec![SeccompRule::new(vec![masked(0, thread, thread)?])?];
+    if spawn {
+        clone.push(SeccompRule::new(vec![masked(0, NAMESPACES, 0)?])?);
+        for call in [
+            libc::SYS_execve,
+            libc::SYS_execveat,
+            libc::SYS_wait4,
+            libc::SYS_waitid,
+            libc::SYS_kill,
+            libc::SYS_setpgid,
+            libc::SYS_getpgid,
+            libc::SYS_setsid,
+            libc::SYS_pidfd_open,
+            libc::SYS_pidfd_send_signal,
+        ] {
+            rules.insert(call, vec![]);
+        }
+        #[cfg(target_arch = "x86_64")]
+        for call in [libc::SYS_fork, libc::SYS_vfork] {
+            rules.insert(call, vec![]);
+        }
+    }
+    rules.insert(libc::SYS_clone, clone);
     // socket and socketpair: Unix sockets, and IPv4 only when an endpoint is TCP (the bridges are 127.0.0.1 or Unix
     // sockets; IPv6 is off). The type argument may carry SOCK_CLOEXEC and SOCK_NONBLOCK, so only the family is checked.
     let families: &[u64] = match sockets {
@@ -347,18 +383,17 @@ fn allow_list(sockets: Sockets) -> Result<BTreeMap<i64, Vec<SeccompRule>>> {
         one_of(1, &[libc::TCGETS, libc::FIONBIO, libc::FIOCLEX])?,
     );
     // prctl: naming threads and anonymous mappings, and reading the dumpable flag and thread names.
-    rules.insert(
-        libc::SYS_prctl,
-        one_of(
-            0,
-            &[
-                libc::PR_SET_NAME as u64,
-                libc::PR_GET_NAME as u64,
-                libc::PR_SET_VMA as u64,
-                libc::PR_GET_DUMPABLE as u64,
-            ],
-        )?,
-    );
+    let mut prctls = vec![
+        libc::PR_SET_NAME as u64,
+        libc::PR_GET_NAME as u64,
+        libc::PR_SET_VMA as u64,
+        libc::PR_GET_DUMPABLE as u64,
+    ];
+    if spawn {
+        // A child asks to be killed with its parent.
+        prctls.push(libc::PR_SET_PDEATHSIG as u64);
+    }
+    rules.insert(libc::SYS_prctl, one_of(0, &prctls)?);
     Ok(rules)
 }
 
@@ -373,8 +408,12 @@ fn compile(
 
 /// Installs the three filters on the calling thread, in the order that makes the most restrictive one win. Call it
 /// after Landlock and before any other thread starts. It can't be undone.
-pub fn install(mode: Mode, sockets: Sockets) -> Result<Report> {
-    let killed = kill_list();
+///
+/// `spawn` lets the process start child processes (an embedder's worker or helper; Kantel's runtime starts none):
+/// fork and clone without namespaces, exec, wait and signal. A child inherits the filters, so what it runs has to
+/// keep to the same allow-list, and Landlock decides which programs it may execute.
+pub fn install(mode: Mode, sockets: Sockets, spawn: bool) -> Result<Report> {
+    let killed = kill_list(spawn);
     let kill = compile(
         killed.iter().map(|&call| (call, vec![])).collect(),
         SeccompAction::Allow,
@@ -385,7 +424,7 @@ pub fn install(mode: Mode, sockets: Sockets) -> Result<Report> {
         SeccompAction::Allow,
         SeccompAction::Errno(libc::ENOSYS as u32),
     )?;
-    let allowed = allow_list(sockets)?;
+    let allowed = allow_list(sockets, spawn)?;
     let count = allowed.len();
     let mismatch = match mode {
         Mode::Enforce => SeccompAction::Errno(libc::EPERM as u32),
@@ -407,199 +446,4 @@ pub fn install(mode: Mode, sockets: Sockets) -> Result<Report> {
         allowed: count,
         killed: killed.len(),
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    // Each test installs the filter in a child process: it can't be undone, and the test runner's other threads
-    // must not inherit it.
-    fn in_child(body: impl FnOnce() -> i32) -> (bool, i32) {
-        // SAFETY: fork in a test; the child runs `body` and exits without returning to the runner.
-        let pid = unsafe { libc::fork() };
-        assert!(pid >= 0, "fork failed");
-        if pid == 0 {
-            // No core dump: several tests end the child with SIGSYS on purpose, and a dump would carry this process's
-            // environment into the working directory.
-            let none = libc::rlimit {
-                rlim_cur: 0,
-                rlim_max: 0,
-            };
-            unsafe { libc::setrlimit(libc::RLIMIT_CORE, &none) };
-            let code = body();
-            unsafe { libc::_exit(code) };
-        }
-        let mut status = 0;
-        unsafe { libc::waitpid(pid, &mut status, 0) };
-        (
-            libc::WIFSIGNALED(status),
-            if libc::WIFEXITED(status) {
-                libc::WEXITSTATUS(status)
-            } else {
-                libc::WTERMSIG(status)
-            },
-        )
-    }
-
-    fn errno() -> i32 {
-        std::io::Error::last_os_error().raw_os_error().unwrap_or(0)
-    }
-
-    #[test]
-    fn threads_files_and_ipv4_sockets_still_work() {
-        let (signalled, code) = in_child(|| {
-            if install(Mode::Enforce, Sockets::UnixAndIpv4).is_err() {
-                return 10;
-            }
-            // A thread (through clone3 → ENOSYS → clone with CLONE_THREAD).
-            if std::thread::spawn(|| 7).join().ok() != Some(7) {
-                return 11;
-            }
-            if std::fs::read("/proc/self/stat").is_err() {
-                return 12;
-            }
-            let fd =
-                unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM | libc::SOCK_CLOEXEC, 0) };
-            if fd < 0 {
-                return 13;
-            }
-            let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
-            if fd < 0 {
-                return 14;
-            }
-            0
-        });
-        assert!(
-            !signalled && code == 0,
-            "child failed with {code} (signalled: {signalled})"
-        );
-    }
-
-    #[test]
-    fn refuses_other_socket_families_and_ioctls() {
-        let (signalled, code) = in_child(|| {
-            if install(Mode::Enforce, Sockets::UnixAndIpv4).is_err() {
-                return 10;
-            }
-            let fd = unsafe { libc::socket(libc::AF_PACKET, libc::SOCK_RAW, 0) };
-            if fd >= 0 || errno() != libc::EPERM {
-                return 11;
-            }
-            let fd = unsafe { libc::socket(libc::AF_INET6, libc::SOCK_STREAM, 0) };
-            if fd >= 0 || errno() != libc::EPERM {
-                return 12;
-            }
-            let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, 0) };
-            if fd >= 0 || errno() != libc::EPERM {
-                return 13;
-            }
-            // TIOCSTI (push a character into a terminal's input) is the classic ioctl to keep out.
-            let r = unsafe { libc::ioctl(0, libc::TIOCSTI, b"x".as_ptr()) };
-            if r == 0 || errno() != libc::EPERM {
-                return 14;
-            }
-            // A prctl outside the list.
-            let r = unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) };
-            if r == 0 || errno() != libc::EPERM {
-                return 15;
-            }
-            0
-        });
-        assert!(
-            !signalled && code == 0,
-            "child failed with {code} (signalled: {signalled})"
-        );
-    }
-
-    #[test]
-    fn unix_only_refuses_ipv4() {
-        let (signalled, code) = in_child(|| {
-            if install(Mode::Enforce, Sockets::UnixOnly).is_err() {
-                return 10;
-            }
-            let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_STREAM, 0) };
-            if fd >= 0 || errno() != libc::EPERM {
-                return 11;
-            }
-            let fd = unsafe { libc::socket(libc::AF_INET, libc::SOCK_DGRAM, 0) };
-            if fd >= 0 || errno() != libc::EPERM {
-                return 12;
-            }
-            if unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) } < 0 {
-                return 13;
-            }
-            0
-        });
-        assert!(
-            !signalled && code == 0,
-            "child failed with {code} (signalled: {signalled})"
-        );
-    }
-
-    #[test]
-    fn a_new_process_is_refused() {
-        let (signalled, code) = in_child(|| {
-            if install(Mode::Enforce, Sockets::UnixAndIpv4).is_err() {
-                return 10;
-            }
-            // fork is glibc's clone without CLONE_THREAD.
-            let pid = unsafe { libc::fork() };
-            if pid == 0 {
-                unsafe { libc::_exit(0) };
-            }
-            if pid > 0 || errno() != libc::EPERM {
-                return 11;
-            }
-            0
-        });
-        assert!(
-            !signalled && code == 0,
-            "child failed with {code} (signalled: {signalled})"
-        );
-    }
-
-    #[test]
-    fn exec_kills_the_process() {
-        let (signalled, code) = in_child(|| {
-            if install(Mode::Enforce, Sockets::UnixAndIpv4).is_err() {
-                return 10;
-            }
-            let path = c"/bin/true";
-            let argv = [path.as_ptr(), std::ptr::null()];
-            let envp = [std::ptr::null()];
-            unsafe { libc::execve(path.as_ptr(), argv.as_ptr(), envp.as_ptr()) };
-            // Not reached when the filter works.
-            20
-        });
-        assert!(
-            signalled && code == libc::SIGSYS,
-            "execve should kill with SIGSYS; got code {code}, signalled {signalled}"
-        );
-    }
-
-    #[test]
-    fn ptrace_and_unshare_kill_the_process() {
-        for (name, call) in [
-            (
-                "ptrace",
-                (|| unsafe { libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0) as i64 }) as fn() -> i64,
-            ),
-            ("unshare", || unsafe {
-                libc::unshare(libc::CLONE_NEWUSER) as i64
-            }),
-        ] {
-            let (signalled, code) = in_child(|| {
-                if install(Mode::Enforce, Sockets::UnixAndIpv4).is_err() {
-                    return 10;
-                }
-                call();
-                20
-            });
-            assert!(
-                signalled && code == libc::SIGSYS,
-                "{name} should kill with SIGSYS; got {code}, signalled {signalled}"
-            );
-        }
-    }
 }

@@ -103,12 +103,11 @@ export const baseName = (path: string): string => path.slice(path.lastIndexOf("/
 export const MAX_PAGE = 500;
 export const DEFAULT_PAGE = 50;
 
-/** One page of `items`, with an opaque cursor (a base64 offset) when more follow. */
-export function paginate<T>(
-	items: readonly T[],
+/** Parses a page's `limit` and opaque base64 offset `cursor`, throwing `invalid` on a bad cursor. */
+export function parsePage(
 	limit: number | undefined,
 	cursor: string | undefined,
-): { items: T[]; nextCursor?: string } {
+): { readonly offset: number; readonly size: number } {
 	let offset = 0;
 	if (cursor !== undefined) {
 		let decoded = "";
@@ -120,7 +119,16 @@ export function paginate<T>(
 		if (!/^\d+$/.test(decoded)) throw new KantelError("invalid", "The cursor is not valid");
 		offset = Number(decoded);
 	}
-	const size = Math.min(Math.max(limit ?? DEFAULT_PAGE, 1), MAX_PAGE);
+	return { offset, size: Math.min(Math.max(limit ?? DEFAULT_PAGE, 1), MAX_PAGE) };
+}
+
+/** One page of `items`, with an opaque cursor (a base64 offset) when more follow. */
+export function paginate<T>(
+	items: readonly T[],
+	limit: number | undefined,
+	cursor: string | undefined,
+): { items: T[]; nextCursor?: string } {
+	const { offset, size } = parsePage(limit, cursor);
 	const page = items.slice(offset, offset + size);
 	const next = offset + size;
 	return next < items.length ? { items: page, nextCursor: btoa(String(next)) } : { items: page };

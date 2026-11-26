@@ -37,7 +37,7 @@ const OLD_GUEST_LIMIT_MS = 120_000;
 
 interface Running {
 	readonly params: { [key: string]: unknown };
-	ended?: { exitCode: number; stdout: string; stderr: string; timedOut?: boolean };
+	ended?: { exitCode: number; stdout: string; stderr: string; timedOut?: boolean; truncated?: boolean };
 	/** What it has written so far, as a host that reports a running command's output answers a get with it. */
 	output?: { stdout: string; stderr: string };
 	/** Answers waiting for its end: a foreground call's, or held gets. */
@@ -59,6 +59,10 @@ class CommandHost {
 	refuseGets?: { code: string; message: string };
 	/** A detached start answered unconfirmed (its guest didn't answer): `started` once the guest has it, `lost` not. */
 	unconfirmStart?: "started" | "lost";
+	/** Features beyond `exec-control` it reports, such as `exec-output`. */
+	features: string[] = [];
+	/** Each command's whole stdout as its sandbox keeps it (`sandbox.exec.output`, with `exec-output`). */
+	readonly kept = new Map<string, string>();
 	private receive?: (text: string) => void;
 	private closed?: (code: number, reason: string) => void;
 
@@ -76,7 +80,7 @@ class CommandHost {
 		});
 		this.receive = (text) => held.receive(text);
 		this.closed = (code, reason) => held.closed(code, reason);
-		const facts = this.controls ? { ...baseFacts, features: [HOST_FEATURES.execControl] } : baseFacts;
+		const facts = this.controls ? { ...baseFacts, features: [HOST_FEATURES.execControl, ...this.features] } : baseFacts;
 		const capacity = { freeMemoryMiB: 14_000, freeDiskGiB: 150, running: 1, stopped: 0, load1: 0 };
 		this.receive(JSON.stringify({ type: "hello", hello: { hostId: this.hostId, facts, sandboxes, capacity } }));
 		// Every 15 s, as kantel-host's heartbeat: a host that stops is taken as gone.
@@ -222,6 +226,16 @@ class CommandHost {
 				this.end(String(p.commandId), { exitCode: 137, stdout: "", stderr: "" });
 				return answer({ killed });
 			}
+			case "sandbox.exec.output": {
+				if (!this.features.includes(HOST_FEATURES.execOutput)) {
+					return fail("unsupported", "unknown method sandbox.exec.output");
+				}
+				const kept = this.kept.get(String(p.commandId));
+				if (kept === undefined || p.stream !== "stdout") return fail("not_found", "no output kept");
+				const offset = Math.min(Number(p.offset ?? 0), kept.length);
+				const data = btoa(kept.slice(offset, offset + Number(p.length)));
+				return answer({ data, offset, size: kept.length, ended: true, limit: 64 * 1024 * 1024 });
+			}
 			default:
 				return fail("unsupported", `unknown method ${message.method}`);
 		}
@@ -237,7 +251,7 @@ afterEach(async () => {
 
 type SandboxCall = ReturnType<typeof createHostsService>["sandboxes"]["call"];
 
-async function setup(controls: boolean, wrapCall?: (call: SandboxCall) => SandboxCall) {
+async function setup(controls: boolean, wrapCall?: (call: SandboxCall) => SandboxCall, features: string[] = []) {
 	const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
 	const call = service.sandboxes.call.bind(service.sandboxes);
 	const hosts =
@@ -271,6 +285,7 @@ async function setup(controls: boolean, wrapCall?: (call: SandboxCall) => Sandbo
 	const token = await root.createHostJoinToken({ name: "box-1" });
 	const { hostId } = await service.register({ token: token.token, facts: baseFacts });
 	const host = new CommandHost(service, hostId, controls);
+	host.features = features;
 	host.connect();
 	closers.push(() => host.stop());
 	await vi.waitFor(() => expect(service.hub.connected(hostId)).toBe(true));
@@ -299,6 +314,33 @@ async function setup(controls: boolean, wrapCall?: (call: SandboxCall) => Sandbo
 const callsOf = (host: CommandHost, method: string) => host.calls.filter((call) => call.method === method);
 
 describe("commands on kantel-host hosts", () => {
+	it("reads a command's output past 1 MiB from a host that keeps it, and its record's from one that doesn't", async () => {
+		const MiB = 1024 * 1024;
+		for (const keeps of [true, false]) {
+			const { root, host, sandbox } = await setup(true, undefined, keeps ? [HOST_FEATURES.execOutput] : []);
+			const started = await root.runCommand(sandbox.id, { command: "seq 1 1000000", detached: true });
+			await vi.waitFor(() => expect(host.commands.has(started.id)).toBe(true));
+			host.kept.set(started.id, "y".repeat(3 * MiB));
+			// Its guest cut its result at 1 MiB, which fits the compute API's own cap: recorded cut all the same.
+			host.end(started.id, { exitCode: 0, stdout: "y".repeat(MiB), stderr: "", truncated: true });
+			await vi.waitFor(async () => expect((await root.getCommand(sandbox.id, started.id)).state).toBe("exited"));
+			expect((await root.getCommand(sandbox.id, started.id)).truncated).toBe(true);
+			const part = await root.readCommandOutput(sandbox.id, started.id, { offset: 2 * MiB, length: 4 });
+			if (keeps) {
+				expect(part).toMatchObject({ content: "yyyy", offset: 2 * MiB, size: 3 * MiB, ended: true, limit: 64 * MiB });
+				expect(callsOf(host, "sandbox.exec.output").at(-1)?.params).toMatchObject({
+					commandId: started.id,
+					stream: "stdout",
+					offset: 2 * MiB,
+					length: 4,
+				});
+			} else {
+				expect(part).toMatchObject({ content: "", offset: MiB, size: MiB, truncated: true, limit: MiB });
+				expect(callsOf(host, "sandbox.exec.output")).toEqual([]);
+			}
+		}
+	});
+
 	it("runs a detached command past the guest's limit and the call's hour, and records its end", async () => {
 		const { root, host, sandbox } = await setup(true);
 		vi.useFakeTimers();
@@ -797,7 +839,11 @@ describe("kantel exec on kantel-host hosts", () => {
 			fetch: async (input, init) => (await api.fetch(new Request(input, init))) ?? new Response(null, { status: 404 }),
 			configDir: attachDir,
 			home: attachDir,
-			stdout: { isTTY: false, write: (chunk: string | Uint8Array) => out.push(String(chunk)) > 0 },
+			stdout: {
+				isTTY: false,
+				write: (chunk: string | Uint8Array) =>
+					out.push(typeof chunk === "string" ? chunk : new TextDecoder().decode(chunk)) > 0,
+			},
 			stderr: { isTTY: false, write: () => true },
 			sleep: (ms) => new Promise((resolve) => setTimeout(resolve, Math.min(ms, 20))),
 		});

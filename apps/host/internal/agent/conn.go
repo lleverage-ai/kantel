@@ -73,6 +73,14 @@ func (s *session) sendBinary(ctx context.Context, stream uint32, payload []byte)
 	return s.ws.Write(wctx, websocket.MessageBinary, frame)
 }
 
+// reconnectBackoffReset reports whether a connection lasted long enough to reset reconnect backoff to 1 s:
+// any welcomed session that stayed up at least 10 s (e.g. a control-plane deploy or Durable Object restart),
+// or any session longer than a minute. Repeated dial/handshake failures or instant post-welcome crashes keep
+// backing off exponentially to protect the control plane from reconnect storms.
+func reconnectBackoffReset(elapsed time.Duration, welcomed bool) bool {
+	return elapsed > time.Minute || (welcomed && elapsed >= 10*time.Second)
+}
+
 // Run keeps the host connected to the control plane until ctx ends or the credential is revoked, reconnecting with
 // backoff (1 s doubling to 30 s, with jitter).
 func (h *Host) Run(ctx context.Context, update Updater) error {
@@ -87,11 +95,11 @@ func (h *Host) Run(ctx context.Context, update Updater) error {
 	backoff := time.Second
 	for {
 		started := time.Now()
-		err := h.connectOnce(ctx, update)
+		welcomed, err := h.connectOnce(ctx, update)
 		if errors.Is(err, ErrRevoked) || ctx.Err() != nil {
 			return err
 		}
-		if time.Since(started) > time.Minute {
+		if reconnectBackoffReset(time.Since(started), welcomed) {
 			backoff = time.Second
 		}
 		wait := backoff + time.Duration(rand.Int64N(int64(backoff/2)+1))
@@ -206,7 +214,7 @@ func connectURL(origin string) string {
 	return "ws://" + strings.TrimPrefix(u, "http://")
 }
 
-func (h *Host) connectOnce(parent context.Context, update Updater) error {
+func (h *Host) connectOnce(parent context.Context, update Updater) (welcomed bool, err error) {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	dialCtx, dialCancel := context.WithTimeout(ctx, 30*time.Second)
@@ -216,9 +224,9 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	dialCancel()
 	if err != nil {
 		if res != nil && (res.StatusCode == http.StatusUnauthorized || res.StatusCode == http.StatusForbidden) {
-			return fmt.Errorf("%w (%d)", ErrRevoked, res.StatusCode)
+			return false, fmt.Errorf("%w (%d)", ErrRevoked, res.StatusCode)
 		}
-		return err
+		return false, err
 	}
 	ws.SetReadLimit(64 << 20)
 	s := &session{host: h, ws: ws, streams: map[uint32]net.Conn{}, cancel: cancel}
@@ -242,7 +250,7 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	facts := h.Facts()
 	hello := proto.Message{Type: "hello", Hello: &proto.Hello{HostID: h.cfg.HostID, Facts: facts, Sandboxes: h.List(), Capacity: h.Capacity()}}
 	if err := s.send(ctx, hello); err != nil {
-		return err
+		return false, err
 	}
 	go h.reconnectOnIsolateRuntime(ctx, facts.Isolate, isolateRuntimeCheck, cancel)
 	if _, ok := h.tiers[microvm.Tier].(*microvm.Manager); ok {
@@ -251,14 +259,15 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 	kind, raw, err := ws.Read(ctx)
 	if err != nil {
 		if ce, revoked := revokedClose(err); revoked {
-			return fmt.Errorf("%w: %s", ErrRevoked, ce.Reason)
+			return false, fmt.Errorf("%w: %s", ErrRevoked, ce.Reason)
 		}
-		return err
+		return false, err
 	}
 	var welcome proto.Message
 	if kind != websocket.MessageText || json.Unmarshal(raw, &welcome) != nil || welcome.Type != "welcome" || welcome.Welcome == nil {
-		return errors.New("the control plane didn't welcome the host")
+		return false, errors.New("the control plane didn't welcome the host")
 	}
+	welcomed = true
 	h.log.Info("connected to the control plane", "url", h.cfg.ControlPlane, "host", welcome.Welcome.HostID)
 	h.applyWelcome(ctx, welcome.Welcome, update)
 	h.mu.Lock()
@@ -303,9 +312,9 @@ func (h *Host) connectOnce(parent context.Context, update Updater) error {
 		kind, raw, err := ws.Read(ctx)
 		if err != nil {
 			if ce, revoked := revokedClose(err); revoked {
-				return fmt.Errorf("%w: %s", ErrRevoked, ce.Reason)
+				return welcomed, fmt.Errorf("%w: %s", ErrRevoked, ce.Reason)
 			}
-			return err
+			return welcomed, err
 		}
 		if kind == websocket.MessageBinary {
 			s.binary(raw)

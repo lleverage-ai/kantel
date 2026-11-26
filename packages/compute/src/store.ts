@@ -63,10 +63,34 @@ export interface Collection<T extends { readonly id: string }> {
 	 * `anyOf`, oldest first: one read, so a record that changes between two of the values is answered once.
 	 */
 	list(where?: Partial<T>, anyOf?: AnyOf<T>): Promise<T[]>;
+	/**
+	 * At most `limit` matching records, newest first (`seq` descending), starting strictly older than `beforeSeq` when
+	 * given. Implemented by SQL stores so callers can stream or page large kinds without reading every row into memory.
+	 */
+	listNewest?(
+		where: Partial<T> | undefined,
+		options: { readonly limit: number; readonly beforeSeq?: number },
+	): Promise<{ readonly items: T[]; readonly nextBeforeSeq?: number }>;
 }
 
 /** For a list, the values a field may have: a record with any one of them. An empty list matches nothing. */
 export type AnyOf<T> = { readonly [K in keyof T]?: readonly T[K][] };
+
+/**
+ * Every sandbox state except `deleted`, for indexed queries (`compute_api_records_by_account_state`,
+ * `compute_api_records_sandboxes_by_host_state`) that must never scan deleted sandbox history.
+ */
+export const UNDELETED_SANDBOX_STATES = Object.keys({
+	starting: true,
+	running: true,
+	stopping: true,
+	stopped: true,
+	paused: true,
+	moving: true,
+	error: true,
+	lost: true,
+	deleting: true,
+} satisfies Record<Exclude<computeSchema.SandboxState, "deleted">, true>) as readonly computeSchema.SandboxState[];
 
 export interface StoredUser {
 	readonly id: string;
@@ -288,6 +312,64 @@ export type StoredSandbox = Omit<
 		readonly at: number;
 		readonly unreported?: number;
 		readonly pending?: OOMPending;
+	};
+	/**
+	 * A delete whose host was unreachable (`deleteSandbox`): retried automatically once the host reconnects
+	 * (`reportHostConnection`) or on the sweep so a transient disconnect never leaves a running VM stranded in `error`.
+	 */
+	readonly deleteOwed?: {
+		readonly at: number;
+		readonly previousState: computeSchema.SandboxState;
+		readonly actor: StoredSandbox["createdBy"];
+		/** When a background retry (`finishOwedDelete`) last claimed this owed delete, so a stale claim can be reclaimed. */
+		readonly claimedAt?: number;
+	};
+	/**
+	 * Its `sandbox.lost` event, written with its move to `lost` and not yet stored: the ID it is stored under and the
+	 * state it was lost from, never changed, so every try (any gateway's, after any restart) stores the same event once.
+	 * Cleared once stored. `recreate`: its `onHostLost` was `recreate` as it was lost, so it is made again on another host
+	 * first (`recreating`, under the same event ID), and its loss is said only where that can't be done, with `reason`
+	 * (the event's and its record's) saying why.
+	 */
+	readonly lostEvent?: {
+		readonly eventId: string;
+		readonly previousState: computeSchema.SandboxState;
+		readonly recreate?: true;
+		readonly reason?: string;
+	};
+	/**
+	 * Its making again on another host after its host was lost (`onHostLost` `recreate`), begun and not finished: the
+	 * lost host (`hostId`), the `sandbox.recreated` event's ID (its loss's, so every try stores one event) and the state it
+	 * was lost in, the saved snapshot it is made from, and when the gateway at it last said so (`heartbeatAt`). Written
+	 * with its move from `lost` to `starting`, never placed; a sweep settles one whose gateway went quiet
+	 * (`settleLostCreate`). Once it runs (or its new machine ended), its event is stored, it is stopped again where it was
+	 * lost stopped, and the marker cleared; where it can't be made, it goes back to `lost`, saying why. Where the host its
+	 * create was admitted on is lost too before it runs, it is lost to that host, as any create is, the marker going with
+	 * it, and made again from there or lost, as its `onHostLost` says.
+	 */
+	readonly recreating?: {
+		readonly hostId: string;
+		readonly eventId: string;
+		readonly previousState: computeSchema.SandboxState;
+		readonly snapshotId: string;
+		readonly heartbeatAt: number;
+	};
+	/**
+	 * A loss begun and not yet settled (`ComputeServiceOptions.hostLostAfterMs`): the lost host, the create attempt placed
+	 * there (for one whose record names no host yet), the `sandbox.lost` event's ID and the state it was lost from, when,
+	 * and the host's `lastSeenAt` it was judged lost by (`seenAt`; absent, never seen), the only one its fence lands under
+	 * (`SandboxBackend.fenceHost`): once its host is seen again, it is refused for good. Written before its placement is
+	 * fenced, from a state it may be lost from, and only where no other intent is, so every fence has one: it is settled
+	 * (moved to `lost` under it, or dropped where nothing fenced it) by whatever finds it first, a loss pass, its host's
+	 * return or its delete, and a delete never goes `deleting` over one.
+	 */
+	readonly losing?: {
+		readonly hostId: string;
+		readonly attempt?: number;
+		readonly eventId: string;
+		readonly previousState: computeSchema.SandboxState;
+		readonly at: number;
+		readonly seenAt?: number;
 	};
 	/**
 	 * When its host started the machine this run booted (the host's clock, ms: its first health stamp, `Placement.machineAt`):
@@ -1132,6 +1214,17 @@ export interface ComputeStore {
 	readonly templateBases: Collection<StoredTemplateBase>;
 	/** Which replica exports each numbered usage tick (`StoredUsageClaim`). */
 	readonly usageClaims: Collection<StoredUsageClaim>;
+	/**
+	 * Counts how many of `accountId`'s sandboxes (deleted included) name each snapshot in `source.snapshotId` or
+	 * `upgradedFrom.snapshotId`. SQL stores answer this from an index over snapshot-backed sandboxes without loading
+	 * template-backed runner sandboxes into memory.
+	 */
+	snapshotUses?(accountId: string): Promise<Map<string, number>>;
+	/**
+	 * Deletes up to `limit` expired `usageClaims` (`keepUntil < before`) in the database without loading them into
+	 * memory; answers how many rows were removed.
+	 */
+	pruneUsageClaims?(before: number, limit: number): Promise<number>;
 	/** Account deletions under way (`StoredDeletion`). */
 	readonly deletions: Collection<StoredDeletion>;
 	/** Each host's last evacuation (`StoredEvacuation`), by the host's ID. */
@@ -1749,9 +1842,11 @@ export function fenceClosedAccounts(store: ComputeStore): ComputeStore {
 			if (record === undefined || accountId === undefined || (await open(accountId))) return;
 			await refuse(record);
 		};
+		const listNewest = collection.listNewest;
 		return {
 			get: (id) => collection.get(id),
 			list: (where, anyOf) => collection.list(where, anyOf),
+			...(listNewest === undefined ? {} : { listNewest: (where, options) => listNewest(where, options) }),
 			delete: (id) => collection.delete(id),
 			deleteIf: (id, should) => collection.deleteIf(id, should),
 			async put(record) {

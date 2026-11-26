@@ -21,29 +21,42 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::bridges::Store;
 use crate::config::{Config, DEFAULT_MEMORY_MIB};
-use crate::limits::{
-    Budget, Command, GcWatch, MIB, Scope, Term, allocator, gc_watch, near_heap_limit, watch,
-};
+use crate::embed::Embedding;
+use crate::limits::{Budget, Command, GcWatch, MIB, Scope, Term, gc_watch, near_heap_limit, watch};
 use crate::ops::{SnapshotSink, kt};
+use crate::workspace::{CommitReply, FilesystemProvider, ManifestProvider, Workspace};
 
-const GUEST: &str = include_str!("../guest/dist/guest.js");
 /// How long a terminated shell command may take to unwind before it is abandoned (see spawn_shell).
 const STUCK_GRACE: Duration = Duration::from_secs(1);
 
+/// An isolate's kind: the runtime's own three, or one of the embedder's ([`EmbedderKind`], by name).
+///
+/// [`EmbedderKind`]: crate::EmbedderKind
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[non_exhaustive]
 pub enum Kind {
     Shell,
     Node,
     Python,
+    /// An isolate kind of the embedder's own, by its [`EmbedderKind`](crate::EmbedderKind) name.
+    Embedder(&'static str),
 }
 
+/// The names `__kantel.init` takes for the runtime's own kinds, which an embedder's kind can't have.
+const RESERVED_KINDS: [&str; 3] = ["shell", "node", "python"];
+
 impl Kind {
-    fn init_arg(self) -> &'static str {
+    /// What `__kantel.init` is called with for this kind.
+    pub fn name(self) -> &'static str {
         match self {
             Kind::Shell => "shell",
             Kind::Node => "node",
             Kind::Python => "python",
+            Kind::Embedder(name) => name,
         }
+    }
+    fn init_arg(self) -> &'static str {
+        self.name()
     }
 }
 
@@ -58,30 +71,43 @@ pub struct Ctx {
     pub sandbox_id: Arc<str>,
     pub command: Arc<Command>,
     pub budget: Arc<Budget>,
-    /// SHA-256 digests the shell may read (its manifest's, and ones it wrote).
-    pub allowed: Arc<Mutex<std::collections::HashSet<String>>>,
+    /// The sandbox's files for this command (the embedder's filesystem provider): what the shell reads, stages
+    /// and commits, and what its node/python runs read. None outside a shell command.
+    pub workspace: Option<Arc<dyn Workspace>>,
+    /// The command's commit, which runs to its end even if the command is stopped while it waits for it.
+    pub commit: Arc<CommitSlot>,
     /// In-flight egress fetches from this isolate.
     pub fetches: Arc<AtomicUsize>,
     /// node/python runs the shell started, by run id, so the shell can cancel one (just-bash `timeout`).
     pub children: Arc<Mutex<HashMap<u32, Arc<ChildControl>>>>,
+    /// Host commands the shell is running, by run id, so the shell can cancel one (just-bash `timeout`).
+    pub host_runs: Arc<Mutex<HashMap<u32, tokio::task::AbortHandle>>>,
 }
 
 impl Ctx {
+    /// The context of the command running in the isolate whose op state this is, for an embedder's op: the isolate's
+    /// kind, sandbox, command (CPU and wall clock) and memory budget. None outside a command.
+    pub fn of(state: &deno_core::OpState) -> Option<Ctx> {
+        state.try_borrow::<Ctx>().cloned()
+    }
+
     fn new(
         kind: Kind,
         sandbox_id: Arc<str>,
         command: Arc<Command>,
         budget: Arc<Budget>,
-        allowed: std::collections::HashSet<String>,
+        workspace: Option<Arc<dyn Workspace>>,
     ) -> Ctx {
         Ctx {
             kind,
             sandbox_id,
             command,
             budget,
-            allowed: Arc::new(Mutex::new(allowed)),
+            workspace,
+            commit: Arc::default(),
             fetches: Arc::new(AtomicUsize::new(0)),
             children: Arc::new(Mutex::new(HashMap::new())),
+            host_runs: Arc::default(),
         }
     }
     pub fn cancel_child(&self, run_id: u32) {
@@ -89,6 +115,186 @@ impl Ctx {
             control.cancel();
         }
     }
+}
+
+/// A command's commit to its workspace. The op runs it as a task on the engine's I/O runtime, so dropping the op (the
+/// command was stopped, or abandoned with its isolate) doesn't cut a write off part-way; a stopped command's reply
+/// waits for it to end, to say what the workspace holds.
+#[derive(Default)]
+pub struct CommitSlot {
+    /// None before a commit; Some(None) while one runs; Some(Some(outcome)) after.
+    state: Mutex<Option<Option<Result<CommitReply, String>>>>,
+    /// The running commit's removals, then (once it is committed) added to `committed`.
+    removes: Mutex<Vec<String>>,
+    /// Every removal the command's committed commits made, which a stopped command's reply drops as the guest would.
+    committed: Mutex<Vec<String>>,
+    done: std::sync::Condvar,
+}
+
+impl CommitSlot {
+    /// A commit, removing `removes`, starts. False while another of the command's commits is still running: one at a
+    /// time, so a stopped command's reply knows which it waited for.
+    pub fn start(&self, removes: Vec<String>) -> bool {
+        let mut state = self.state.lock().unwrap();
+        if matches!(*state, Some(None)) {
+            return false;
+        }
+        *state = Some(None);
+        *self.removes.lock().unwrap() = removes;
+        true
+    }
+    /// It ended, with this outcome.
+    pub fn finish(&self, outcome: Result<CommitReply, String>) {
+        if let Ok(CommitReply::Committed { .. }) = outcome {
+            let removes = std::mem::take(&mut *self.removes.lock().unwrap());
+            self.committed.lock().unwrap().extend(removes);
+        }
+        *self.state.lock().unwrap() = Some(Some(outcome));
+        self.done.notify_all();
+    }
+    /// A commit is running now.
+    pub fn running(&self) -> bool {
+        matches!(*self.state.lock().unwrap(), Some(None))
+    }
+    /// The removals of every commit of the command that was committed.
+    pub fn committed_removes(&self) -> Vec<String> {
+        self.committed.lock().unwrap().clone()
+    }
+    /// The outcome of the commit the command started, waiting up to `timeout` for it to end: None if it never
+    /// started one, `Err` if it failed or is still running.
+    pub fn wait(&self, timeout: Duration) -> Option<Result<CommitReply, String>> {
+        let state = self.state.lock().unwrap();
+        let (state, _) = self
+            .done
+            .wait_timeout_while(state, timeout, |s| matches!(s, Some(None)))
+            .unwrap();
+        match &*state {
+            None => None,
+            Some(None) => Some(Err(format!(
+                "the commit was still running {timeout:?} after the command was stopped"
+            ))),
+            Some(Some(outcome)) => Some(outcome.clone()),
+        }
+    }
+}
+
+/// Run `fut` on the engine's I/O runtime and wait for it from this (non-async) thread, up to `timeout`.
+fn on_io<T: Send + 'static>(
+    fut: impl std::future::Future<Output = T> + Send + 'static,
+    timeout: Duration,
+) -> Option<T> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    engine().io.spawn(async move {
+        let _ = tx.send(fut.await);
+    });
+    rx.recv_timeout(timeout).ok()
+}
+
+/// How long a stopped command's reply waits for the workspace to say what it holds (after waiting for its commit,
+/// `Config::commit_grace`).
+const SYNC_GRACE: Duration = Duration::from_secs(5);
+
+/// Commits still running after their stopped command's reply, by sandbox: the sandbox's next command waits for its
+/// one (and is refused, retryable, if it is still running), so a late write can't land over later work. Kept here,
+/// not with the isolate, so replacing the isolate or the sandbox's session doesn't lose it.
+static PENDING: std::sync::LazyLock<Mutex<HashMap<String, Arc<CommitSlot>>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Wait (up to the grace) for a commit of `sandbox_id`'s that outlived its command. An error while it still runs.
+fn pending_commit(sandbox_id: &str) -> std::result::Result<(), String> {
+    let Some(slot) = PENDING.lock().unwrap().get(sandbox_id).cloned() else {
+        return Ok(());
+    };
+    let _ = slot.wait(engine().cfg.commit_grace);
+    if slot.running() {
+        return Err(
+            "the sandbox's last command is still saving its changes; try again shortly".into(),
+        );
+    }
+    let mut pending = PENDING.lock().unwrap();
+    if pending
+        .get(sandbox_id)
+        .is_some_and(|p| Arc::ptr_eq(p, &slot))
+    {
+        pending.remove(sandbox_id);
+    }
+    Ok(())
+}
+
+/// The files a stopped command's reply reports, and its commit's outcome when it wasn't `committed`. A command
+/// stopped before it started committing changed nothing: its own manifest. One stopped while committing (or after)
+/// may have changed the workspace: the manifest with the workspace's changes since the command's base applied, as
+/// the guest does with a catch-up.
+fn stopped_files(
+    sandbox_id: &str,
+    manifest: Value,
+    base: &str,
+    workspace: &Arc<dyn Workspace>,
+    slot: &Arc<CommitSlot>,
+) -> (Value, Value, Option<Value>) {
+    let Some(outcome) = slot.wait(engine().cfg.commit_grace) else {
+        return (manifest, json!([]), None);
+    };
+    if slot.running() {
+        PENDING
+            .lock()
+            .unwrap()
+            .insert(sandbox_id.to_string(), slot.clone());
+    }
+    // Committed commits' removals are the workspace's too, even of entries its provider never listed.
+    let removes = slot.committed_removes();
+    let commit = match &outcome {
+        Ok(CommitReply::Committed { .. }) => None,
+        Ok(CommitReply::Unknown { error, .. }) => {
+            Some(json!({ "status": "unknown", "error": error }))
+        }
+        Ok(CommitReply::Failed { error, .. }) => {
+            Some(json!({ "status": "failed", "error": error }))
+        }
+        Ok(CommitReply::Fenced { error }) => Some(json!({ "status": "fenced", "error": error })),
+        Err(error) => Some(json!({ "status": "unknown", "error": error })),
+    };
+    let (ws, base_owned) = (workspace.clone(), base.to_string());
+    match on_io(async move { ws.sync(&base_owned).await }, SYNC_GRACE) {
+        Some(Ok(catch_up)) => {
+            let (files, changed) =
+                crate::workspace::manifest::apply_catch_up(&manifest, &catch_up, &removes);
+            (files, json!(changed), commit)
+        }
+        // The workspace can't say what it holds: the command's changes may or may not be in it.
+        Some(Err(e)) => (
+            manifest,
+            json!([]),
+            Some(json!({ "status": "unknown", "error": format!("{e:#}") })),
+        ),
+        None => (
+            manifest,
+            json!([]),
+            Some(
+                json!({ "status": "unknown", "error": "the workspace didn't answer after the command was stopped" }),
+            ),
+        ),
+    }
+}
+
+/// A stopped command's reply.
+fn stopped_reply(
+    t: Term,
+    mem: usize,
+    command: &Command,
+    files: (Value, Value, Option<Value>),
+) -> Value {
+    let (manifest, changed, commit) = files;
+    let mut reply = json!({
+        "exitCode": t.exit_code(), "stdout": "",
+        "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
+        "manifest": manifest, "changed": changed, "terminated": t.name(),
+        "timings": {},
+    });
+    if let Some(commit) = commit {
+        reply["commit"] = commit;
+    }
+    reply
 }
 
 /// A node/python run the shell can cancel: it stops the child isolate once the child has registered itself.
@@ -135,34 +341,39 @@ pub struct RunState {
     pub overlay: Overlay,
     /// node module loader: each built-in's export names, so a `node:fs` import gets named exports.
     pub builtins: Arc<Mutex<HashMap<String, Vec<String>>>>,
+    /// The shell command's workspace, which the run's untouched files are read from.
+    pub workspace: Option<Arc<dyn Workspace>>,
 }
 
 impl RunState {
     pub fn file(&self, path: &str) -> Result<Vec<u8>> {
-        resolve_file(&self.index, &self.payload, path)
+        resolve_file(&self.index, &self.payload, self.workspace.as_ref(), path)
     }
 }
 
 /// Read one of a run's files synchronously (node's fs and python's FS are synchronous; the run has its own thread).
-fn resolve_file(index: &HashMap<String, FileRef>, payload: &[u8], path: &str) -> Result<Vec<u8>> {
+fn resolve_file(
+    index: &HashMap<String, FileRef>,
+    payload: &[u8],
+    workspace: Option<&Arc<dyn Workspace>>,
+    path: &str,
+) -> Result<Vec<u8>> {
     match index.get(path) {
         None => bail!("ENOENT: {path}"),
         Some(FileRef::Inline(off, len)) => payload
             .get(*off..off + len)
             .map(|s| s.to_vec())
             .ok_or_else(|| anyhow!("bad inline file")),
-        Some(FileRef::Blob(sha)) => {
-            let sha = sha.clone();
+        Some(FileRef::Blob(file)) => {
+            let file = file.clone();
+            let workspace = workspace
+                .cloned()
+                .ok_or_else(|| anyhow!("{path}: the run has no workspace to read it from"))?;
             let (tx, rx) = std::sync::mpsc::channel();
             engine().io.spawn(async move {
-                let _ = tx.send(
-                    engine()
-                        .store
-                        .get(&sha, 256 * crate::limits::MIB, None)
-                        .await,
-                );
+                let _ = tx.send(workspace.read(&file, 256 * crate::limits::MIB, None).await);
             });
-            rx.recv()?.map_err(|e| anyhow!("{e}"))
+            rx.recv()?.map_err(|e| anyhow!("{path}: {e}"))
         }
     }
 }
@@ -175,6 +386,9 @@ pub struct RunResult(pub Option<Vec<u8>>);
 
 pub struct Engine {
     pub cfg: Config,
+    pub embedding: Embedding,
+    /// Where sandboxes' files come from: the embedding's provider, or Kantel's manifest per command over `store`.
+    pub filesystem: Arc<dyn FilesystemProvider>,
     pub store: Arc<Store>,
     pub io: tokio::runtime::Handle,
     pub egress: crate::bridges::Target,
@@ -217,13 +431,35 @@ pub fn engine() -> &'static Engine {
 }
 
 impl Engine {
-    pub fn init(cfg: Config, io: tokio::runtime::Handle, debug: bool) -> Result<&'static Engine> {
+    /// Start the process's engine: the runtime's settings, the embedder's parts, the I/O runtime its bridges and
+    /// ops use, and whether guest logs are shown. Once per process, after [`init_v8`](crate::init_v8): it builds
+    /// the startup snapshot every isolate is made from.
+    pub fn init(
+        cfg: Config,
+        embedding: Embedding,
+        io: tokio::runtime::Handle,
+        debug: bool,
+    ) -> Result<&'static Engine> {
         let store = Arc::new(Store::new(cfg.store.clone()));
-        let snapshot = build_snapshot();
+        for (i, kind) in embedding.kinds.iter().enumerate() {
+            if kind.name.is_empty() || RESERVED_KINDS.contains(&kind.name) {
+                bail!("an embedder's isolate kind can't be named {:?}", kind.name);
+            }
+            if embedding.kinds[..i].iter().any(|k| k.name == kind.name) {
+                bail!("the isolate kind {:?} is given twice", kind.name);
+            }
+        }
+        let snapshot = build_snapshot(&embedding)?;
+        let filesystem = embedding
+            .filesystem
+            .clone()
+            .unwrap_or_else(|| Arc::new(ManifestProvider::new(store.clone())));
         let egress = cfg.egress.clone();
         let runs = Arc::new(tokio::sync::Semaphore::new(cfg.max_runs));
         let built = Engine {
             cfg,
+            embedding,
+            filesystem,
             store,
             io,
             egress,
@@ -240,8 +476,14 @@ impl Engine {
         Ok(engine())
     }
 
+    /// The startup snapshot every isolate starts from: the guest bundle evaluated, and the embedder's kinds' runtimes.
     pub fn snapshot(&self) -> &'static [u8] {
         self.snapshot
+    }
+
+    /// The embedder's kind of this name, if the embedding has one.
+    fn embedder_kind(&self, name: &str) -> Option<&crate::EmbedderKind> {
+        self.embedding.kinds.iter().find(|k| k.name == name)
     }
 
     /// A Pyodide asset, by absolute path or relative to `--assets/pyodide`, read once and cached. Only inside that
@@ -326,19 +568,36 @@ fn module_loader(kind: Kind) -> Option<Rc<dyn ModuleLoader>> {
     match kind {
         Kind::Node => Some(Rc::new(NodeModuleLoader::new())),
         Kind::Python => Some(Rc::new(AssetModuleLoader)),
-        Kind::Shell => None,
+        Kind::Shell | Kind::Embedder(_) => None,
     }
 }
 
+/// A new isolate of `kind` held to `mem_mib` of memory, with its entry point from `__kantel.init`. Panics where
+/// [`try_new_live`] answers an error.
 pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
+    try_new_live(kind, mem_mib).expect("guest init")
+}
+
+/// A new isolate of `kind` held to `mem_mib` of memory (on this thread, inside a tokio runtime), from the startup
+/// snapshot, with `globalThis.__kantelEntry` set to what `__kantel.init(kind)` returns (`__kantel.init(name, runtime)`
+/// for an embedder kind with a runtime: what its runtime returned). Code generation from strings is off in a shell
+/// isolate and in an embedder's. An error for an embedder kind the embedding doesn't have, or if `init` throws.
+pub fn try_new_live(kind: Kind, mem_mib: usize) -> Result<Live> {
+    let eng = engine();
+    let own = match kind {
+        Kind::Embedder(name) => Some(
+            eng.embedder_kind(name)
+                .ok_or_else(|| anyhow!("the embedding has no isolate kind {name:?}"))?,
+        ),
+        _ => None,
+    };
+    let snapshot = eng.snapshot();
     let limit = mem_mib * MIB;
     let budget = Budget::new(limit);
-    let params = v8::CreateParams::default()
-        .heap_limits(0, limit)
-        .array_buffer_allocator(allocator(&budget));
+    let params = crate::memory::create_params(&budget);
     let mut rt = JsRuntime::new(RuntimeOptions {
-        extensions: vec![kt::init()],
-        startup_snapshot: Some(engine().snapshot()),
+        extensions: extensions(&engine().embedding),
+        startup_snapshot: Some(snapshot),
         create_params: Some(params),
         module_loader: module_loader(kind),
         ..Default::default()
@@ -351,28 +610,51 @@ pub fn new_live(kind: Kind, mem_mib: usize) -> Live {
     budget.set_handle(handle.clone());
     rt.add_near_heap_limit_callback(near_heap_limit(&budget, handle.clone()));
     let gc = gc_watch(rt.v8_isolate(), &budget);
-    if kind == Kind::Shell {
-        // The shell never needs JS eval, and its isolate is long-lived, so eval and new Function throw there. A
-        // node/python isolate is single-use (one run, then discarded) and its CommonJS loader builds a function from
-        // the run's own source, so codegen stays on for those.
+    if matches!(kind, Kind::Shell | Kind::Embedder(_)) {
+        // The shell never needs JS eval, and its isolate is long-lived, so eval and new Function throw there; an
+        // embedder's kind starts the same way (the embedder may turn it on for its own isolates). A node/python isolate
+        // is single-use (one run, then discarded) and its CommonJS loader builds a function from the run's own source,
+        // so codegen stays on for those.
         deno_core::scope!(scope, &mut rt);
         scope
             .get_current_context()
             .set_allow_generation_from_strings(false);
     }
-    // Keep only this kind's entry; init removes Deno/__bootstrap/__infra/__kantel so guest code can't reach the ops.
-    let init = format!(
-        "globalThis.__kantelEntry = globalThis.__kantel.init({:?});",
-        kind.init_arg()
-    );
-    rt.execute_script("kt:init", init).expect("guest init");
-    Live {
+    // Made before init runs, so an isolate whose init fails is dropped with its GC watch removed.
+    let mut live = Live {
         rt,
         handle,
         budget,
         kind,
         gc,
-    }
+    };
+    // Keep only this kind's entry; init removes Deno/__bootstrap/__infra/__kantel so guest code can't reach the ops.
+    // With embedder kinds' runtimes in the snapshot, every isolate takes their holder off the global first, and only
+    // a kind's own isolates hand its runtime to init.
+    let init = if has_kind_runtimes(&eng.embedding) {
+        let runtime = match own {
+            Some(k) if !k.runtime.is_empty() => format!(", kinds[{}]", lit(k.name)),
+            _ => String::new(),
+        };
+        // Fails closed: an isolate whose holder couldn't be taken off isn't made.
+        format!(
+            "{{ const kinds = globalThis.{KINDS_HOLDER}; \
+             if (!(delete globalThis.{KINDS_HOLDER}) || Object.hasOwn(globalThis, {holder})) \
+             throw new Error(\"the embedder kinds' runtimes couldn't be taken off the global\"); \
+             globalThis.__kantelEntry = globalThis.__kantel.init({}{runtime}); }}",
+            lit(kind.init_arg()),
+            holder = lit(KINDS_HOLDER),
+        )
+    } else {
+        format!(
+            "globalThis.__kantelEntry = globalThis.__kantel.init({});",
+            lit(kind.init_arg())
+        )
+    };
+    live.rt
+        .execute_script("kt:init", init)
+        .map_err(|e| anyhow!("{} isolate: guest init: {e}", kind.name()))?;
+    Ok(live)
 }
 
 /// Call `globalThis.__kantelEntry.<method>(args...)` and await the result as a string. The ops the guest used run on
@@ -401,6 +683,10 @@ fn bind(rt: &mut JsRuntime, ctx: Ctx) {
     rt.op_state().borrow_mut().put(ctx);
 }
 
+fn unbind(rt: &mut JsRuntime) {
+    rt.op_state().borrow_mut().try_take::<Ctx>();
+}
+
 // ---------------------------------------------------------------------------------------------------------------
 // Shell isolates: one thread each, kept while the sandbox is used
 
@@ -413,16 +699,54 @@ pub enum ShellCmd {
         sandbox_id: Arc<str>,
         body: String,
         manifest: Value,
+        workspace: Arc<dyn Workspace>,
         command: Arc<Command>,
         reply: oneshot::Sender<Value>,
     },
 }
 
+/// A sandbox's shell isolate, on its own thread for as long as the handle is kept (the thread ends when the last
+/// handle is dropped).
 pub struct ShellHandle {
     pub tx: mpsc::UnboundedSender<ShellCmd>,
-    #[allow(dead_code)]
     pub mem_mib: usize,
     pub sandbox_id: Arc<str>,
+}
+
+impl ShellHandle {
+    /// Run one command in the sandbox's shell: `request` is what the guest's `exec` entry gets (as JSON), and the
+    /// answer is its reply, or the runtime's own when it stopped the command (`terminated`, with `manifest` as the
+    /// files, unchanged). `workspace` is the command's files ([`FilesystemProvider::open`]), which the shell's ops
+    /// read, stage and commit. `command` holds the CPU budget and wall-clock deadline.
+    pub async fn exec(
+        &self,
+        request: &Value,
+        manifest: Value,
+        workspace: Arc<dyn Workspace>,
+        command: Arc<Command>,
+    ) -> Result<Value> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(ShellCmd::Exec {
+                sandbox_id: self.sandbox_id.clone(),
+                body: request.to_string(),
+                manifest,
+                workspace,
+                command,
+                reply,
+            })
+            .map_err(|_| anyhow!("isolate thread stopped"))?;
+        rx.await.map_err(|_| anyhow!("isolate thread stopped"))
+    }
+
+    /// Make sure the sandbox's isolate has `mem_mib` of memory (rebuilding it if it has another limit).
+    pub async fn load(&self, mem_mib: usize) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(ShellCmd::Load { mem_mib, reply })
+            .map_err(|_| anyhow!("isolate thread stopped"))?;
+        rx.await.map_err(|_| anyhow!("isolate thread stopped"))
+    }
 }
 
 pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellHandle {
@@ -432,16 +756,38 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
         .name("kt-shell".into())
         .stack_size(8 * MIB)
         .spawn(move || {
-            let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().expect("shell tokio");
+            let rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("shell tokio");
             let _entered = rt.enter();
             let mut live = new_live(Kind::Shell, mem_mib);
             if warmup {
                 // Run one empty command so just-bash's code is compiled before the sandbox's first real command.
                 let command = Command::new(Duration::from_secs(10), Duration::from_secs(10));
-                bind(&mut live.rt, Ctx::new(Kind::Shell, id.clone(), command.clone(), live.budget.clone(), Default::default()));
-                let guard = watch(live.handle.clone(), command, live.budget.clone(), Scope::Command);
-                let _ = rt.block_on(call(&mut live.rt, "exec", &[r#"{"command":"true","manifest":{}}"#]));
+                bind(
+                    &mut live.rt,
+                    Ctx::new(
+                        Kind::Shell,
+                        id.clone(),
+                        command.clone(),
+                        live.budget.clone(),
+                        Default::default(),
+                    ),
+                );
+                let guard = watch(
+                    live.handle.clone(),
+                    command,
+                    live.budget.clone(),
+                    Scope::Command,
+                );
+                let _ = rt.block_on(call(
+                    &mut live.rt,
+                    "exec",
+                    &[r#"{"command":"true","manifest":{}}"#],
+                ));
                 drop(guard);
+                unbind(&mut live.rt);
             }
             // One block_on per step rather than one around the loop, so a stuck command's isolate can be dropped
             // between them, outside any poll (dropping it inside one aborts V8).
@@ -457,14 +803,40 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             }
                             let _ = reply.send(());
                         }
-                        ShellCmd::Exec { sandbox_id, body, manifest, command, reply } => {
+                        ShellCmd::Exec {
+                            sandbox_id,
+                            body,
+                            manifest,
+                            workspace,
+                            command,
+                            reply,
+                        } => {
                             live.budget.reset_exceeded();
-                            let shas = crate::ops::manifest_shas(&manifest);
-                            bind(
-                                &mut live.rt,
-                                Ctx::new(Kind::Shell, sandbox_id, command.clone(), live.budget.clone(), shas),
+                            // A commit an earlier command left running goes first.
+                            if let Err(error) = pending_commit(&sandbox_id) {
+                                let _ = reply.send(json!({ "error": error, "retryable": true }));
+                                continue;
+                            }
+                            let sandbox = sandbox_id.to_string();
+                            let ctx = Ctx::new(
+                                Kind::Shell,
+                                sandbox_id,
+                                command.clone(),
+                                live.budget.clone(),
+                                Some(workspace.clone()),
                             );
-                            let guard = watch(live.handle.clone(), command.clone(), live.budget.clone(), Scope::Command);
+                            let commit_slot = ctx.commit.clone();
+                            let base = serde_json::from_str::<Value>(&body)
+                                .ok()
+                                .and_then(|b| b["base"].as_str().map(String::from))
+                                .unwrap_or_default();
+                            bind(&mut live.rt, ctx);
+                            let guard = watch(
+                                live.handle.clone(),
+                                command.clone(),
+                                live.budget.clone(),
+                                Scope::Command,
+                            );
                             let mem = live.budget.limit() / MIB;
                             // The shell isolate is long-lived and reused, so let the terminated call run to its error
                             // (terminate_execution makes execute_script / the event loop return Err) rather than
@@ -488,25 +860,35 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                             });
                             let term = guard.watched().term();
                             drop(guard);
+                            // Between commands the isolate has no context: an op that still runs answers "no isolate
+                            // context" (and Ctx::of None) rather than acting for the command that ended.
+                            unbind(&mut live.rt);
                             let Some(result) = result else {
                                 let t = term.unwrap_or(Term::Wall);
-                                tracing::warn!(term = t.name(), "shell command stuck after termination; replacing its isolate");
+                                tracing::warn!(
+                                    term = t.name(),
+                                    "shell command stuck after termination; replacing its isolate"
+                                );
                                 engine().stats.count_term(t);
                                 engine().stats.rebuilds.fetch_add(1, Ordering::Relaxed);
                                 live.rt.v8_isolate().cancel_terminate_execution();
                                 // Dropped before the new one is made (rusty_v8 isolates go in reverse order).
                                 drop(live);
                                 live = new_live(Kind::Shell, mem);
-                                let _ = reply.send(json!({
-                                    "exitCode": t.exit_code(), "stdout": "",
-                                    "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
-                                    "manifest": manifest, "changed": [], "terminated": t.name(),
-                                    "timings": {},
-                                }));
+                                let files = stopped_files(
+                                    &sandbox,
+                                    manifest,
+                                    &base,
+                                    &workspace,
+                                    &commit_slot,
+                                );
+                                let _ = reply.send(stopped_reply(t, mem, &command, files));
                                 continue;
                             };
                             let value = match (result, term) {
-                                (Ok(s), None) => serde_json::from_str(&s).unwrap_or_else(|e| json!({ "error": format!("bad guest reply: {e}") })),
+                                (Ok(s), None) => serde_json::from_str(&s).unwrap_or_else(
+                                    |e| json!({ "error": format!("bad guest reply: {e}") }),
+                                ),
                                 (_, Some(t)) if t != Term::Exit => {
                                     engine().stats.count_term(t);
                                     engine().stats.rebuilds.fetch_add(1, Ordering::Relaxed);
@@ -516,18 +898,28 @@ pub fn spawn_shell(sandbox_id: Arc<str>, mem_mib: usize, warmup: bool) -> ShellH
                                     // (it won't terminate twice, to survive teardown GC), so a reused isolate would
                                     // otherwise have no heap guard for its next command (review finding H1). Each
                                     // exec builds its own bash and filesystem from the manifest, so nothing carries
-                                    // over.
+                                    // over. The old callback goes with the heap limit it raised restored (once the
+                                    // garbage is collected), so the next command has the backstop at memoryMiB again.
                                     live.rt.v8_isolate().cancel_terminate_execution();
                                     live.rt.v8_isolate().low_memory_notification();
-                                    live.rt.add_near_heap_limit_callback(near_heap_limit(&live.budget.clone(), live.handle.clone()));
-                                    json!({
-                                        "exitCode": t.exit_code(), "stdout": "",
-                                        "stderr": t.message("kantel", mem, command.cpu_limit, command.wall),
-                                        "manifest": manifest, "changed": [], "terminated": t.name(),
-                                        "timings": {},
-                                    })
+                                    live.rt.remove_near_heap_limit_callback(
+                                        live.budget.initial_heap_limit(),
+                                    );
+                                    live.rt.add_near_heap_limit_callback(near_heap_limit(
+                                        &live.budget.clone(),
+                                        live.handle.clone(),
+                                    ));
+                                    let files = stopped_files(
+                                        &sandbox,
+                                        manifest,
+                                        &base,
+                                        &workspace,
+                                        &commit_slot,
+                                    );
+                                    stopped_reply(t, mem, &command, files)
                                 }
-                                (Ok(s), Some(_)) => serde_json::from_str(&s).unwrap_or_else(|_| json!({ "error": "guest stopped" })),
+                                (Ok(s), Some(_)) => serde_json::from_str(&s)
+                                    .unwrap_or_else(|_| json!({ "error": "guest stopped" })),
                                 (Err(e), _) => json!({ "error": format!("{e:#}") }),
                             };
                             let _ = reply.send(value);
@@ -609,6 +1001,7 @@ pub async fn run_child(kind: Kind, parent: &Ctx, meta: String, payload: Vec<u8>)
         stdin,
         overlay: Arc::new(Mutex::new(HashMap::new())),
         builtins: Arc::new(Mutex::new(HashMap::new())),
+        workspace: parent.workspace.clone(),
     };
     let control = Arc::new(ChildControl::default());
     parent
@@ -892,6 +1285,7 @@ fn run_one(live: &mut Live, kind: Kind, job: Job, rt: &tokio::runtime::Runtime) 
             run.builtins.clone(),
             run.index.clone(),
             run.payload.clone(),
+            run.workspace.clone(),
         );
     }
     {
@@ -1066,6 +1460,7 @@ struct NodeEnv {
     /// The run's manifest files, by manifest-relative path, read lazily (ESM imports only the files it names).
     index: HashMap<String, FileRef>,
     payload: Arc<Vec<u8>>,
+    workspace: Option<Arc<dyn Workspace>>,
 }
 
 impl NodeModuleLoader {
@@ -1080,6 +1475,7 @@ fn set_node_env(
     builtins: Arc<Mutex<HashMap<String, Vec<String>>>>,
     index: HashMap<String, FileRef>,
     payload: Arc<Vec<u8>>,
+    workspace: Option<Arc<dyn Workspace>>,
 ) {
     NODE_ENV.with(|e| {
         *e.borrow_mut() = Some(NodeEnv {
@@ -1087,6 +1483,7 @@ fn set_node_env(
             builtins,
             index,
             payload,
+            workspace,
         })
     });
 }
@@ -1165,7 +1562,7 @@ fn node_load(specifier: &ModuleSpecifier) -> std::result::Result<ModuleSource, J
         }
         // Manifest files live under /workspace; the loader's absolute path maps to a manifest-relative key.
         let rel = path_str.strip_prefix("/workspace/")?;
-        resolve_file(&env.index, &env.payload, rel).ok()
+        resolve_file(&env.index, &env.payload, env.workspace.as_ref(), rel).ok()
     });
     let Some(bytes) = bytes else {
         return Err(JsErrorBox::generic(format!(
@@ -1237,20 +1634,79 @@ fn looks_like_esm(source: &str) -> bool {
 // ---------------------------------------------------------------------------------------------------------------
 // Snapshot
 
-fn build_snapshot() -> &'static [u8] {
+/// The runtime's ops, then the embedder's: the same list for the snapshot and every isolate made from it.
+fn extensions(embedding: &Embedding) -> Vec<deno_core::Extension> {
+    let mut all = vec![kt::init()];
+    all.extend((embedding.extensions)());
+    all
+}
+
+/// The global that holds the embedder kinds' runtimes in the snapshot, until each isolate takes it off before `init`.
+const KINDS_HOLDER: &str = "__kantelKinds";
+
+fn has_kind_runtimes(embedding: &Embedding) -> bool {
+    embedding.kinds.iter().any(|k| !k.runtime.is_empty())
+}
+
+/// The startup snapshot: the guest bundle evaluated, then each embedder kind's runtime, as the body of a function whose
+/// result is kept for that kind's isolates (see [`try_new_live`]).
+///
+/// One snapshot for every kind, not one per kind: the isolates of a process share V8's read-only heap, which comes
+/// from the snapshot the first live isolate started from, so an isolate can't start from another snapshot while one
+/// of those is alive (V8 fails a check and ends the process). Nor one context per kind in a shared snapshot: deno_core
+/// starts an isolate only from a snapshot's first context.
+fn build_snapshot(embedding: &Embedding) -> Result<&'static [u8]> {
     let rt = tokio::runtime::Builder::new_current_thread()
         .enable_all()
-        .build()
-        .expect("snapshot tokio");
+        .build()?;
     let _entered = rt.enter();
     let mut snap_rt = JsRuntimeForSnapshot::new(RuntimeOptions {
-        extensions: vec![kt::init()],
+        extensions: extensions(embedding),
         ..Default::default()
     });
     snap_rt
-        .execute_script("kt:guest", GUEST)
-        .unwrap_or_else(|e| panic!("guest bundle failed to load: {e}"));
-    Box::leak(snap_rt.snapshot())
+        .execute_script("kt:guest", embedding.guest)
+        .map_err(|e| anyhow!("guest bundle failed to load: {e}"))?;
+    if has_kind_runtimes(embedding) {
+        snap_rt
+            .execute_script(
+                "kt:kinds",
+                format!(
+                    "Object.defineProperty(globalThis, {}, {{ value: Object.create(null), configurable: true }});",
+                    lit(KINDS_HOLDER)
+                ),
+            )
+            .map_err(|e| anyhow!("{e}"))?;
+    }
+    for kind in embedding.kinds.iter().filter(|k| !k.runtime.is_empty()) {
+        // A function body, so its declarations are its own. What it returns goes only to its kind's init; anything it
+        // left on the global would be every kind's, so that is refused.
+        let script = format!(
+            "{{ const before = new Set(Reflect.ownKeys(globalThis));\n\
+             globalThis.{KINDS_HOLDER}[{name}] = (function () {{\n{runtime}\n}})();\n\
+             const left = Reflect.ownKeys(globalThis).filter((key) => !before.has(key));\n\
+             if (left.length) throw new Error(`it left globals behind: ${{left.map(String).join(\", \")}}`); }}",
+            name = lit(kind.name),
+            runtime = kind.runtime,
+        );
+        snap_rt
+            .execute_script("kt:kind", script)
+            .map_err(|e| anyhow!("the {:?} kind's runtime failed to load: {e}", kind.name))?;
+    }
+    if has_kind_runtimes(embedding) {
+        // Every isolate takes the holder off before init, so it must still be the configurable property made above.
+        snap_rt
+            .execute_script(
+                "kt:kinds-check",
+                format!(
+                    "if (Object.getOwnPropertyDescriptor(globalThis, {0})?.configurable !== true) \
+                     throw new Error(\"a kind's runtime changed \" + {0});",
+                    lit(KINDS_HOLDER)
+                ),
+            )
+            .map_err(|e| anyhow!("the embedder kinds' runtimes failed to load: {e}"))?;
+    }
+    Ok(Box::leak(snap_rt.snapshot()))
 }
 
 // Keep the module private helpers used by other modules.
@@ -1292,5 +1748,38 @@ mod snapshot_sink_helpers {
             .ok_or_else(|| anyhow!("snapshot was not produced"))?;
         std::fs::write(out, &bytes)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::workspace::CatchUp;
+
+    fn committed() -> Result<CommitReply, String> {
+        Ok(CommitReply::Committed {
+            catch_up: CatchUp::default(),
+        })
+    }
+
+    #[test]
+    fn a_commit_slot_keeps_every_committed_removal_and_runs_one_commit_at_a_time() {
+        let slot = CommitSlot::default();
+        assert!(slot.wait(Duration::ZERO).is_none(), "no commit started");
+        assert!(slot.start(vec!["a".into()]));
+        assert!(
+            !slot.start(vec!["x".into()]),
+            "a second commit while one runs"
+        );
+        slot.finish(committed());
+        assert!(slot.start(vec!["b".into()]));
+        slot.finish(Err("refused".into()));
+        assert!(slot.start(vec!["c".into()]));
+        assert!(
+            matches!(slot.wait(Duration::ZERO), Some(Err(e)) if e.contains("still running")),
+            "a running commit"
+        );
+        slot.finish(committed());
+        assert_eq!(slot.committed_removes(), vec!["a", "c"]);
     }
 }

@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
-# Runs the real-VM bucket mount tests (internal/agent/mounts_vmtest_test.go) in a privileged container of their own,
+# Runs the real-VM bucket and manifest mount tests (internal/agent/mounts_vmtest_test.go,
+# mounts_manifest_vmtest_test.go) in a privileged container of their own,
 # beside a MinIO of their own on a Docker network of their own, so nothing on the machine itself is touched.
 #
 #   apps/host/test/mounts.sh <images-dir> <firecracker-binary>
 #
 # <images-dir> holds vmlinux-x86_64 and sandbox-amd64.ext4 (guest/rootfs.sh and guest/kernel/build.sh make them),
-# with this tree's guest agent in it. Needs Docker, /dev/kvm and Go. MINIO_IMAGE picks MinIO's image.
+# with this tree's guest agent in it. Needs Docker, /dev/kvm and Go. MINIO_IMAGE picks MinIO's image, and VMTEST_RUN
+# the tests (default both).
 set -euo pipefail
 
 images=$(realpath "${1:?usage: mounts.sh <images-dir> <firecracker-binary>}")
@@ -48,4 +50,4 @@ docker run --rm --name "kantel-mounts-vmtest-$$" --privileged --device /dev/kvm 
 	-v "$images:/images:ro" -v "$work:/opt/vmtest:ro" \
 	-e KANTEL_VMTEST_IMAGES=/images -e KANTEL_VMTEST_FIRECRACKER=/opt/vmtest/firecracker \
 	-e KANTEL_VMTEST_S3="http://$ip:9000" -e KANTEL_VMTEST_S3_KEY="$key" -e KANTEL_VMTEST_S3_SECRET="$secret" \
-	"$image" /opt/vmtest/agent.test -test.run 'BucketMounts' -test.v -test.timeout 20m
+	"$image" /opt/vmtest/agent.test -test.run "${VMTEST_RUN:-BucketMounts|ManifestMounts}" -test.v -test.timeout 20m

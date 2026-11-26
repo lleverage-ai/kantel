@@ -124,3 +124,24 @@ func TestAStartsErrorSaysItsMemoryWentOnlyWhenItDid(t *testing.T) {
 		t.Fatal("a host without the microVM tier reports it")
 	}
 }
+
+func TestReconnectBackoffReset(t *testing.T) {
+	cases := []struct {
+		name     string
+		elapsed  time.Duration
+		welcomed bool
+		want     bool
+	}{
+		{"dial failed quickly", 2 * time.Second, false, false},
+		{"dial hung 30s without welcome", 30 * time.Second, false, false},
+		{"welcomed but dropped immediately", 2 * time.Second, true, false},
+		{"welcomed and stayed up 10s", 10 * time.Second, true, true},
+		{"welcomed and stayed up 45s", 45 * time.Second, true, true},
+		{"over a minute", 61 * time.Second, false, true},
+	}
+	for _, tc := range cases {
+		if got := reconnectBackoffReset(tc.elapsed, tc.welcomed); got != tc.want {
+			t.Errorf("%s: reconnectBackoffReset(%v, %v) = %v, want %v", tc.name, tc.elapsed, tc.welcomed, got, tc.want)
+		}
+	}
+}

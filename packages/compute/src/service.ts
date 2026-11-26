@@ -71,8 +71,11 @@ import {
 	type BackendStickyDisk,
 	type BackendStickyDiskStatus,
 	type BootOptions,
+	type CommandOutputPart,
 	type CommandProgress,
 	type ExecResult,
+	type FileRange,
+	type HostSandboxRef,
 	hostNotConnected,
 	isBootDroppedMemory,
 	isCommandProgress,
@@ -163,46 +166,46 @@ import {
 import { createPoolService, defaultPoolOf, type PoolRunners, poolOwnerOf } from "./pools.ts";
 import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
 import { COPY_RETRY_MS, type CopyHost, copyTarget, keepingCopies, SNAPSHOT_COPIES } from "./snapshot-copies.ts";
-import type {
-	ComputeStore,
-	OOMPending,
-	ProvisionWork,
-	RunPeriod,
-	StoredAccount,
-	StoredApiKey,
-	StoredCommand,
-	StoredDeletion,
-	StoredDeviceLogin,
-	StoredDiskHolder,
-	StoredEgressEntry,
-	StoredEnvironment,
-	StoredEnvironmentFile,
-	StoredEnvironmentVariable,
-	StoredEvacuation,
-	StoredEvacuationSandbox,
-	StoredHost,
-	StoredIdempotency,
-	StoredInvite,
-	StoredJoinToken,
-	StoredPeak,
-	StoredPersonalToken,
-	StoredPool,
-	StoredProxy,
-	StoredSample,
-	StoredSandbox,
-	StoredSnapshot,
-	StoredStickyDisk,
-	StoredStickyDiskVersion,
-	StoredTelemetry,
-	StoredUsageClaim,
-	StoredUser,
-	StoredWebhook,
-} from "./store.ts";
 import {
+	type ComputeStore,
 	diskHolderId,
+	type OOMPending,
 	OPERATOR_POOLS,
+	type ProvisionWork,
+	type RunPeriod,
 	STICKY_PREFETCH_MS,
+	type StoredAccount,
+	type StoredApiKey,
+	type StoredCommand,
+	type StoredDeletion,
+	type StoredDeviceLogin,
+	type StoredDiskHolder,
+	type StoredEgressEntry,
+	type StoredEnvironment,
+	type StoredEnvironmentFile,
+	type StoredEnvironmentVariable,
+	type StoredEvacuation,
+	type StoredEvacuationSandbox,
+	type StoredEvent,
+	type StoredHost,
+	type StoredIdempotency,
+	type StoredInvite,
+	type StoredJoinToken,
+	type StoredPeak,
+	type StoredPersonalToken,
+	type StoredPool,
+	type StoredProxy,
+	type StoredSample,
+	type StoredSandbox,
+	type StoredSnapshot,
+	type StoredStickyDisk,
+	type StoredStickyDiskVersion,
+	type StoredTelemetry,
+	type StoredUsageClaim,
+	type StoredUser,
+	type StoredWebhook,
 	stickyDiskNameId,
+	UNDELETED_SANDBOX_STATES,
 	UniqueViolation,
 	usageClaimId,
 } from "./store.ts";
@@ -224,6 +227,7 @@ import {
 	HOME,
 	homeFor,
 	paginate,
+	parsePage,
 	randomId,
 	randomSecret,
 	randomSlug,
@@ -430,6 +434,13 @@ export interface ComputeServiceOptions {
 	readonly snapshotExpiry?: boolean;
 	/** How long after it starts a process first expires snapshots. Default `SNAPSHOT_EXPIRY_START_DELAY_MS`, 15 minutes. */
 	readonly snapshotExpiryDelayMs?: number;
+	/**
+	 * How long a host may stay disconnected before it counts as lost (`markLostHosts`): its sandboxes move to `lost`, with
+	 * a `sandbox.lost` event each, and its placements are fenced, so the host deletes them when it connects again. Counted
+	 * from when it was last seen, and never from before this process started, so a gateway's restart alone loses nothing.
+	 * Default `HOST_LOST_AFTER_MS`, 5 minutes; the gateways set it with `KANTEL_HOST_LOST_AFTER_MINUTES`.
+	 */
+	readonly hostLostAfterMs?: number;
 	/** How often such a call reads a starting sandbox again, for a start another gateway carries out. Default 250 ms. */
 	readonly startPollMs?: number;
 	/**
@@ -823,6 +834,16 @@ export interface ComputeService {
 	 */
 	reportHostConnection(hostId: string, connected: boolean): Promise<void>;
 	/**
+	 * A lost host's fenced sandbox is about to be deleted on it, as the host connects again: it is moved to `lost`, with
+	 * its `sandbox.lost` event, if the loss pass that fenced it stopped before it did (`hostLostAfterMs`); one lost whose
+	 * event isn't stored yet has it stored. `attempt` is the create attempt its placement was admitted for: one whose
+	 * record names no host is lost only at that attempt. Resolves whether the host may delete it now: true once it is lost
+	 * with its loss finished (`finishLoss`), deleted or being deleted, or the copy isn't its record's (another host's, or
+	 * an earlier attempt's); false while a move or upgrade under way defers its loss, when the host keeps it, fenced, to
+	 * be asked again. Throws when it can't be recorded, so the host keeps it until it is.
+	 */
+	reportSandboxLost(hostId: string, sandboxId: string, attempt?: number): Promise<boolean>;
+	/**
 	 * Whether a pool has sync on (`Pool.sync`): its hosts that run the mesh peer with each other. False for a pool that
 	 * has gone.
 	 */
@@ -858,6 +879,36 @@ async function mountsOff(): Promise<never> {
 }
 
 /** Refuses a write into one of the sandbox's mounts, which are read-only. */
+/** Why a sandbox's files aren't written in parts. */
+function partsUnsupported(sandbox: StoredSandbox): KantelError {
+	return new KantelError(
+		"not_supported",
+		sandbox.type === "isolate"
+			? "An isolate's files aren't written in parts: write each with a file write, or upgrade it to a microVM"
+			: "This deployment's sandboxes can't take files in parts",
+	);
+}
+
+/** Passes at most `limit` bytes on, failing the stream (`invalid`) past them. */
+function atMost(limit: number): TransformStream<Uint8Array, Uint8Array> {
+	let seen = 0;
+	return new TransformStream({
+		transform(chunk, controller) {
+			seen += chunk.byteLength;
+			if (seen > limit) {
+				controller.error(
+					new KantelError(
+						"invalid",
+						`A part is at most ${computeSchema.MAX_FILE_PART_BYTES} bytes, and a file written in parts at most ${computeSchema.MAX_FILE_PARTS_BYTES}`,
+					),
+				);
+				return;
+			}
+			controller.enqueue(chunk);
+		},
+	});
+}
+
 function refuseInMount(sandbox: StoredSandbox, path: string): void {
 	const mount = mountCovering(sandbox.mounts, path);
 	if (mount !== undefined) throw new KantelError("conflict", `${path} is in the read-only mount at ${mount.path}`);
@@ -875,6 +926,7 @@ const MOUNTS_OFF_HANDLERS: MountHandlers = {
 	createBucketSource: mountsOff,
 	listBucketSources: mountsOff,
 	getBucketSource: mountsOff,
+	setBucketSourceCredentials: mountsOff,
 	deleteBucketSource: mountsOff,
 };
 
@@ -968,6 +1020,32 @@ export const SNAPSHOT_COPIES_EVERY_MS = 5 * 60_000;
  * version's process, replaced by this one, could still have had in flight.
  */
 export const SNAPSHOT_EXPIRY_START_DELAY_MS = 15 * 60_000;
+/** How long a host may stay disconnected before it counts as lost, by default (`hostLostAfterMs`). */
+export const HOST_LOST_AFTER_MS = 5 * 60_000;
+/** How often a gateway's sweep looks for hosts past that deadline, at most. */
+const HOST_LOST_CHECK_MS = 5_000;
+/**
+ * How often a gateway's sweep settles every sandbox loss begun and not finished (`StoredSandbox.losing`, `lostEvent`),
+ * at most (or each deadline, when that is shorter): those a pass, a host's return or a delete didn't finish.
+ */
+const LOSS_RECOVERY_MS = 60_000;
+/** The deployment setting for `hostLostAfterMs`, in minutes. */
+export const HOST_LOST_AFTER_SETTING = "KANTEL_HOST_LOST_AFTER_MINUTES";
+
+/**
+ * KANTEL_HOST_LOST_AFTER_MINUTES: how long a host may stay disconnected before it counts as lost (`hostLostAfterMs`),
+ * in minutes, at least 1 (fractions allowed); unset or empty, 5. Answers milliseconds. Anything else is refused, so a
+ * typo stops the gateway rather than losing hosts early or never.
+ */
+export function hostLostAfterSetting(raw: string | undefined): number {
+	const value = raw?.trim() ?? "";
+	if (value === "") return HOST_LOST_AFTER_MS;
+	const minutes = Number(value);
+	if (!/^\d+(\.\d+)?$/.test(value) || !Number.isFinite(minutes) || minutes < 1) {
+		throw new KantelError("invalid", `${HOST_LOST_AFTER_SETTING} is a number of minutes, at least 1`);
+	}
+	return Math.round(minutes * 60_000);
+}
 /** How long a process holds an expiry's mark (`markExpiring`) before another may take it over. */
 export const RETIRE_LEASE_MS = 10 * 60_000;
 /**
@@ -1586,24 +1664,57 @@ const NOT_DELETED: readonly computeSchema.SandboxState[] = [
 	"stopped",
 	"paused",
 	"error",
+	"lost",
 	"deleting",
 ];
 /**
  * Every state a sandbox list may show, each a stored record may hold but `deleted`: the list reads only these
  * (`listSandboxes`). A record, so a new state can't be left out of it.
  */
-const LISTED_STATES = Object.keys({
-	starting: true,
-	running: true,
-	stopping: true,
-	stopped: true,
-	paused: true,
-	moving: true,
-	error: true,
-	deleting: true,
-} satisfies Record<Exclude<computeSchema.SandboxState, "deleted">, true>) as readonly computeSchema.SandboxState[];
-/** The states a host's sandbox is in while it still counts as the host's (`sandboxRecordsOn`): every one but deleting. */
-const PLACED_STATES = LISTED_STATES.filter((state) => state !== "deleting");
+const LISTED_STATES = UNDELETED_SANDBOX_STATES;
+/**
+ * The states a host's sandbox is in while it still counts as the host's (`sandboxRecordsOn`): every one but deleting,
+ * and lost (its host was lost, and its placement fenced: `markLostHosts`).
+ */
+const PLACED_STATES = LISTED_STATES.filter((state) => state !== "deleting" && state !== "lost");
+/**
+ * The states a lost host's sandbox is moved to `lost` from (`markLostHosts`): a delete under way is left to it, and one
+ * already lost stays as it is.
+ */
+const LOSABLE: readonly computeSchema.SandboxState[] = [
+	"starting",
+	"running",
+	"stopping",
+	"stopped",
+	"paused",
+	"moving",
+	"error",
+];
+/** The scopes of the only calls a lost sandbox takes: reads of it, and its delete. Any other is refused (`sandboxLost`). */
+const LOST_SCOPES: ReadonlySet<computeSchema.ApiKeyScope> = new Set([
+	"sandboxes:read",
+	"sandboxes:delete",
+	"account:read",
+]);
+/** What a lost sandbox's `reason` says. */
+export const HOST_LOST_REASON = "its host stayed disconnected past the deadline, and was counted as lost";
+/** Why a lost sandbox whose `onHostLost` is `recreate` wasn't made again on another host (`recreationOf`). */
+export const NOT_RECREATED = {
+	isolate: "an isolate isn't made again on another host",
+	pinned: "it is kept to its host",
+	snapshot: "it has no saved snapshot to make it again from",
+	host: "no other connected host in its pool can take it",
+	copy: "no host it may go on holds its newest saved snapshot, or can fetch it",
+	failed: "its create on another host failed",
+} as const;
+/** A lost sandbox's `reason` where it wasn't made again on another host, saying why. */
+export const notRecreated = (why: string): string =>
+	`${HOST_LOST_REASON}; it wasn't made again on another host: ${why}`;
+/** Why a sandbox made again on another host was stopped again (`stopFor`): it was lost stopped, paused or in error. */
+export const RECREATED_STOP_REASON =
+	"It was made again on another host after its host was lost, and stopped again as it was before";
+/** The states a sandbox made again on another host is left running in; from any other, it is stopped again. */
+const RECREATED_RUNNING: readonly computeSchema.SandboxState[] = ["starting", "running", "moving"];
 /** The states a sandbox counts against an account's concurrent sandboxes in (`requireCapacity`). */
 const ACTIVE_STATES: readonly computeSchema.SandboxState[] = ["starting", "running", "stopping"];
 /** The states a revoked host's sandbox is moved to `error` from (`strandOn`): a delete under way is left to it. */
@@ -1795,6 +1906,25 @@ function decodeUtf8(bytes: Uint8Array, path: string): string {
 	} catch {
 		throw new KantelError("invalid", `${path} is not UTF-8 text; read it with encoding base64`);
 	}
+}
+
+/**
+ * A part of a command's stream as its record holds it (`stdout` or `stderr`): its first `MAX_OUTPUT_CHARS`. Cut when the
+ * record is and this stream filled it.
+ */
+function recordedOutput(command: StoredCommand, stream: "stdout" | "stderr", range: FileRange): CommandOutputPart {
+	const text = command[stream];
+	const bytes = new TextEncoder().encode(text);
+	const offset = Math.min(range.offset, bytes.byteLength);
+	return {
+		bytes: bytes.subarray(offset, Math.min(offset + range.length, bytes.byteLength)),
+		offset,
+		size: bytes.byteLength,
+		ended: command.state !== "running",
+		// A record cut at its cap: this stream filled it (within a character), the other may not have.
+		truncated: command.truncated && (text.length >= MAX_OUTPUT_CHARS || bytes.byteLength > MAX_OUTPUT_CHARS - 4),
+		limit: MAX_OUTPUT_CHARS,
+	};
 }
 
 const truncate = (text: string): { text: string; truncated: boolean } =>
@@ -2234,6 +2364,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	let copiesKeptAt = Number.NEGATIVE_INFINITY;
 	/** When this process may first expire snapshots (`snapshotExpiryDelayMs` after it started). */
 	const expiryStartsAt = now() + (options.snapshotExpiryDelayMs ?? SNAPSHOT_EXPIRY_START_DELAY_MS);
+	/** How long a host may be away before it is lost (`markLostHosts`). */
+	const hostLostAfter = options.hostLostAfterMs ?? HOST_LOST_AFTER_MS;
+	if (!Number.isFinite(hostLostAfter) || hostLostAfter <= 0) throw new Error("hostLostAfterMs is a positive duration");
+	/**
+	 * When this process started, as far as losing hosts goes: a host's time away counts from here at the earliest, so one
+	 * that was away only while the control plane was down (a restart, an upgrade) has the whole deadline to come back.
+	 */
+	const lossCountsFrom = now();
+	/** When `markLostHosts` last began a pass. */
+	let lostCheckedAt = Number.NEGATIVE_INFINITY;
+	/** When `markLostHosts` last settled every loss begun and not finished (`LOSS_RECOVERY_MS`). */
+	let lossesRecoveredAt = Number.NEGATIVE_INFINITY;
+	/** Whether a `markLostHosts` pass is under way here: one at a time. */
+	let markingLost = false;
 	/** This process, as the owner of the expiry marks it makes (`markExpiring`). */
 	const retireOwner = crypto.randomUUID();
 	/** Set by `close`: a claim sweep under way stops. */
@@ -3584,7 +3728,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if ((await backend.placedOn(sandbox.id)) === hostId) return true;
 			}
 		}
-		const named = await store.sandboxes.list({ hostId });
+		// Only the states it asks about, so a host's deleted sandboxes (a runner pool's host has thousands) aren't read.
+		const named = await store.sandboxes.list({ hostId }, { state: NOT_DELETED });
 		return named.some((sandbox) => NOT_DELETED.includes(sandbox.state));
 	}
 
@@ -4204,6 +4349,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			...idleView(sandbox),
 			...(sandbox.autoUpgrade === true ? { autoUpgrade: true } : {}),
 			...(sandbox.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: sandbox.autoUpgradeFrom }),
+			...(sandbox.onHostLost === "recreate" ? { onHostLost: "recreate" as const } : {}),
 			...(sandbox.upgradedFrom === undefined ? {} : { upgradedFrom: { ...sandbox.upgradedFrom } }),
 			...(sandbox.moved === undefined ? {} : { moved: { ...sandbox.moved } }),
 			latestSnapshotId: sandbox.latestSnapshotId,
@@ -4242,6 +4388,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * `uses`.
 	 */
 	async function usesIn(accountId: string): Promise<Map<string, number>> {
+		if (store.snapshotUses !== undefined) return store.snapshotUses(accountId);
 		const uses = new Map<string, number>();
 		for (const sandbox of await store.sandboxes.list({ accountId })) {
 			const from = sandbox.source?.snapshotId;
@@ -5328,8 +5475,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	async function hostView(host: StoredHost): Promise<computeSchema.Host> {
 		await catchUpUsage();
 		// Isolates share their owner's VM, so what one asked for isn't a share of the host: they count as sandboxes only.
-		const placed = (await store.sandboxes.list({ hostId: host.id })).filter(
-			(sandbox) => sandbox.state === "running" || sandbox.state === "starting" || sandbox.state === "paused",
+		// Read in those states only: GET /v1/hosts views every host, and each has its deleted sandboxes too.
+		const placed = (
+			await store.sandboxes.list({ hostId: host.id }, { state: ["running", "starting", "paused", "deleting", "error"] })
+		).filter(
+			(sandbox) =>
+				sandbox.state === "running" ||
+				sandbox.state === "starting" ||
+				sandbox.state === "paused" ||
+				sandbox.state === "deleting" ||
+				(sandbox.state === "error" && sandbox.deleteOwed !== undefined),
 		);
 		const machines = placed.filter((sandbox) => sandbox.type !== "isolate");
 		const sum = (pickOf: (sandbox: StoredSandbox) => number) =>
@@ -5363,6 +5518,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		size: entry.size,
 		modifiedAt: entry.modifiedAt,
 	});
+
+	/** A file written in parts' sandbox, running, and its absolute path: a microVM's, not in a read-only mount. */
+	const filePartsTarget = async (principal: Principal, sandboxId: string, rawPath: string) => {
+		const { sandbox } = await sandboxFor(principal, sandboxId, "files");
+		if (sandbox.type !== "microvm") throw partsUnsupported(sandbox);
+		const running = await requireRunning(principal, sandbox.id);
+		const path = resolvePath(rawPath, homeFor(sandbox.type));
+		refuseInMount(sandbox, path);
+		return { sandbox, running, path };
+	};
 
 	const actorOf = (principal: Principal): Sandbox["createdBy"] =>
 		principal.kind === "key"
@@ -5578,6 +5743,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placementReason: extra.placementReason,
 			// Stranded only in the state its stranding wrote (`strandOn`).
 			strandedOn: extra.strandedOn,
+			// An owed delete stays attached only across `deleting`/`error` retries; deleting or recovering clears it.
+			deleteOwed:
+				state === "deleting" || state === "error"
+					? "deleteOwed" in extra
+						? extra.deleteOwed
+						: sandbox.deleteOwed
+					: undefined,
 			...(sandbox.health === "unresponsive" && extra.health === undefined && !stillUnresponsive
 				? { health: "ok" as const }
 				: {}),
@@ -5662,6 +5834,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		if (role === undefined || !(await canSee(principal, sandbox, role))) throw notFound("sandbox");
 		requireScope(principal, scope, role);
 		await refuseShared(principal, sandbox);
+		// A lost sandbox (`markLostHosts`) takes reads and its delete alone: anything else is a conflict saying so.
+		if (sandbox.state === "lost" && !LOST_SCOPES.has(scope)) throw sandboxNotRunning(sandbox, apiBasePath);
 		return { sandbox, role };
 	}
 
@@ -6222,7 +6396,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 */
 	async function dependents(snapshotIds: ReadonlySet<string>): Promise<Set<string>> {
 		const needed = new Set<string>();
-		for (const sandbox of await store.sandboxes.list()) {
+		for (const sandbox of await store.sandboxes.list(undefined, { state: LISTED_STATES })) {
 			if (sandbox.state === "deleted") continue;
 			for (const id of [
 				sandbox.latestSnapshotId,
@@ -6378,25 +6552,48 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					await settleSnapshot(deleting).catch(() => "kept");
 				}
 				if (!expiring) return;
-				// One read for the pass: the expired, and how many records name each ref.
-				const all = await store.snapshots.list();
-				const named = new Map<string, number>();
-				for (const snapshot of all) {
-					if (snapshot.ref !== undefined) named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
-				}
-				const expired = all.filter(
-					(snapshot) =>
-						snapshot.kind === "automatic" &&
-						snapshot.expiresAt !== undefined &&
-						snapshot.expiresAt <= at &&
-						snapshot.state === "ready",
-				);
+				const ready = await store.snapshots.list({ kind: "automatic", state: "ready" });
+				const expired = ready.filter((snapshot) => snapshot.expiresAt !== undefined && snapshot.expiresAt <= at);
 				if (expired.length === 0) return;
 				const hosts = new Map((await backend.capabilities()).hosts.map((host) => [host.id, host]));
-				const marked: StoredSnapshot[] = [];
+				const candidates: StoredSnapshot[] = [];
 				for (const snapshot of expired) {
 					if (snapshot.ref === undefined || !(await keepsCopies(snapshot, hosts))) continue;
-					if ((named.get(snapshot.ref) ?? 0) > 1) continue;
+					candidates.push(snapshot);
+				}
+				if (candidates.length === 0) return;
+				// Count how many snapshot records name each candidate ref in one bulk read (indexed by snapshots_by_ref on
+				// SQLite; a single pass on Postgres rather than one full scan per expired ref).
+				const candidateRefs = [...new Set(candidates.flatMap((snapshot) => (snapshot.ref ? [snapshot.ref] : [])))];
+				const named = new Map<string, number>();
+				if (candidateRefs.length <= 500) {
+					for (const snapshot of await store.snapshots.list(undefined, { ref: candidateRefs })) {
+						if (snapshot.ref !== undefined) named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+					}
+				} else if (store.snapshots.listNewest !== undefined) {
+					const wanted = new Set(candidateRefs);
+					let beforeSeq: number | undefined;
+					for (;;) {
+						const batch = await store.snapshots.listNewest(undefined, { limit: 500, beforeSeq });
+						for (const snapshot of batch.items) {
+							if (snapshot.ref !== undefined && wanted.has(snapshot.ref)) {
+								named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+							}
+						}
+						if (batch.nextBeforeSeq === undefined) break;
+						beforeSeq = batch.nextBeforeSeq;
+					}
+				} else {
+					const wanted = new Set(candidateRefs);
+					for (const snapshot of await store.snapshots.list()) {
+						if (snapshot.ref !== undefined && wanted.has(snapshot.ref)) {
+							named.set(snapshot.ref, (named.get(snapshot.ref) ?? 0) + 1);
+						}
+					}
+				}
+				const marked: StoredSnapshot[] = [];
+				for (const snapshot of candidates) {
+					if (snapshot.ref === undefined || (named.get(snapshot.ref) ?? 0) > 1) continue;
 					const written = await markExpiring(snapshot.id).catch(() => undefined);
 					if (written !== undefined) marked.push(written);
 				}
@@ -6464,6 +6661,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				truncated:
 					stdout.truncated ||
 					stderr.truncated ||
+					result.truncated === true ||
 					(latest.truncated && !(result.stdout.startsWith(latest.stdout) && result.stderr.startsWith(latest.stderr))),
 				endedAt: at,
 				durationMs: at - latest.startedAt,
@@ -7195,8 +7393,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	}
 
 	/** `ComputeService.reportHostConnection`: its sandboxes, published as they are, for a console to read again. */
-	async function reportHostConnection(hostId: string, _connected: boolean): Promise<void> {
-		for (const sandbox of await store.sandboxes.list({ hostId })) {
+	async function reportHostConnection(hostId: string, connected: boolean): Promise<void> {
+		// Never its deleted sandboxes, which it isn't told of anyway: every host connects again at once after the stack
+		// object restarts, and a runner pool's host has thousands.
+		for (const sandbox of await store.sandboxes.list({ hostId }, { state: LISTED_STATES })) {
 			if (sandbox.state === "deleted") continue;
 			live.publish({
 				sandboxId: sandbox.id,
@@ -7205,7 +7405,678 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				previousState: sandbox.state,
 				at: now(),
 			});
+			// A delete that couldn't reach this host while it was away (or was interrupted mid-retry) is finished once the host
+			// reconnects (#967).
+			if (
+				connected &&
+				(sandbox.state === "error" || sandbox.state === "deleting") &&
+				sandbox.deleteOwed !== undefined &&
+				!pending.has(sandbox.id)
+			) {
+				keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
+			}
 		}
+	}
+
+	/**
+	 * Counts each host away past the deadline (`hostLostAfterMs`) as lost (`loseHost`): its sandboxes are fenced on it, so
+	 * it deletes them when it connects again, before it is used (`SandboxBackend.fenceHost`), and move to `lost`, with a
+	 * `sandbox.lost` event each. A host's time away counts from when it was last seen, and never from before this process
+	 * started, so a host away only while the control plane was down isn't lost unless it stays away the whole deadline
+	 * after. Every gateway sweeps, and each sandbox's loss has one owner, its record (`losing`, then `lostEvent`), so one
+	 * event is stored for each. Every loss begun and not finished is settled here too (`settleLoss`), every
+	 * `LOSS_RECOVERY_MS`, whatever became of its host since. At most every `HOST_LOST_CHECK_MS`, one pass at a time.
+	 */
+	async function markLostHosts(at: number): Promise<void> {
+		if (backend.fenceHost === undefined || markingLost) return;
+		if (at - lostCheckedAt < Math.min(HOST_LOST_CHECK_MS, hostLostAfter)) return;
+		lostCheckedAt = at;
+		markingLost = true;
+		try {
+			// Begun and not finished (a gateway stopped, or a write failed): revoked, back or gone from the backend's hosts
+			// since. Before the deadline too, as nothing new is begun here.
+			if (at - lossesRecoveredAt >= Math.min(LOSS_RECOVERY_MS, hostLostAfter)) {
+				lossesRecoveredAt = at;
+				for (const sandbox of await store.sandboxes.list({}, { state: [...LOSABLE, "lost"] })) {
+					// One made again on another host whose finish (its event, its stop again) a gateway didn't see through.
+					if (sandbox.recreating !== undefined && sandbox.state !== "starting" && !pending.has(sandbox.id)) {
+						await finishRecreate(sandbox).catch(() => undefined);
+					}
+					if (sandbox.losing === undefined && sandbox.lostEvent === undefined) continue;
+					await settleLoss(sandbox).catch(() => undefined);
+				}
+			}
+			if (at - lossCountsFrom < hostLostAfter) return;
+			const { hosts } = await backend.capabilities();
+			for (const host of hosts) {
+				if (host.connected !== false) continue;
+				const since = Math.max(host.lastSeenAt ?? lossCountsFrom, lossCountsFrom);
+				if (at - since < hostLostAfter) continue;
+				await loseHost(host.id, host.lastSeenAt).catch(() => undefined);
+			}
+		} finally {
+			markingLost = false;
+		}
+	}
+
+	/**
+	 * Whether a sandbox goes to `lost` with a lost host: one in a state it may be lost from (`LOSABLE`, so not one being
+	 * deleted) and not moving, that its record places on that host; or, with `attempt`, one whose record places it on no
+	 * host yet and is still at that attempt (`lifecycle`): a create or fork admitted there whose answer was never seen
+	 * (`SandboxBackend.hostSandboxes`), and never a later attempt of it.
+	 */
+	const losableOn = (hostId: string, sandbox: StoredSandbox, attempt?: number) =>
+		LOSABLE.includes(sandbox.state) &&
+		// A move or an upgrade under way is settled first (each knows of a copy on another host): a later pass takes it.
+		sandbox.moving === undefined &&
+		sandbox.upgrading === undefined &&
+		// Being made again after an earlier loss (`recreating`): never lost to the host it left, whose copy is fenced. Its
+		// create admitted on another host that is lost too is lost to that one, as any create is (LLE-19676).
+		sandbox.recreating?.hostId !== hostId &&
+		(sandbox.hostId === hostId ||
+			(sandbox.hostId === undefined && attempt !== undefined && (sandbox.lifecycle ?? 0) === attempt));
+
+	/**
+	 * Whether a placement admitted for `placedFor` (absent: one that names none, such as a fork's) is a sandbox's current
+	 * attempt: what `losableOn` takes as its attempt, or undefined when it is an earlier one's.
+	 */
+	const attemptOf = (sandbox: StoredSandbox, placedFor: number | undefined): number | undefined => {
+		const current = sandbox.lifecycle ?? 0;
+		return placedFor === undefined || placedFor === current ? current : undefined;
+	};
+
+	/**
+	 * A lost host's sandboxes lost (`markLostHosts`): those its records place on it, and those its backend placed there
+	 * whose records don't name a host yet, at the attempt placed there. Each has its intent written first (`intendLoss`),
+	 * under the `lastSeenAt` the host was judged lost by (`seenAt`), then all are fenced at once, only while the host is
+	 * still unseen since then, then each is settled as its intent says (`settleLosing`), which fences one alone when the
+	 * batch failed. One already being lost to this host (an earlier pass's intent) is settled with the rest, under its own.
+	 */
+	async function loseHost(hostId: string, seenAt: number | undefined): Promise<void> {
+		const candidates = new Map<string, number | undefined>();
+		for (const sandbox of await store.sandboxes.list({ hostId }, { state: LOSABLE })) {
+			if (losableOn(hostId, sandbox) || sandbox.losing?.hostId === hostId) candidates.set(sandbox.id, undefined);
+		}
+		for (const placed of (await backend.hostSandboxes?.(hostId)) ?? []) {
+			if (candidates.has(placed.sandboxId)) continue;
+			const sandbox = await store.sandboxes.get(placed.sandboxId);
+			if (sandbox === undefined || sandbox.hostId !== undefined) continue;
+			const attempt = attemptOf(sandbox, placed.attempt);
+			if (attempt !== undefined && losableOn(hostId, sandbox, attempt)) candidates.set(sandbox.id, attempt);
+		}
+		const intended: StoredSandbox[] = [];
+		for (const [sandboxId, attempt] of candidates) {
+			const sandbox = await intendLoss(hostId, sandboxId, attempt, seenAt).catch(() => undefined);
+			if (sandbox !== undefined) intended.push(sandbox);
+		}
+		if (intended.length === 0) return;
+		const ours = intended.filter((sandbox) => sandbox.losing?.seenAt === seenAt);
+		if (ours.length > 0) {
+			await backend
+				.fenceHost?.(
+					hostId,
+					ours.map((sandbox) => sandbox.id),
+					seenAt,
+				)
+				.catch(() => undefined);
+		}
+		for (const sandbox of intended) await settleLosing(sandbox).catch(() => undefined);
+	}
+
+	/**
+	 * Writes the intent to lose a sandbox with `hostId` (`StoredSandbox.losing`), under the `lastSeenAt` the host was judged
+	 * lost by (`seenAt`), before anything fences it, and answers the record holding it: only where it is `losableOn` that host (at `attempt`, for one whose record names no host) and
+	 * no other intent is, as it is when written, so a delete that went `deleting` first is never lost, and a delete after
+	 * finds the intent (`deleteSandbox`). One already intended for this host is answered as it is. Undefined otherwise.
+	 */
+	async function intendLoss(
+		hostId: string,
+		sandboxId: string,
+		attempt: number | undefined,
+		seenAt: number | undefined,
+	): Promise<StoredSandbox | undefined> {
+		let intended: StoredSandbox | undefined;
+		await store.sandboxes.update(sandboxId, (current) => {
+			intended = undefined;
+			if (current.losing !== undefined) {
+				if (current.losing.hostId === hostId) intended = current;
+				return undefined;
+			}
+			if (!losableOn(hostId, current, attempt)) return undefined;
+			intended = {
+				...current,
+				losing: {
+					hostId,
+					...(attempt === undefined ? {} : { attempt }),
+					eventId: randomId("evt"),
+					// One being made again is lost in the state its first loss found it in, so a further making again comes
+					// back as that would have.
+					previousState: current.recreating?.previousState ?? current.state,
+					at: now(),
+					...(seenAt === undefined ? {} : { seenAt }),
+				},
+			};
+			return intended;
+		});
+		return intended;
+	}
+
+	/**
+	 * Settles a loss begun (`losing`), the one way for every caller (the pass that began it, a later one, the host's return
+	 * or a delete), each step safe to do again or at once: where its placement is fenced on the lost host (now, by this
+	 * call, or before), it moves to `lost` under the intent, its `sandbox.lost` event's ID and previous state written with
+	 * it (`lostEvent`), and its loss is finished (`finishLoss`). Where nothing fences it (its host seen since the intent's
+	 * `seenAt`, so the fence is refused, or its placement no longer there), the intent is dropped and nothing is lost. The
+	 * refusal is final: the fence lands only in a write that finds the host unseen since then (`SandboxBackend.fenceHost`),
+	 * and one fenced already is answered, so no fence for this intent, another caller's under way included, lands after. A move or an upgrade under
+	 * way keeps it, fenced and intended, until settled. Any other failure leaves the intent for a later try.
+	 */
+	async function settleLosing(sandbox: StoredSandbox): Promise<void> {
+		const intent = sandbox.losing;
+		if (intent === undefined) return;
+		const holds = (fence: HostSandboxRef | undefined) =>
+			fence?.sandboxId === sandbox.id &&
+			(fence.attempt === undefined || intent.attempt === undefined || fence.attempt === intent.attempt);
+		const fencedThere = await backend.fencedOn?.(sandbox.id);
+		let fenced = fencedThere?.hostId === intent.hostId && holds(fencedThere);
+		if (!fenced) {
+			try {
+				fenced = ((await backend.fenceHost?.(intent.hostId, [sandbox.id], intent.seenAt)) ?? []).some(holds);
+			} catch (error) {
+				// Refused, as its host was seen since: back, so not lost.
+				if (!(error instanceof KantelError && error.code === "conflict")) throw error;
+			}
+		}
+		if (!fenced) {
+			await dropLosing(sandbox.id, intent.eventId);
+			return;
+		}
+		const result = await transition(
+			sandbox.id,
+			LOSABLE,
+			(current) => {
+				// One being made again (`recreating`) whose new host is lost too: that making again is over with it.
+				const { losing: _, recreating: _recreating, ...rest } = current;
+				return withState(rest, "lost", {
+					reason: HOST_LOST_REASON,
+					ports: [],
+					hostId: intent.hostId,
+					lostEvent: {
+						eventId: intent.eventId,
+						previousState: intent.previousState,
+						// Its choice as it is lost: made again on another host first (`recreateLost`).
+						...(current.onHostLost === "recreate" ? { recreate: true as const } : {}),
+					},
+				});
+			},
+			(current) => current.losing?.eventId === intent.eventId && losableOn(intent.hostId, current, intent.attempt),
+		).catch((error: unknown) => {
+			// Its record gone meanwhile: nothing to lose.
+			if (error instanceof KantelError && error.code === "not_found") return undefined;
+			throw error;
+		});
+		if (result === undefined) return;
+		if ("moved" in result) {
+			await finishLoss(result.moved);
+			return;
+		}
+		const left = result.lost;
+		// Not lost under it: settled by another caller, or deferred by a move or upgrade (both keep it); or no longer the
+		// copy fenced (a later attempt of a create), when it goes.
+		if (left.losing?.eventId === intent.eventId && left.moving === undefined && left.upgrading === undefined) {
+			await dropLosing(sandbox.id, intent.eventId);
+		}
+	}
+
+	/** Drops a loss's intent (`losing`), only while it is still the one with `eventId`. */
+	async function dropLosing(sandboxId: string, eventId: string): Promise<void> {
+		await store.sandboxes.update(sandboxId, (current) => {
+			if (current.losing?.eventId !== eventId) return undefined;
+			const { losing: _, ...rest } = current;
+			return rest;
+		});
+	}
+
+	/**
+	 * Settles whatever of a sandbox's loss is begun and not finished: its intent (`settleLosing`), then `finishLoss`.
+	 * `recreate` false (its delete): one to be made again on another host is recorded lost instead.
+	 */
+	async function settleLoss(sandbox: StoredSandbox, recreate = true): Promise<void> {
+		if (sandbox.losing !== undefined) await settleLosing(sandbox);
+		const latest = await store.sandboxes.get(sandbox.id);
+		if (latest?.lostEvent !== undefined) await finishLoss(latest, recreate);
+	}
+
+	/**
+	 * Finishes a sandbox's loss, the one path for all of it, as its record says it is still owed (`lostEvent`): its
+	 * `sandbox.lost` event stored under the ID the record keeps (a retry writes over it rather than add another), its
+	 * commands ended (its host can't be asked), and its automatic snapshots on the lost host forgotten, with the record's
+	 * pointers to them, as the host deletes their bytes with it (`sandbox.delete`). Only then is the marker cleared: a
+	 * failure anywhere leaves it, for a later loss pass, the host's return (`reportSandboxLost`) or its delete to finish.
+	 * Each step may be done again.
+	 */
+	async function finishLoss(lost: StoredSandbox, recreate = true): Promise<void> {
+		let sandbox = lost;
+		let due = sandbox.lostEvent;
+		if (due === undefined) return;
+		// To be made again on another host: taken on there (`recreateLost`), or, where it can't be, lost saying why.
+		if (due.recreate === true && recreate) {
+			if (await recreateLost(sandbox, due)) return;
+			const latest = await store.sandboxes.get(sandbox.id);
+			if (latest?.lostEvent?.eventId !== due.eventId) return;
+			sandbox = latest;
+			due = latest.lostEvent;
+		}
+		const reason = due.reason ?? HOST_LOST_REASON;
+		await emit(
+			"sandbox.lost",
+			sandbox.accountId,
+			{ sandbox, data: { previousState: due.previousState, reason } },
+			due.eventId,
+		);
+		const withoutStale = await endWithLostHost(sandbox, due.eventId);
+		await store.sandboxes.update(sandbox.id, (current) => {
+			if (current.lostEvent?.eventId !== due.eventId) return undefined;
+			const { lostEvent: _, ...rest } = withoutStale(current);
+			return rest;
+		});
+	}
+
+	/**
+	 * What a sandbox's loss (its `lostEvent`, `eventId`) ends, whether its loss stands or it is made again elsewhere: its
+	 * commands (its host can't be asked), and its automatic snapshots on the lost host, forgotten with the record's
+	 * pointers to them, as the host deletes their bytes with it (`sandbox.delete`). Each step may be done again. Answers
+	 * the rule for those pointers, for the write that clears its marker to keep too.
+	 *
+	 * Its commands are only the lost machine's: those of its memory as `sandbox` (the lost record) has it
+	 * (`memoryDropped.generation`) or before. A sandbox made again moves that generation on as it leaves `lost`
+	 * (`recreateLost`), so a pass that read the lost record late never ends a command its replacement runs.
+	 */
+	async function endWithLostHost(
+		sandbox: StoredSandbox,
+		eventId: string,
+	): Promise<(current: StoredSandbox) => StoredSandbox> {
+		const generation = sandbox.memoryDropped?.generation ?? 0;
+		const listed = (await store.commands.list({ sandboxId: sandbox.id, state: "running" })).filter(
+			(command) => (command.memoryGeneration ?? 0) <= generation,
+		);
+		await killCommandsOf(sandbox.id, {
+			listed,
+			note: `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`,
+			reconcile: false,
+		});
+		// Only those on the lost host: one a move left on another keeps its record and its bytes; saved ones stay.
+		const doomed = (await store.snapshots.list({ sandboxId: sandbox.id })).filter(
+			(snapshot) =>
+				snapshot.kind === "automatic" &&
+				sandbox.hostId !== undefined &&
+				refHost(hostRef(snapshot) ?? "") === sandbox.hostId,
+		);
+		// One rule for the record's pointers, kept by every write here as the record is then: none names a snapshot doomed
+		// here, or one whose record is gone (a retry's, forgotten by the try it follows). They go before the records, and
+		// once more with the marker, so no interruption or concurrent change between leaves one behind.
+		const doomedIds = new Set(doomed.map((snapshot) => snapshot.id));
+		const missing = new Set<string>();
+		const stale = (id: string | undefined) => id !== undefined && (doomedIds.has(id) || missing.has(id));
+		const withoutStale = (current: StoredSandbox): StoredSandbox => ({
+			...current,
+			...(stale(current.latestSnapshotId) ? { latestSnapshotId: undefined, latestSnapshotAt: undefined } : {}),
+			...(stale(current.pausedSnapshotId) ? { pausedSnapshotId: undefined } : {}),
+		});
+		await store.sandboxes.update(sandbox.id, (current) =>
+			current.lostEvent?.eventId !== eventId || (!stale(current.latestSnapshotId) && !stale(current.pausedSnapshotId))
+				? undefined
+				: withoutStale(current),
+		);
+		for (const snapshot of doomed) {
+			await forgetSnapshot(snapshot);
+			await releaseRef(snapshot);
+		}
+		const latest = await store.sandboxes.get(sandbox.id);
+		for (const id of [latest?.latestSnapshotId, latest?.pausedSnapshotId]) {
+			if (id !== undefined && (await store.snapshots.get(id)) === undefined) missing.add(id);
+		}
+		await store.sandboxes.update(sandbox.id, (current) =>
+			current.lostEvent?.eventId !== eventId || (!stale(current.latestSnapshotId) && !stale(current.pausedSnapshotId))
+				? undefined
+				: withoutStale(current),
+		);
+		return withoutStale;
+	}
+
+	/**
+	 * Where a lost sandbox to be made again (`onHostLost` `recreate`) can be made, as things are now: its newest saved
+	 * snapshot (ready, of a microVM), the hosts it may go on (connected, in its pool, as its labels and account allow,
+	 * never the lost host), and the hosts holding that snapshot (`snapshotCopiesOf`), one of them eligible or one able to
+	 * fetch it. Else why not: an isolate, one kept to its host, one with no saved snapshot, or no host to take it.
+	 */
+	async function recreationOf(
+		sandbox: StoredSandbox,
+		lostHost: string,
+	): Promise<
+		{ readonly snapshot: StoredSnapshot; readonly eligibleHosts: string[]; readonly copies: SnapshotCopies } | string
+	> {
+		if (sandbox.type !== "microvm") return NOT_RECREATED.isolate;
+		if (sandbox.hostPin !== undefined) return NOT_RECREATED.pinned;
+		const saved = (await store.snapshots.list({ sandboxId: sandbox.id }))
+			.filter(
+				(snapshot) =>
+					snapshot.kind === "saved" &&
+					snapshot.state === "ready" &&
+					snapshot.ref !== undefined &&
+					(snapshot.sandboxType ?? "microvm") === "microvm",
+			)
+			.sort((a, b) => b.createdAt - a.createdAt);
+		const snapshot = saved[0];
+		if (snapshot === undefined) return NOT_RECREATED.snapshot;
+		const hosts = await ensureHosts();
+		// Shared hosts as its owner may use them (`mayShare`).
+		const shared =
+			options.sharedHosts === undefined || sandbox.ownerUserId === undefined
+				? true
+				: await options.sharedHosts(sandbox.ownerUserId);
+		const eligibleHosts = requireHostsOrNone(
+			hosts.filter((host) => host.id !== lostHost),
+			sandbox.accountId,
+			"microvm",
+			sandbox.hostLabels,
+			false,
+			shared,
+			false,
+			await poolOfSandbox(sandbox),
+		);
+		if (eligibleHosts.length === 0) return NOT_RECREATED.host;
+		const copies = await snapshotCopiesOf(snapshot, hosts, sandbox.poolId ?? snapshot.poolId);
+		if (!copies.fetch && !copies.holders.some((holder) => eligibleHosts.includes(holder.hostId))) {
+			return NOT_RECREATED.copy;
+		}
+		return { snapshot, eligibleHosts, copies };
+	}
+
+	/**
+	 * Makes a lost sandbox whose `onHostLost` was `recreate` again (`finishLoss`), under its ID, on another connected host
+	 * in its pool, from its newest saved snapshot. Its loss's end (`endWithLostHost`) first; then, where it can be made
+	 * (`recreationOf`), it moves from `lost` to `starting`, never placed, its loss's event ID and previous state kept on it
+	 * (`recreating`), and its create goes in the background (`recreate`). Answers whether it was taken on so (by this
+	 * call or another); where it can't be made, its loss's record says why (`lostEvent.reason`), and it is answered false,
+	 * for its loss to be said.
+	 */
+	async function recreateLost(sandbox: StoredSandbox, due: NonNullable<StoredSandbox["lostEvent"]>): Promise<boolean> {
+		const lostHost = sandbox.hostId;
+		const { eventId } = due;
+		const ours = (current: StoredSandbox) =>
+			current.lostEvent?.eventId === eventId && current.lostEvent.recreate === true;
+		await endWithLostHost(sandbox, eventId);
+		const plan = lostHost === undefined ? NOT_RECREATED.host : await recreationOf(sandbox, lostHost);
+		if (typeof plan === "string" || lostHost === undefined) {
+			const reason = notRecreated(typeof plan === "string" ? plan : NOT_RECREATED.host);
+			await store.sandboxes.update(sandbox.id, (current) => {
+				if (!ours(current) || current.lostEvent === undefined) return undefined;
+				const { recreate: _, ...lost } = current.lostEvent;
+				return { ...current, reason, lostEvent: { ...lost, reason } };
+			});
+			return false;
+		}
+		const began = await transition(
+			sandbox.id,
+			"lost",
+			(current) => {
+				const { lostEvent: _, ...rest } = current;
+				return withState(rest, "starting", {
+					// Never placed: it is made as a create from the snapshot, and its settling is a create's (`settleLostCreate`).
+					hostId: undefined,
+					latestSnapshotId: undefined,
+					latestSnapshotAt: undefined,
+					pausedSnapshotId: undefined,
+					reason: undefined,
+					ports: [],
+					...(rest.mounts === undefined ? {} : { mounts: pendingMounts(rest.mounts), mountsAt: undefined }),
+					// Its egress read afresh for the boot, as a start's is.
+					egressRevision: later(rest.egressRevision),
+					// A new machine: the lost one's commands are behind it, and ended as such (`endWithLostHost`, `killDroppedOf`),
+					// while those its replacement runs carry the new generation, so no late loss pass ends one of them.
+					...droppedMemory(rest, `kantel: killed: the sandbox was lost: ${HOST_LOST_REASON}\n`),
+					recreating: {
+						hostId: lostHost,
+						eventId,
+						previousState: due.previousState,
+						snapshotId: plan.snapshot.id,
+						heartbeatAt: now(),
+					},
+				});
+			},
+			ours,
+		);
+		if (!("moved" in began)) return began.lost.recreating?.eventId === eventId;
+		keepGoing(recreate(began.moved, plan));
+		return true;
+	}
+
+	/**
+	 * The create of a sandbox being made again (`recreating`, `starting`), from `plan`'s snapshot on one of its hosts, over
+	 * the lost host's fence (`SandboxSpec.replacesLost`), as attempt `lifecycle`: its gateway's lease kept fresh
+	 * (`recreating.heartbeatAt`) all the while. Running, it is published as any boot is (`boot`), then finished
+	 * (`finishRecreate`). A create refused (no room, no copy, its fence changed) puts it back in `lost`, saying why
+	 * (`loseRecreation`); one whose outcome isn't known is left `starting`, for the sweep (`settleLostCreate`).
+	 */
+	async function recreate(
+		starting: StoredSandbox,
+		plan: Exclude<Awaited<ReturnType<typeof recreationOf>>, string>,
+		/** A retry of a quiet gateway's (`retryRecreate`): a `conflict` (its earlier try's create was admitted) leaves it. */
+		retry = false,
+	): Promise<void> {
+		const marker = starting.recreating;
+		if (marker === undefined) return;
+		const lifecycle = starting.lifecycle ?? 0;
+		const still = (current: StoredSandbox) =>
+			current.state === "starting" &&
+			(current.lifecycle ?? 0) === lifecycle &&
+			current.recreating?.eventId === marker.eventId;
+		const beat = () =>
+			patchSandbox(starting.id, (latest) =>
+				still(latest) && latest.recreating !== undefined
+					? {
+							...latest,
+							recreating: { ...latest.recreating, heartbeatAt: Math.max(now(), latest.recreating.heartbeatAt) },
+						}
+					: undefined,
+			).catch(() => undefined);
+		const heartbeat = setInterval(() => void beat(), UPGRADE_HEARTBEAT_MS);
+		(heartbeat as { unref?: () => void }).unref?.();
+		// Its create's answer is published only while no loss of its new host has begun (`losing`): that loss settles it.
+		const unlost = (current: StoredSandbox) => still(current) && current.losing === undefined;
+		try {
+			await track([starting.id], async () => {
+				let placement: Placement;
+				try {
+					const { snapshot, eligibleHosts, copies } = plan;
+					if (snapshot.ref === undefined) throw new KantelError("conflict", "The snapshot isn't ready");
+					placement = await backend.create({
+						sandboxId: starting.id,
+						attempt: lifecycle,
+						accountId: starting.accountId,
+						type: starting.type,
+						subdomain: starting.subdomain,
+						...sizingOf(starting),
+						...(starting.image === undefined ? {} : { image: starting.image }),
+						env: starting.env,
+						eligibleHosts,
+						...pooled(starting.poolId),
+						fromSnapshot: snapshot.ref,
+						snapshotCopies: copies,
+						...(await egressFor(starting.accountId, starting)),
+						...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
+						...(await stickySpecOf(starting)),
+						replacesLost: { hostId: marker.hostId },
+					});
+				} catch (error) {
+					// Its host's word on it settles it (`settleLostCreate`).
+					if (isCreateOutcomeUnknown(error)) return;
+					if (retry && error instanceof KantelError && error.code === "conflict") return;
+					await loseRecreation(starting.id, still, notRecreated(`${NOT_RECREATED.failed} (${messageOf(error)})`));
+					return;
+				}
+				const booted = await boot(
+					starting.id,
+					async () => placement,
+					undefined,
+					{ egressRevision: starting.egressRevision },
+					undefined,
+					unlost,
+				);
+				// Its environments' files now it runs, as a settled create's are; their repositories wait for a start by someone
+				// who may clone them.
+				if (booted?.state === "running") await provision(booted.id, []).catch(() => undefined);
+				if (booted !== undefined) await finishRecreate((await store.sandboxes.get(booted.id)) ?? booted);
+			});
+		} finally {
+			clearInterval(heartbeat);
+		}
+	}
+
+	/**
+	 * The sweep's settling of a sandbox being made again whose gateway went quiet at it: as a create whose answer was lost
+	 * first (`settleLostCreate`: its host's word, where its create was admitted), then, once that is done and still
+	 * nothing settles it, tried again (`retryRecreate`), unless this gateway is at it. Only one whose create its backend
+	 * doesn't hold admitted (`createAdmitted`: never sent, refused, or its placement gone, the lost host's fenced copy
+	 * deleted as that host came back). One admitted whose host hasn't said yet keeps its attempt for its host's word
+	 * (`settleLostCreate`), never planned again over it.
+	 */
+	async function retryStaleRecreate(sandboxId: string, at: number): Promise<void> {
+		await settleLostCreate(sandboxId);
+		const latest = await store.sandboxes.get(sandboxId);
+		const marker = latest?.recreating;
+		if (latest === undefined || marker === undefined || !unsettledCreate(latest) || pending.has(sandboxId)) return;
+		// Its new host being lost (`losing`): that loss settles it, never a retry planned against the host it left.
+		if (latest.losing !== undefined) return;
+		if (marker.heartbeatAt + UPGRADE_STALE_MS > at) return;
+		if ((await backend.createAdmitted?.(sandboxId, latest.lifecycle ?? 0)) === true) return;
+		await retryRecreate(latest);
+	}
+
+	/**
+	 * Tries again the making again of a sandbox whose gateway went quiet at it (`recreating.heartbeatAt`), taken on first
+	 * (its lease moved on from the one read), so one gateway does. Its create may never have been sent: it is sent again,
+	 * as the same attempt, over the lost host's fence; one whose earlier try was admitted is refused, and its host's word
+	 * settles it (`settleLostCreate`). Where it can't be made now, it is lost again, saying why.
+	 */
+	async function retryRecreate(read: StoredSandbox): Promise<void> {
+		const marker = read.recreating;
+		if (marker === undefined) return;
+		const lifecycle = read.lifecycle ?? 0;
+		const still = (current: StoredSandbox) =>
+			current.state === "starting" &&
+			(current.lifecycle ?? 0) === lifecycle &&
+			current.recreating?.eventId === marker.eventId;
+		const at = Math.max(now(), marker.heartbeatAt + 1);
+		let won = false;
+		const claimed = await patchSandbox(read.id, (latest) => {
+			won = still(latest) && latest.losing === undefined && latest.recreating?.heartbeatAt === marker.heartbeatAt;
+			return won ? { ...latest, recreating: { ...marker, heartbeatAt: at } } : undefined;
+		});
+		if (!won || claimed?.recreating?.heartbeatAt !== at) return;
+		const plan = await recreationOf(claimed, marker.hostId);
+		if (typeof plan === "string") {
+			await loseRecreation(claimed.id, still, notRecreated(plan));
+			return;
+		}
+		await recreate(claimed, plan, true);
+	}
+
+	/**
+	 * Puts a sandbox whose making again failed (`recreating`, `starting`, while `still` holds) back in `lost`, with its
+	 * loss's event owed (`lostEvent`, the same ID) saying why, then finishes that loss (`finishLoss`).
+	 */
+	async function loseRecreation(
+		sandboxId: string,
+		still: (current: StoredSandbox) => boolean,
+		reason: string,
+	): Promise<void> {
+		const result = await transition(
+			sandboxId,
+			"starting",
+			(current) => {
+				const { recreating: marker, ...rest } = current;
+				if (marker === undefined) return current;
+				return withState(rest, "lost", {
+					reason,
+					ports: [],
+					hostId: marker.hostId,
+					lostEvent: { eventId: marker.eventId, previousState: marker.previousState, reason },
+				});
+			},
+			// Never over a loss of its new host begun (`losing`), which settles it: lost, made again, or, where its fence
+			// didn't land, dropped, for a later retry (`retryStaleRecreate`).
+			(current) => still(current) && current.recreating !== undefined && current.losing === undefined,
+		);
+		if ("moved" in result) await finishLoss(result.moved, false);
+	}
+
+	/**
+	 * Finishes a sandbox made again on another host, once it is no longer `starting` (it runs, or its new machine ended):
+	 * its `sandbox.recreated` event, under its loss's ID (a retry writes over it), naming the snapshot it was made from;
+	 * then its marker cleared, in the one write that makes it owe a stop (`stopFor`, `RECREATED_STOP_REASON`) where it
+	 * runs and was lost stopped, paused or in error. That stop is the sweep's durable kind (`stopClaimedAt`, handed back
+	 * if its gateway goes), begun here at once. Each step may be done again, by any gateway (the loss pass finds one left).
+	 */
+	async function finishRecreate(sandbox: StoredSandbox): Promise<void> {
+		const marker = sandbox.recreating;
+		if (marker === undefined || sandbox.state === "starting") return;
+		await emit(
+			"sandbox.recreated",
+			sandbox.accountId,
+			{ sandbox, snapshotId: marker.snapshotId, data: { previousState: marker.previousState } },
+			marker.eventId,
+		);
+		const stopAgain = !RECREATED_RUNNING.includes(marker.previousState);
+		const finished = await store.sandboxes.update(sandbox.id, (current) => {
+			if (current.recreating?.eventId !== marker.eventId || current.state === "starting") return undefined;
+			const { recreating: _, ...rest } = current;
+			return stopAgain && rest.state === "running" && rest.stopFor === undefined
+				? { ...rest, stopFor: RECREATED_STOP_REASON }
+				: rest;
+		});
+		if (finished?.state !== "running" || finished.stopFor !== RECREATED_STOP_REASON) return;
+		// Queued behind whatever is at it now (`track`, never awaited here, so a caller inside one doesn't wait on itself).
+		const owed = (current: StoredSandbox) => current.stopFor === RECREATED_STOP_REASON;
+		const began = await beginStop(finished, false, RECREATED_STOP_REASON, undefined, owed, true).catch(() => undefined);
+		if (began !== undefined) keepGoing(began.work);
+	}
+
+	/** `ComputeService.reportSandboxLost`. */
+	async function reportSandboxLost(hostId: string, sandboxId: string, placedFor?: number): Promise<boolean> {
+		// The copy is its record's: on the host the record names, or (one naming no host yet) at the attempt placed here.
+		const mine = (sandbox: StoredSandbox) =>
+			sandbox.hostId !== undefined ? sandbox.hostId === hostId : attemptOf(sandbox, placedFor) !== undefined;
+		for (let tries = 0; tries < 3; tries += 1) {
+			const read = await store.sandboxes.get(sandboxId);
+			if (read === undefined || read.state === "deleted" || read.state === "deleting") return true;
+			if (read.state === "lost" && read.lostEvent === undefined) return true;
+			// Made again on another host since it was lost here (`recreating`): this copy is no longer its record's.
+			if (read.recreating?.hostId === hostId) return true;
+			if (read.state !== "lost") {
+				// Another host's record, or a later attempt of a create (the copy is an earlier one's): it goes, unless a move
+				// or upgrade under way still needs it.
+				if (!mine(read)) return read.moving === undefined && read.upgrading === undefined;
+				// Its own, deferred by a move or upgrade: kept, fenced, until that is settled.
+				if (read.moving !== undefined || read.upgrading !== undefined) return false;
+				// Its intent is there, as every fence has one; one gone meanwhile (dropped by a caller that found its host
+				// back) is begun again, so the copy is never deleted while its record is not lost.
+				// Under no `seenAt`: its fence is here already, and its host is back, so it never fences anew.
+				if (read.losing === undefined && LOSABLE.includes(read.state)) {
+					await intendLoss(
+						hostId,
+						sandboxId,
+						read.hostId === undefined ? attemptOf(read, placedFor) : undefined,
+						undefined,
+					);
+				}
+			}
+			const latest = await store.sandboxes.get(sandboxId);
+			if (latest !== undefined) await settleLoss(latest);
+		}
+		// Not settled yet: the host keeps it, fenced, and its next heartbeat tries again.
+		return false;
 	}
 
 	/**
@@ -7287,6 +8158,116 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	 * state `sandbox` was read in: when another call (on any gateway) moved it first, it is `conflict` and nothing is
 	 * stopped.
 	 */
+	/**
+	 * Runs the backend destroy, automatic-snapshot cleanup, and `deleting` → `deleted` transition for a sandbox already
+	 * moved to `deleting`. On an `unavailable` failure, records `deleteOwed` on the resulting `error` record so the host's
+	 * next reconnect (`reportHostConnection`) or the sweep finishes the delete instead of leaving a running VM stranded.
+	 */
+	async function completeDelete(
+		current: StoredSandbox,
+		was: SandboxState,
+		actor: StoredSandbox["createdBy"],
+	): Promise<void> {
+		try {
+			// A paused one's commands, kept in its memory, go with it, as its guest can't be asked.
+			await killCommandsOf(
+				current.id,
+				was === "paused"
+					? { note: pausedMemoryGone("deleted"), reconcile: false }
+					: // A lost one's host can't be asked.
+						was === "lost"
+						? { reconcile: false }
+						: {},
+			);
+			// With the host its record names: a backend whose placement of it went (its host deleted it, and the answer was
+			// lost) settles it by that host, rather than leave it in error with nothing to delete.
+			// A lost one is deleted on its host by its fence when the host is back (`markLostHosts`): one that host can't
+			// be asked about now is deleted all the same.
+			await backend
+				.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId })
+				.catch((error: unknown) => {
+					if (was !== "lost") throw error;
+				});
+			for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
+				if (snapshot.kind === "automatic") {
+					await forgetSnapshot(snapshot);
+					await releaseRef(snapshot);
+				} else {
+					// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
+					await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
+				}
+			}
+			const result = await transition(current.id, "deleting", (latest) =>
+				withState(latest, "deleted", {
+					ports: [],
+					latestSnapshotId: undefined,
+					latestSnapshotAt: undefined,
+					pausedSnapshotId: undefined,
+				}),
+			);
+			if (!("moved" in result)) return;
+			const deleted = result.moved;
+			await emit("sandbox.deleted", deleted.accountId, {
+				sandbox: deleted,
+				data: { previousState: current.deleteOwed?.previousState ?? was, actor },
+			});
+		} catch (error) {
+			await fail(current.id, error, "deleting", undefined, (latest) =>
+				error instanceof KantelError && error.code === "unavailable"
+					? { deleteOwed: latest.deleteOwed ?? { at: now(), previousState: was, actor } }
+					: {},
+			);
+			throw error;
+		}
+	}
+
+	/** Whether an owed delete in `error` or an abandoned `deleting` attempt is eligible to be claimed now. */
+	function owedDeleteEligible(sandbox: StoredSandbox, at: number): boolean {
+		if (
+			sandbox.deleteOwed === undefined ||
+			sandbox.moving !== undefined ||
+			sandbox.losing !== undefined ||
+			sandbox.lostEvent !== undefined
+		) {
+			return false;
+		}
+		if (sandbox.state === "error") return true;
+		if (sandbox.state === "deleting") {
+			const claimed = sandbox.deleteOwed.claimedAt;
+			return claimed === undefined || at - claimed >= STOP_LEASE_MS;
+		}
+		return false;
+	}
+
+	/** Retries an owed delete once its host is connected again (`reportHostConnection`, `sweep`). */
+	async function finishOwedDelete(sandbox: StoredSandbox): Promise<void> {
+		const owed = sandbox.deleteOwed;
+		const at = now();
+		if (owed === undefined || pending.has(sandbox.id) || !owedDeleteEligible(sandbox, at)) return;
+		if (
+			sandbox.hostId !== undefined &&
+			backend.hostConnected !== undefined &&
+			!(await backend.hostConnected(sandbox.hostId).catch(() => false))
+		) {
+			return;
+		}
+		const claimAt = now();
+		const began = await transition(
+			sandbox.id,
+			["error", "deleting"],
+			(latest) =>
+				withState(latest, "deleting", {
+					deleteOwed: { ...(latest.deleteOwed ?? owed), claimedAt: claimAt },
+				}),
+			(latest) => owedDeleteEligible(latest, claimAt),
+		);
+		if (!("moved" in began)) return;
+		const deleting = began.moved;
+		await track([deleting.id], async () => {
+			await completeDelete(deleting, owed.previousState, owed.actor).catch(() => undefined);
+		});
+	}
+
 	async function beginStop(
 		sandbox: StoredSandbox,
 		keepMemory: boolean,
@@ -8159,7 +9140,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		for (const sandbox of unattributed) {
 			if ((await backend.placedOn?.(sandbox.id)) === hostId) placedHere.push(sandbox);
 		}
-		for (const sandbox of [...(await store.sandboxes.list({ hostId })), ...placedHere]) {
+		for (const sandbox of [...(await store.sandboxes.list({ hostId }, { state: LISTED_STATES })), ...placedHere]) {
 			// From whatever it is when written, not as listed: a boot or stop that lands in between is still caught.
 			let previous: SandboxState | undefined;
 			await store.sandboxes.update(sandbox.id, (current) => {
@@ -8652,6 +9633,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		claimsSweptAt = now();
 		keepGoing(
 			(async () => {
+				if (store.pruneUsageClaims !== undefined) {
+					while (!closing) {
+						const removed = await store.pruneUsageClaims(now(), CLAIM_SWEEP_BATCH).catch(() => 0);
+						if (removed < CLAIM_SWEEP_BATCH) break;
+						await new Promise((resolve) => setTimeout(resolve, CLAIM_SWEEP_PAUSE_MS));
+					}
+					return;
+				}
 				const expired = (await store.usageClaims.list()).filter((claim) => claim.keepUntil < now());
 				for (let from = 0; from < expired.length && !closing; from += CLAIM_SWEEP_BATCH) {
 					const batch = expired.slice(from, from + CLAIM_SWEEP_BATCH);
@@ -8951,13 +9940,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 	/** The cost and running time of an account's sandboxes since `since`. */
 	async function accountUsage(account: StoredAccount, since: number) {
-		const sandboxes = await store.sandboxes.list({ accountId: account.id });
 		const at = now();
 		let seconds = 0;
 		let total = 0;
-		for (const sandbox of sandboxes) {
+		let running = 0;
+		const count = (sandbox: StoredSandbox) => {
 			seconds += runningMs(sandbox.runs, since, at) / 1000;
 			total += costOf(sandbox, since, at);
+			if (sandbox.state === "running") running++;
+		};
+		if (store.sandboxes.listNewest !== undefined) {
+			let beforeSeq: number | undefined;
+			for (;;) {
+				const batch = await store.sandboxes.listNewest({ accountId: account.id }, { limit: 500, beforeSeq });
+				for (const sandbox of batch.items) count(sandbox);
+				if (batch.nextBeforeSeq === undefined) break;
+				beforeSeq = batch.nextBeforeSeq;
+			}
+		} else {
+			for (const sandbox of await store.sandboxes.list({ accountId: account.id })) count(sandbox);
 		}
 		const hasLimits =
 			limits.concurrentSandboxes !== undefined ||
@@ -8966,7 +9967,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		return {
 			accountId: account.id,
 			since,
-			running: sandboxes.filter((sandbox) => sandbox.state === "running").length,
+			running,
 			runningSeconds: round(seconds),
 			cost: { currency: rates.currency, total: round(total), ratePerHour: 0 },
 			limits: hasLimits ? { ...limits } : undefined,
@@ -9262,7 +10263,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				// Bundles too: deleting one (`deleteBundle`) removes its bytes from the deployment's store, which only it checks.
 				if (
-					(await store.sandboxes.list({ accountId: personal })).some((sandbox) => sandbox.state !== "deleted") ||
+					(await undeleted({ accountId: personal })).length > 0 ||
 					(await store.snapshots.list({ accountId: personal, kind: "saved" })).length > 0 ||
 					(await store.bundles.list({ accountId: personal })).length > 0
 				) {
@@ -9388,9 +10389,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (account.kind === "personal") throw new KantelError("invalid", "A personal account can't be deleted here");
 			if (role !== "owner") throw new KantelError("forbidden", "Only an owner deletes an organisation");
 			requireScope(principal, "account:admin", role);
-			const sandboxes = (await store.sandboxes.list({ accountId: account.id })).filter(
-				(sandbox) => sandbox.state !== "deleted",
-			);
+			const sandboxes = await undeleted({ accountId: account.id });
 			const saved = await store.snapshots.list({ accountId: account.id, kind: "saved" });
 			if (sandboxes.length > 0 || saved.length > 0) {
 				throw new KantelError("conflict", "Delete the organisation's sandboxes and saved snapshots first");
@@ -9956,6 +10955,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					idleStopMinutes: body.idleStopMinutes ?? null,
 					...(body.autoUpgrade === true ? { autoUpgrade: true } : {}),
 					...(body.autoUpgradeFrom === undefined ? {} : { autoUpgradeFrom: body.autoUpgradeFrom }),
+					...(body.onHostLost === "recreate" ? { onHostLost: "recreate" as const } : {}),
 					source: from === undefined ? undefined : { snapshotId: from.id },
 					createdBy: actorOf(principal),
 					createdAt: now(),
@@ -10111,6 +11111,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						autoUpgrade: body.autoUpgrade === undefined ? latest.autoUpgrade : body.autoUpgrade || undefined,
 						autoUpgradeFrom:
 							body.autoUpgradeFrom === undefined ? latest.autoUpgradeFrom : (body.autoUpgradeFrom ?? undefined),
+						// Read as its host is lost (`settleLosing`): a change after that is for its next loss.
+						onHostLost:
+							body.onHostLost === undefined
+								? latest.onHostLost
+								: body.onHostLost === "recreate"
+									? ("recreate" as const)
+									: undefined,
 						stopsAt,
 					};
 				});
@@ -10646,58 +11653,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Never over a move begun since the read above (on another gateway): that is refused as one seen would be.
 				// What it was as it went `deleting`, which may have changed since the read above.
 				let was = current.state;
-				const began = await transition(
-					current.id,
-					NOT_DELETED,
-					(latest) => {
-						was = latest.state;
-						return withState(latest, "deleting");
-					},
-					(latest) => latest.moving === undefined,
-				);
+				// A loss begun and not finished (`losing`, `lostEvent`) is settled first, the one way every caller does
+				// (`settleLoss`): where a lost host's fence holds it, it is recorded lost, with its event, before it is deleted,
+				// so a delete never consumes a fence without its loss. It never goes `deleting` over one, and one begun since the
+				// read above (another gateway's pass) is settled too. A pass that finds it `deleting` begins none.
+				const pending = (sandbox: StoredSandbox) => sandbox.losing !== undefined || sandbox.lostEvent !== undefined;
+				let began: Awaited<ReturnType<typeof transition>> | undefined;
+				for (let tries = 0; tries < 3; tries += 1) {
+					if (pending(current)) {
+						// Recorded lost, never made again on another host only to be deleted.
+						await settleLoss(current, false);
+						current = await mustGetSandbox(current.id);
+					}
+					began = await transition(
+						current.id,
+						NOT_DELETED,
+						(latest) => {
+							was = latest.state;
+							return withState(latest, "deleting");
+						},
+						(latest) => latest.moving === undefined && !pending(latest),
+					);
+					if ("moved" in began || !pending(began.lost) || began.lost.state === "deleted") break;
+					current = began.lost;
+				}
+				if (began === undefined) throw new KantelError("unavailable", "The sandbox couldn't be deleted; try again");
 				if (!("moved" in began)) {
+					if (pending(began.lost) && began.lost.state !== "deleted") {
+						throw new KantelError("unavailable", "The sandbox's loss is still being recorded; delete it again shortly");
+					}
 					if (began.lost.moving !== undefined && began.lost.state !== "deleted") {
 						throw new KantelError("conflict", "The sandbox is moving to another host; delete it once the move ends");
 					}
 					return sandboxView(began.lost, principal);
 				}
 				await track([current.id], async () => {
-					try {
-						// A paused one's commands, kept in its memory, go with it, as its guest can't be asked.
-						await killCommandsOf(
-							current.id,
-							was === "paused" ? { note: pausedMemoryGone("deleted"), reconcile: false } : {},
-						);
-						// With the host its record names: a backend whose placement of it went (its host deleted it, and the answer was
-						// lost) settles it by that host, rather than leave it in error with nothing to delete.
-						await backend.destroy(current.id, current.hostId === undefined ? undefined : { hostId: current.hostId });
-						for (const snapshot of await store.snapshots.list({ sandboxId: current.id })) {
-							if (snapshot.kind === "automatic") {
-								await forgetSnapshot(snapshot);
-								await releaseRef(snapshot);
-							} else {
-								// As it is now: forgetting an automatic one may have just passed its memory flag on to it.
-								await store.snapshots.update(snapshot.id, (latest) => ({ ...latest, sandboxId: undefined }));
-							}
-						}
-						const result = await transition(current.id, "deleting", (latest) =>
-							withState(latest, "deleted", {
-								ports: [],
-								latestSnapshotId: undefined,
-								latestSnapshotAt: undefined,
-								pausedSnapshotId: undefined,
-							}),
-						);
-						if (!("moved" in result)) return;
-						const deleted = result.moved;
-						await emit("sandbox.deleted", deleted.accountId, {
-							sandbox: deleted,
-							data: { previousState: current.state, actor: actorOf(principal) },
-						});
-					} catch (error) {
-						await fail(current.id, error, "deleting");
-						throw error;
-					}
+					await completeDelete(current, was, actorOf(principal));
 				});
 				return sandboxView(await mustGetSandbox(current.id), principal);
 			}),
@@ -10872,6 +11863,52 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return commandView(fetched);
 		},
 
+		readCommandOutput: async (principal, { params, query }) => {
+			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
+			const stored = await store.commands.get(params.commandId);
+			if (stored === undefined || stored.sandboxId !== sandbox.id) throw notFound("command");
+			const command = await fetchedCommand(stored);
+			if (command.state === "running") noteActivity(sandbox.id);
+			const stream = query.stream ?? "stdout";
+			const encoding = query.encoding ?? "utf8";
+			const range = { offset: query.offset ?? 0, length: Math.min(query.length ?? MAX_FILE_BYTES, MAX_FILE_BYTES) };
+			const answer = (part: CommandOutputPart) => ({
+				commandId: command.id,
+				stream,
+				encoding,
+				content:
+					encoding === "base64" ? bytesToBase64(part.bytes) : decodeUtf8(part.bytes, `${command.id}'s ${stream}`),
+				offset: part.offset,
+				size: part.size,
+				ended: part.ended,
+				truncated: part.truncated,
+				limit: part.limit,
+			});
+			// Its sandbox may keep it all (a microVM's guest agent, on its disk), read while it runs, as files are: from there
+			// whenever it can, so one reader's offsets stay the sandbox's bytes. Stopped, the record answers for a command that
+			// exited (its end its backend's own) with none of it cut; anything else needs the sandbox running.
+			// A record with U+FFFD may stand for bytes that weren't UTF-8 (its host's JSON replaced them), so its offsets
+			// wouldn't be the sandbox's: it doesn't answer for it.
+			const whole =
+				(command.state === "exited" || command.state === "timed_out") &&
+				!command.truncated &&
+				!command.stdout.includes("\uFFFD") &&
+				!command.stderr.includes("\uFFFD");
+			const read = sandbox.type === "isolate" ? undefined : backend.commandOutput?.bind(backend);
+			if (read !== undefined && (sandbox.state === "running" || !whole)) {
+				await requireRunning(principal, sandbox.id);
+				try {
+					return answer(await read(sandbox.id, command.id, stream, range));
+				} catch (error) {
+					// A sandbox that keeps none (an older kantel-host or guest agent), or none of this command (it ran on one).
+					if (!(error instanceof KantelError && (error.code === "not_supported" || error.code === "not_found"))) {
+						throw error;
+					}
+				}
+			}
+			return answer(recordedOutput(command, stream, range));
+		},
+
 		killCommand: async (principal, { params }) => {
 			const { sandbox } = await sandboxFor(principal, params.sandboxId, "exec");
 			const stored = await store.commands.get(params.commandId);
@@ -10913,6 +11950,42 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				mode = Number.parseInt(body.mode, 8);
 			}
 			return fileEntry(await backend.writeFile(sandbox.id, path, bytes, mode));
+		},
+
+		writeFilePart: async (principal, { params, query }, request) => {
+			const { sandbox, running, path } = await filePartsTarget(principal, params.sandboxId, query.path);
+			if (request.body === null) throw new KantelError("invalid", "Send the part as the request's body");
+			if (backend.writeFilePart === undefined) throw partsUnsupported(sandbox);
+			const limit = Math.min(computeSchema.MAX_FILE_PART_BYTES, computeSchema.MAX_FILE_PARTS_BYTES - query.offset);
+			const { size } = await backend.writeFilePart(
+				running.id,
+				path,
+				query.upload,
+				query.offset,
+				request.body.pipeThrough(atMost(limit)),
+			);
+			return { path, upload: query.upload, offset: query.offset, size };
+		},
+
+		completeFileParts: async (principal, { params, body }) => {
+			const { sandbox, running, path } = await filePartsTarget(principal, params.sandboxId, body.path);
+			if (backend.completeFileParts === undefined) throw partsUnsupported(sandbox);
+			let mode: number | undefined;
+			if (body.mode !== undefined) {
+				mode = /^0?[0-7]{3}$/.test(body.mode) ? Number.parseInt(body.mode, 8) : 0;
+				// 0 would read as no mode given, and the file would be 0644.
+				if (mode === 0) throw new KantelError("invalid", "mode must be octal permissions, such as 0755, not 0000");
+			}
+			return fileEntry(
+				await backend.completeFileParts(running.id, path, body.upload, body.size, body.sha256.toLowerCase(), mode),
+			);
+		},
+
+		abortFileParts: async (principal, { params, query }) => {
+			const { sandbox, running, path } = await filePartsTarget(principal, params.sandboxId, query.path);
+			if (backend.abortFileParts === undefined) throw partsUnsupported(sandbox);
+			await backend.abortFileParts(running.id, path, query.upload);
+			return undefined;
 		},
 
 		deleteFile: async (principal, { params, query }) => {
@@ -11083,10 +12156,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "snapshots:read", role);
 			const visible: StoredSnapshot[] = [];
-			const all = await store.snapshots.list({ accountId: account.id });
-			// The bytes that hold memory, from the same read (`holdsMemory`): a save shares its source's ref, in its account.
-			const memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			// When a sandbox is named, seek by sandboxId (compute_api_records_by_sandbox) rather than reading every
+			// snapshot in the account; otherwise seek by (accountId, kind).
+			const all =
+				query.sandboxId !== undefined
+					? await store.snapshots.list({ sandboxId: query.sandboxId })
+					: await store.snapshots.list({
+							accountId: account.id,
+							...(query.kind !== undefined ? { kind: query.kind } : {}),
+						});
 			for (const snapshot of all) {
+				if (snapshot.accountId !== account.id) continue;
 				if (query.kind !== undefined && snapshot.kind !== query.kind) continue;
 				if (query.sandboxId !== undefined && snapshot.sandboxId !== query.sandboxId) continue;
 				if (snapshot.state === "deleting") continue;
@@ -11094,6 +12174,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			}
 			const page = paginate(newestFirst(visible), query.limit, query.cursor);
 			const uses = page.items.length === 0 ? new Map<string, number>() : await usesIn(account.id);
+			// The bytes that hold memory (`holdsMemory`): derive from `all` when the account's whole snapshot list was
+			// already read; otherwise resolve every missing ref in one bulk read (indexed on SQLite, one pass on Postgres).
+			let memoryRefs: Set<string>;
+			if (query.sandboxId === undefined && query.kind === undefined) {
+				memoryRefs = new Set(all.flatMap((snapshot) => (snapshot.memory && snapshot.ref ? [snapshot.ref] : [])));
+			} else {
+				const missingRefs = [
+					...new Set(page.items.flatMap((snapshot) => (!snapshot.memory && snapshot.ref ? [snapshot.ref] : []))),
+				];
+				memoryRefs =
+					missingRefs.length === 0
+						? new Set()
+						: new Set(
+								(await store.snapshots.list({ memory: true }, { ref: missingRefs })).flatMap((snapshot) =>
+									snapshot.ref ? [snapshot.ref] : [],
+								),
+							);
+			}
 			const items = page.items.map((snapshot) =>
 				snapshotView(
 					{
@@ -11575,9 +12673,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// protected hosts and grants.
 			if (backend.updateEgress !== undefined) {
 				// Each one's revision moves on first, so a boot under way reconciles, and an egress read before is ignored.
-				const live = (await store.sandboxes.list({ accountId: account.id })).filter(
-					(sandbox) => sandbox.state === "running" || sandbox.state === "starting",
-				);
+				const live = await store.sandboxes.list({ accountId: account.id }, { state: ["running", "starting"] });
 				const bumped = await Promise.all(live.map((sandbox) => bumpEgress(sandbox.id)));
 				pushEgress(
 					bumped.filter((sandbox): sandbox is StoredSandbox => sandbox !== undefined && sandbox.state === "running"),
@@ -11921,21 +13017,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		listEvents: async (principal, { query }) => {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "sandboxes:read", role);
-			const matching = (await store.events.list({ accountId: account.id })).filter(
-				(event) =>
-					(query.sandboxId === undefined || event.sandboxId === query.sandboxId) &&
-					(query.type === undefined || event.type === query.type) &&
-					(query.since === undefined || event.createdAt >= query.since),
-			);
+			const { offset, size } = parsePage(query.limit, query.cursor);
 			// A sandbox's events are seen only by who may see the sandbox (a private one, a limited key's list); one whose
 			// sandbox is gone stays with the account's admins and unlimited keys.
 			const seen = new Map<string, boolean>();
-			const events = [];
-			for (const event of matching) {
-				if (event.sandboxId === undefined) {
-					events.push(event);
-					continue;
-				}
+			const canSeeEvent = async (event: StoredEvent): Promise<boolean> => {
+				if (event.sandboxId === undefined) return true;
 				let visible = seen.get(event.sandboxId);
 				if (visible === undefined) {
 					const sandbox = await store.sandboxes.get(event.sandboxId);
@@ -11946,7 +13033,41 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							: await canSee(principal, sandbox, role);
 					seen.set(event.sandboxId, visible);
 				}
-				if (visible) events.push(event);
+				return visible;
+			};
+			if (store.events.listNewest !== undefined) {
+				const need = offset + size + 1;
+				const where = query.sandboxId !== undefined ? { sandboxId: query.sandboxId } : { accountId: account.id };
+				const visible: StoredEvent[] = [];
+				let beforeSeq: number | undefined;
+				while (visible.length < need) {
+					const batch = await store.events.listNewest(where, { limit: Math.max(200, size + 1), beforeSeq });
+					for (const event of batch.items) {
+						if (event.accountId !== account.id) continue;
+						if (query.sandboxId !== undefined && event.sandboxId !== query.sandboxId) continue;
+						if (query.type !== undefined && event.type !== query.type) continue;
+						if (query.since !== undefined && event.createdAt < query.since) continue;
+						if (await canSeeEvent(event)) {
+							visible.push(event);
+							if (visible.length >= need) break;
+						}
+					}
+					if (batch.nextBeforeSeq === undefined) break;
+					beforeSeq = batch.nextBeforeSeq;
+				}
+				const items = visible.slice(offset, offset + size);
+				const next = offset + size;
+				return next < visible.length ? { items, nextCursor: btoa(String(next)) } : { items };
+			}
+			const matching = (await store.events.list({ accountId: account.id })).filter(
+				(event) =>
+					(query.sandboxId === undefined || event.sandboxId === query.sandboxId) &&
+					(query.type === undefined || event.type === query.type) &&
+					(query.since === undefined || event.createdAt >= query.since),
+			);
+			const events: StoredEvent[] = [];
+			for (const event of matching) {
+				if (await canSeeEvent(event)) events.push(event);
 			}
 			const page = paginate([...events].reverse(), query.limit, query.cursor);
 			return { items: page.items, nextCursor: page.nextCursor };
@@ -13274,7 +14395,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			const read = await store.sandboxes.get(sandboxId);
 			if (read === undefined || !unsettledCreate(read)) return;
 			const lifecycle = read.lifecycle ?? 0;
-			const attempt = (current: StoredSandbox) => unsettledCreate(current) && (current.lifecycle ?? 0) === lifecycle;
+			// Never while a loss of its host has begun (`losing`), which settles it; one whose fence didn't land drops it.
+			const attempt = (current: StoredSandbox) =>
+				unsettledCreate(current) && (current.lifecycle ?? 0) === lifecycle && current.losing === undefined;
 			const outcome = await settleCreate.call(backend, sandboxId, lifecycle);
 			if (outcome.state === "pending" || outcome.reportedAt + CREATE_SETTLE_GRACE_MS > now()) return;
 			if (outcome.state === "running") {
@@ -13292,6 +14415,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return;
 			}
 			if (outcome.state === "lost") {
+				// One being made again on another host (`recreating`) is lost again, saying why.
+				if (read.recreating !== undefined) {
+					await loseRecreation(sandboxId, attempt, notRecreated(`${NOT_RECREATED.failed} (${outcome.reason})`));
+					return;
+				}
 				await fail(sandboxId, new KantelError("unavailable", outcome.reason), "starting", attempt);
 				return;
 			}
@@ -13985,7 +15113,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Drained first, so no new sandbox lands on it as its sandboxes go.
 		if (host.state !== "draining") await changeHost(host, { draining: true });
 		// Its sandboxes listed as it begins, so the answer has them: written with the record, before any gateway holds it.
-		const sandboxes = (await store.sandboxes.list({ hostId: host.id })).flatMap((sandbox) => {
+		const sandboxes = (await store.sandboxes.list({ hostId: host.id }, { state: LISTED_STATES })).flatMap((sandbox) => {
 			const item = evacuationSandboxOf(host.id, undefined, sandbox, false);
 			return item === undefined ? [] : [item];
 		});
@@ -14115,7 +15243,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	): Promise<StoredEvacuation | undefined> {
 		const read = await store.evacuations.get(hostId);
 		if (read === undefined || read.run !== run || read.state !== "running") return undefined;
-		const onHost = await store.sandboxes.list({ hostId });
+		const onHost = await store.sandboxes.list({ hostId }, { state: LISTED_STATES });
 		const records = new Map(onHost.map((sandbox) => [sandbox.id, sandbox]));
 		for (const item of read.sandboxes) {
 			if (!records.has(item.sandboxId) && !evacuationDone(item)) {
@@ -14790,6 +15918,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		async sweep() {
 			const at = now();
 			keepGoing(sweepStickyDisks().catch(() => undefined));
+			// Hosts away past the deadline: their sandboxes fenced and lost, in the background (one pass at a time).
+			keepGoing(markLostHosts(at));
 			if (at - copiesKeptAt >= SNAPSHOT_COPIES_EVERY_MS) {
 				copiesKeptAt = at;
 				keepGoing(keepEverySnapshotsCopies());
@@ -14862,7 +15992,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// backend, one under way on this gateway left to it. Creates whose answer was lost likewise, in the background, as
 			// each may ask its host.
 			for (const sandbox of await store.sandboxes.list({ state: "starting" })) {
-				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) keepGoing(settleLostCreate(sandbox.id));
+				// One being made again on another host whose gateway went quiet (`recreating.heartbeatAt`) is settled as a create
+				// is, then, where that settles nothing, tried again (`retryStaleRecreate`).
+				if (!pending.has(sandbox.id) && unsettledCreate(sandbox)) {
+					const recreating = sandbox.recreating;
+					keepGoing(
+						recreating !== undefined && recreating.heartbeatAt + UPGRADE_STALE_MS <= at
+							? retryStaleRecreate(sandbox.id, at).catch(() => undefined)
+							: settleLostCreate(sandbox.id),
+					);
+				}
 				// Ordinary boots (starts, resumes, recoveries) whose gateway has gone quiet: settled from what their host has,
 				// in the background, as each may wait on its host. One with no lease (begun before leases were kept) gets one.
 				if (backend.settleStart !== undefined && !pending.has(sandbox.id) && unsettledStart(sandbox)) {
@@ -14890,10 +16029,20 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (moving !== undefined && !pending.has(sandbox.id) && moving.heartbeatAt + UPGRADE_STALE_MS <= at) {
 					await settleStuckMove(sandbox).catch(() => undefined);
 				}
+				// A delete whose host was away is retried once the host is connected again (#967).
+				if (sandbox.deleteOwed !== undefined && !pending.has(sandbox.id)) {
+					keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
+				}
 				// A boot that failed after its backend let go of its memory, lately: as for a running one below, in case the
 				// failure's own kill didn't finish.
 				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
 					keepGoing(killDroppedOf(sandbox));
+				}
+			}
+			// Owed deletes interrupted mid-retry (stuck in `deleting` past their retry lease) are reclaimed too (#967).
+			for (const sandbox of await store.sandboxes.list({ state: "deleting" })) {
+				if (sandbox.deleteOwed !== undefined && !pending.has(sandbox.id) && owedDeleteEligible(sandbox, at)) {
+					keepGoing(finishOwedDelete(sandbox).catch(() => undefined));
 				}
 			}
 			for (const sandbox of await store.sandboxes.list({ state: "running" })) {
@@ -15164,6 +16313,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 
 		reportExit,
 		reportHostConnection,
+		reportSandboxLost,
 
 		async poolSync(poolId) {
 			return (await store.pools.get(poolId))?.sync === true;

@@ -5,6 +5,9 @@ account's isolate sandboxes: a shell ([just-bash](https://github.com/vercel-labs
 each in its own V8 isolate on [deno_core](https://crates.io/crates/deno_core), over files kept as a manifest the host
 sends. It replaces the workerd worker in `apps/host/isolate` and `images/isolate-host`.
 
+The runtime is a library, `kantel_isolate`, with a thin binary around it; other programs can embed it with their own
+guest bundle and ops ([EMBEDDING.md](EMBEDDING.md)).
+
 It speaks kantel-host's existing isolate protocol (`GET /healthz`, `POST /warm`, `/load`, `/exec`), so
 `apps/host/internal/isolate/isolate.go` drives it unchanged, plus the new fields and routes in
 [CONTRACT.md](CONTRACT.md) (`terminated`, `needsMicrovm`, `POST /reseed`, Unix-socket transports).
@@ -15,7 +18,12 @@ It speaks kantel-host's existing isolate protocol (`GET /healthz`, `POST /warm`,
   host's blob store (`--store`) only when a command reads them; changed files are uploaded at the end of each command
   and returned as the next manifest. `/workspace` is the root, `HOME=/workspace`. Commands that need a real machine
   (`git`, `tar`, `apt`, `docker`, `pip install`, …) answer exit 127 with `needsMicrovm` so Kantel can offer or make
-  the microVM upgrade.
+  the microVM upgrade, and `effects`: `"none"` when the command was refused before any of it ran (its parse showed it
+  can't succeed), `"possible"` when the program was reached while it ran. just-bash carries two patches,
+  shared with Lleverage's isolate: `guest/patches/just-bash@3.6.0.patch` (bun applies it: a read that failed because the file
+  is too large says so, and `<>` and `awk`'s append create a file only when it is missing, never over one they couldn't
+  read) and `guest/just-bash-patches.ts` (the guest build applies it: a filesystem error a redirection meets fails
+  only its own command, not the whole script).
 - **node:** agent JavaScript (and `.ts` with types stripped) in a fresh isolate per run — `node -e`/`-p`/a
   script/`-`/`-v`, `console`, `process`, a `node:fs` over the sandbox's files, `path`/`util`/`os`/`events`/`buffer`/
   `crypto`/`stream`/`readline`/`url`/`assert`/`timers`/`zlib`, relative CommonJS and ESM imports, `fetch` and timers
@@ -71,7 +79,8 @@ bridges on 0600/0700 Unix sockets). Other flags (all have defaults, and each rea
 ## Test
 
 ```sh
-cargo test --release                       # Rust unit tests (limits, config, bridges, wasm, transpile)
+cargo test --release                       # Rust unit tests (limits, config, bridges, wasm, transpile) and tests/
+../guest/isolate-runtime.sh consumer       # the external consumer (consumer/) against HEAD as a git dependency
 # integration suite (bun): starts the binary against STORE/egress stand-ins
 KANTEL_ISOLATE_BIN=target/release/kantel-isolate \
 KANTEL_ISOLATE_ASSETS=<assets-dir> \
@@ -93,7 +102,7 @@ Per isolate, together where noted:
 
 | Limit | Enforced by |
 | --- | --- |
-| Memory (`memoryMiB`, 128–512, default 256) | One limit on the sum of the V8 heap, ArrayBuffers and WebAssembly memory. A GC epilogue records the heap in use after every GC; buffers (the ArrayBuffer allocator's byte budget) and wasm memory (the guest's wasm guard) are refused past memoryMiB minus that heap, and the epilogue terminates the command (exit 137, `terminated: memory`) when heap + buffers + wasm is over memoryMiB, so heap growth on top of buffers is stopped too. The V8 heap limit stays memoryMiB, with a near-heap-limit callback that terminates, as the backstop between GCs. |
+| Memory (`memoryMiB`, 128–512, default 256) | One limit on the sum of the V8 heap, ArrayBuffers and WebAssembly memory. A GC epilogue records the heap in use after every GC; buffers (the ArrayBuffer allocator's byte budget) and wasm memory (the guest's wasm guard) are refused past memoryMiB minus that heap, and the epilogue terminates the command (exit 137, `terminated: memory`) when heap + buffers + wasm is over memoryMiB, so heap growth on top of buffers is stopped too. The V8 heap limit stays memoryMiB, with a near-heap-limit callback that terminates, as the backstop between GCs. The callback also raises the limit, by V8's largest single object (1 GiB) and 64 MiB to unwind at each hit and by at most 2 GiB + 128 MiB in all, so one allocation of any size ends only its own command or run, never the process; a reused shell isolate gets its limit back. |
 | CPU per command | A watchdog thread samples each isolate thread's CPU clock and terminates past `--cpu-ms` (exit 152, `terminated: cpu`); a `node`/`python` run's CPU counts against the shell command that started it. CPU and wall-clock stops end the whole command; a run's own stop (cancelled by the shell's `timeout`, or over its memory) ends only that run, and the shell goes on with its exit code. |
 | Wall clock per command | The same watchdog terminates past the request's `timeoutMs` (max 10 min), default 30 s (exit 152, `terminated: wall`). |
 | Concurrent node/python runs | `--max-runs` (default 2× CPUs, 2–16); over it a run answers a clear "runtime is busy" error. |
@@ -156,6 +165,18 @@ hardening (seccomp, landlock, a dedicated uid and cgroup), which this crate deli
   both builds; a write the budget can't take stops the run (`terminated: memory`). A just-bash command holds a file it reads
   about twice over (the read and its own copy), so a shell reading a file of more than about 45% of memoryMiB is now
   stopped where it used to fit.
+- **A stop at the heap limit can take up to 2 GiB + 128 MiB more, for a moment.** V8 can't fail one heap allocation
+  without ending the process, and a stop lands only after the builtin in flight returns, so the near-heap-limit
+  callback lets its allocations through: at each hit it raises the isolate's limit by V8's largest single object
+  (1 GiB) and the unwind headroom, never more than 2 GiB + 128 MiB past the limit V8 started with (one builtin can
+  make two large objects: filling the largest array with doubles holds its tagged store and the double one at once).
+  That memory is held only until the
+  stopped run ends (a node or python isolate is discarded; a shell isolate is collected and its limit restored).
+  There is no process-wide memory budget beyond the isolates' own (the process's memory is sized by its isolates:
+  shells up to `--max-sandboxes` and runs up to `--max-runs`, each at most memoryMiB), so the process needs that much
+  more for each isolate being stopped at once. In a `v8-sandbox` build the heaps of all isolates share the 4 GiB
+  pointer-compression cage (`v8/README.md`), and the extra comes out of it. ArrayBuffers and WebAssembly memory aren't
+  held by the heap limit: the budget refuses them (a `RangeError`, or the run stopped), so they never need the raise.
 - **The memory guards are JS-level.** The wasm guard (every `WebAssembly.Memory`/`grow`/`Module`/`Instance`, plus a
   host module inspection) and the resizable-buffer guard are installed before any guest code and made
   non-configurable. A failed instantiation gives its memories' reservation back only when nothing of the instance can

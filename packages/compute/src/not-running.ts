@@ -31,6 +31,7 @@ const CODES: { readonly [state in computeSchema.SandboxState]?: computeSchema.Sa
 	paused: "sandbox_paused",
 	error: "sandbox_error",
 	deleting: "sandbox_deleting",
+	lost: "sandbox_lost",
 };
 
 /** The parts of a sandbox the refusal reports. */
@@ -75,6 +76,8 @@ export function portNotRunningText(
 			return `${named} is stopping. Whoever runs it can resume it once it has stopped (${resume}).`;
 		case "deleting":
 			return `${named} is being deleted.`;
+		case "lost":
+			return `${named} was lost with its host, which stayed disconnected too long. It can only be deleted.`;
 		default:
 			return `${named} is in error${sandbox.reason === undefined ? "" : ` (${sandbox.reason.replace(/\.$/, "")})`}. Whoever runs it can resume it (${resume}).`;
 	}
@@ -124,6 +127,10 @@ export function sandboxNotRunning(sandbox: NotRunningSandbox, apiBasePath: strin
 		case "sandbox_deleting":
 			message = "The sandbox is being deleted";
 			hint = "It is being deleted: use another sandbox";
+			break;
+		case "sandbox_lost":
+			message = "The sandbox is lost: its host stayed disconnected past the deadline. It can only be deleted";
+			hint = `It can only be deleted: kantel delete ${sandbox.id}, or DELETE ${apiBasePath.replace(/\/+$/, "")}/sandboxes/${sandbox.id}`;
 			break;
 		default:
 			message = `The sandbox is ${sandbox.state === "error" ? "in error" : sandbox.state}${why}; resume it first`;

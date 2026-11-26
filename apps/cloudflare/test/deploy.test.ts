@@ -268,6 +268,17 @@ describe("deploy config", () => {
 		expect(() => gatewayConfig({ ...access, KANTEL_SNAPSHOT_EXPIRY: "yes" })).toThrow("KANTEL_SNAPSHOT_EXPIRY");
 	});
 
+	it("leaves the lost-host deadline at its default unless KANTEL_HOST_LOST_AFTER_MINUTES sets it, read strictly", () => {
+		const access = { KANTEL_ACCESS_TEAM_DOMAIN: "team.cloudflareaccess.com", KANTEL_ACCESS_AUD: "aud" };
+		const deployed = deployConfig(rawConfig, deployValues(configured, "deploy")).vars as Record<string, string>;
+		expect(deployed.KANTEL_HOST_LOST_AFTER_MINUTES).toBe("");
+		expect(gatewayConfig({ ...access }).hostLostAfterMs).toBeUndefined();
+		expect(gatewayConfig({ ...access, KANTEL_HOST_LOST_AFTER_MINUTES: "10" }).hostLostAfterMs).toBe(600_000);
+		expect(() => gatewayConfig({ ...access, KANTEL_HOST_LOST_AFTER_MINUTES: "0" })).toThrow(
+			"KANTEL_HOST_LOST_AFTER_MINUTES",
+		);
+	});
+
 	it("passes where account hosts' latest kantel-host is read on, a URL or off, and leaves the default unset", () => {
 		const vars = (env: Record<string, string>) =>
 			deployConfig(rawConfig, deployValues({ ...configured, ...env }, "deploy")).vars as Record<string, string>;

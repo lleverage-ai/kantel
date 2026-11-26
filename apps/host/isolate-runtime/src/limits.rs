@@ -22,6 +22,22 @@ use deno_core::v8;
 pub const MIB: usize = 1024 * 1024;
 /// Heap V8 is given while a terminated execution unwinds (the isolate is discarded afterwards).
 const UNWIND_HEADROOM: usize = 64 * MIB;
+/// V8's largest single heap object: a FixedDoubleArray (or, without pointer compression, a FixedArray) of
+/// `kMaxFixedArrayCapacity` (128 Mi) elements is 1 GiB, and a two-byte string of `String::kMaxLength` characters just
+/// under it.
+const LARGEST_OBJECT: usize = 1024 * MIB;
+/// What one hit of the heap limit raises it by: a whole largest object, and the unwind headroom. A termination lands
+/// only once the allocation that hit the limit (and the rest of the builtin making it) has returned, and V8 ends the
+/// whole process if that allocation doesn't fit, so the raise has to fit any one allocation, not just what is left of
+/// the limit.
+const HEAP_LIMIT_RAISE: usize = LARGEST_OBJECT + UNWIND_HEADROOM;
+/// The most the near-heap-limit callback raises an isolate's heap limit past V8's initial one, over all its hits: two
+/// largest objects, and the unwind headroom twice. One builtin can make two large objects before a stop lands: filling
+/// a 128 Mi-element array with doubles holds its tagged backing store (512 MiB with pointer compression, 1 GiB
+/// without) and the 1 GiB double one at once (tests/oom.rs). This bounds what one isolate's stop can take on top of its
+/// memory limit (2 GiB + 128 MiB); past it, V8 ends the process as on any heap exhaustion. More would only let one
+/// isolate take more of the 4 GiB pointer-compression cage every isolate of a sandboxed build shares.
+const MAX_HEAP_LIMIT_RAISE: usize = 2 * LARGEST_OBJECT + 2 * UNWIND_HEADROOM;
 const TICK: Duration = Duration::from_millis(5);
 /// Watchdog ticks (200 ms) a budget a full GC found over the limit may stay over, with no GC since, before the
 /// isolate is stopped (see Watched::check_memory).
@@ -122,6 +138,9 @@ pub struct Budget {
     armed: AtomicBool,
     /// Set when this budget refused an allocation; the isolate is being terminated.
     pub exceeded: AtomicBool,
+    /// V8's initial heap limit, as the near-heap-limit callback last saw it (0 if it never ran): what a reused isolate's
+    /// limit is restored to after the callback raised it.
+    initial_heap_limit: AtomicUsize,
     handle: OnceLock<v8::IsolateHandle>,
     /// The C++ budget allocator's ArrayBuffer bytes (sandbox build): its own limit is memoryMiB, so the sum is checked
     /// here. Held so the allocator outlives every reader of the budget (a body still being collected on an I/O
@@ -152,6 +171,7 @@ impl Budget {
             suspect: AtomicBool::new(false),
             armed: AtomicBool::new(false),
             exceeded: AtomicBool::new(false),
+            initial_heap_limit: AtomicUsize::new(0),
             handle: OnceLock::new(),
             #[cfg(feature = "v8-sandbox")]
             buffers: OnceLock::new(),
@@ -167,6 +187,11 @@ impl Budget {
     pub fn used(&self) -> usize {
         self.used.load(Ordering::SeqCst)
     }
+    /// V8's initial heap limit if the near-heap-limit callback has raised it, else 0: what to restore it to
+    /// (`JsRuntime::remove_near_heap_limit_callback`) before the isolate is reused.
+    pub(crate) fn initial_heap_limit(&self) -> usize {
+        self.initial_heap_limit.load(Ordering::SeqCst)
+    }
     /// The V8 heap in use at the last GC.
     pub fn heap(&self) -> usize {
         self.heap.load(Ordering::SeqCst)
@@ -179,14 +204,23 @@ impl Budget {
         }
         0
     }
+    /// What the isolate holds outside the V8 heap, now: ArrayBuffers (in either build), the wasm memory its guest
+    /// reserved, and host-side bytes being collected for it. `total()` less `heap()`, read at once.
+    pub fn outside_heap(&self) -> usize {
+        self.used.load(Ordering::SeqCst) + self.sandbox_buffers()
+    }
     /// Everything the isolate holds: heap + buffers + wasm (+ bodies in flight).
     pub fn total(&self) -> usize {
-        self.used.load(Ordering::SeqCst) + self.heap() + self.sandbox_buffers()
+        self.outside_heap() + self.heap()
     }
     pub fn reset_exceeded(&self) {
         self.exceeded.store(false, Ordering::SeqCst);
         self.suspect.store(false, Ordering::SeqCst);
         self.refused_at.store(NO_REFUSAL, Ordering::SeqCst);
+    }
+    /// Whether the budget is armed (a command, or an embedder's [`enforce`](crate::memory::enforce), is running).
+    pub fn armed(&self) -> bool {
+        self.armed.load(Ordering::SeqCst)
     }
     /// Let the GC epilogue terminate this isolate for memory (while a command runs), or not.
     pub fn arm(&self, on: bool) {
@@ -715,24 +749,37 @@ fn watchdog() {
     }
 }
 
-/// The near-heap-limit callback: the isolate reached its heap ceiling (memoryMiB). On the first hit it marks the
-/// budget and terminates the running script; it then raises the limit so V8 can unwind. It terminates only once: GC
-/// while the terminated isolate is being torn down re-enters this callback, and calling terminate_execution then
-/// would re-arm the terminate flag mid-destroy and abort the process, so later hits only grant headroom.
+/// The near-heap-limit callback: the isolate reached its heap ceiling (memoryMiB), or V8 couldn't fit one allocation
+/// under it however much it collected. On the first hit it marks the budget and terminates the running script; it
+/// then raises the limit so the allocation in flight fits and V8 can unwind (see [`HEAP_LIMIT_RAISE`] and
+/// [`MAX_HEAP_LIMIT_RAISE`]). It terminates only once: GC while the terminated isolate is being torn down re-enters
+/// this callback, and calling terminate_execution then would re-arm the terminate flag mid-destroy and abort the
+/// process, so later hits only raise the limit.
 pub fn near_heap_limit(
     budget: &Arc<Budget>,
     handle: v8::IsolateHandle,
 ) -> impl FnMut(usize, usize) -> usize + 'static {
     let budget = budget.clone();
     let mut fired = false;
-    move |current, _initial| {
+    move |current, initial| {
         budget.exceeded.store(true, Ordering::SeqCst);
+        budget.initial_heap_limit.store(initial, Ordering::SeqCst);
         if !fired {
             fired = true;
             handle.terminate_execution();
         }
-        current + UNWIND_HEADROOM
+        raised_heap_limit(current, initial)
     }
+}
+
+/// The heap limit the callback answers when V8 is at `current`, from its initial `initial`: one raise more, never past
+/// the most an isolate's stop may take (at that ceiling, the limit stays).
+fn raised_heap_limit(current: usize, initial: usize) -> usize {
+    let ceiling = initial.saturating_add(MAX_HEAP_LIMIT_RAISE);
+    current
+        .saturating_add(HEAP_LIMIT_RAISE)
+        .min(ceiling)
+        .max(current)
 }
 
 #[cfg(test)]
@@ -804,6 +851,21 @@ mod tests {
         assert!(!b.exceeded.load(Ordering::SeqCst));
         b.after_gc(60 * MIB, false);
         assert!(b.exceeded.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_heap_limit_hit_makes_room_for_the_largest_object_up_to_a_ceiling() {
+        let initial = 64 * MIB;
+        let once = raised_heap_limit(initial, initial);
+        assert_eq!(once, initial + LARGEST_OBJECT + UNWIND_HEADROOM);
+        let twice = raised_heap_limit(once, initial);
+        assert_eq!(twice, initial + 2 * (LARGEST_OBJECT + UNWIND_HEADROOM));
+        assert_eq!(twice, initial + MAX_HEAP_LIMIT_RAISE);
+        // At the ceiling the limit stays: V8 may then end the process, as on any heap exhaustion.
+        assert_eq!(raised_heap_limit(twice, initial), twice);
+        // A limit already past the ceiling is never lowered.
+        let past = initial + 3 * LARGEST_OBJECT;
+        assert_eq!(raised_heap_limit(past, initial), past);
     }
 
     #[test]

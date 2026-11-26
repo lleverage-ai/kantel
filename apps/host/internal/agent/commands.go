@@ -30,6 +30,14 @@ type CommandRunner interface {
 	KillCommand(ctx context.Context, sandboxID, commandID string) (bool, error)
 }
 
+// OutputReader is a tier whose sandboxes keep their commands' output past what a result holds (the microVM tier's
+// guest agent, on the sandbox's disk), for sandbox.exec.output.
+type OutputReader interface {
+	// CommandOutput is a part of one of a command's streams; not_found when the sandbox keeps none of it, unsupported
+	// when the sandbox keeps no command's (a guest agent from before).
+	CommandOutput(ctx context.Context, p proto.ExecOutputParams) (proto.ExecOutput, error)
+}
+
 // noLimitMs is the timeout a detached command with no limit of its own is given when the host runs it on a guest agent
 // from before (which has a default of 120 s, and honours a timeout): about 35 years.
 const noLimitMs = 1 << 40
@@ -459,6 +467,31 @@ func (h *Host) commandStatus(ctx context.Context, p proto.ExecRef) (any, error) 
 		return runner.CommandStatus(ctx, p.SandboxID, p.CommandID, wait)
 	}
 	return nil, &proto.Error{Code: proto.ErrNotFound, Message: fmt.Sprintf("no command %s in sandbox %s on this host", p.CommandID, p.SandboxID)}
+}
+
+// commandOutput is sandbox.exec.output: a part of a command's output, as its sandbox keeps it.
+func (h *Host) commandOutput(ctx context.Context, p proto.ExecOutputParams) (any, error) {
+	if !validCommandID(p.CommandID) {
+		return nil, invalid("a command's ID is up to %d letters, digits, _, - and .", maxCommandID)
+	}
+	if p.Stream != proto.ExecStdout && p.Stream != proto.ExecStderr {
+		return nil, invalid("stream is %s or %s, not %q", proto.ExecStdout, proto.ExecStderr, p.Stream)
+	}
+	if p.Offset < 0 || p.Length < 0 {
+		return nil, invalid("offset and length can't be negative")
+	}
+	if p.Length == 0 || p.Length > proto.ExecOutputMaxRead {
+		p.Length = proto.ExecOutputMaxRead
+	}
+	t, err := h.tierOf(p.SandboxID)
+	if err != nil {
+		return nil, err
+	}
+	reader, ok := t.(OutputReader)
+	if !ok {
+		return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "this sandbox keeps no command output past its result"}
+	}
+	return reader.CommandOutput(ctx, p)
 }
 
 // guestStatusTimeout bounds asking a guest for a running command's output so far.

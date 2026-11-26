@@ -22,12 +22,14 @@ import { createSqlRelayStore, migrateRelay } from "@kantel/hosts/relay-store";
 import { createSqlHostReleasesStore } from "@kantel/hosts/releases";
 import { createSqlHostStore, migrateHosts } from "@kantel/hosts/store";
 import { createSqlIdentity, createSqlOtpStores, migrateIdentity } from "@kantel/identity/sql";
-import { postgresPoolDriver } from "@kantel/sql/postgres";
+import type { SqlDriver } from "@kantel/sql";
+import { postgresFailure, postgresPoolDriver, postgresRenewingPool } from "@kantel/sql/postgres";
 import pg from "pg";
 import { parse } from "pg-connection-string";
 import { createGatewayCluster, type GatewayCluster } from "./cluster.ts";
 import { deferredAccess, type GatewayComponents, identityAccess } from "./components.ts";
 import { type ComputeHostsConfig, gatewayHosts } from "./compute.ts";
+import { freshLookupStream } from "./fresh-socket.ts";
 import { postgresLiveRelay } from "./live-relay.ts";
 
 export interface DurableConfig {
@@ -41,7 +43,51 @@ export interface DurableConfig {
 	readonly replicaUrl?: string;
 	/** The replicas' heartbeat and how long one may miss it; tests shorten them. */
 	readonly cluster?: { readonly heartbeatMs?: number; readonly staleMs?: number };
+	/** How long to wait on Postgres; `DATABASE_TIMEOUTS` for any left out. */
+	readonly timeouts?: Partial<DatabaseTimeouts>;
+	/**
+	 * The pauses between attempts to reach Postgres at start, while it can't be reached or is read-only; the last
+	 * repeats, with no limit. Tests shorten them.
+	 */
+	readonly startRetryMs?: readonly number[];
+	/** The pauses before a call that failed before Postgres could have applied it is tried again (`postgresPoolDriver`). */
+	readonly callRetryMs?: readonly number[];
 }
+
+/**
+ * How long the gateway waits on Postgres, in milliseconds; 0 turns one off. Each is a setting (main.ts): a call during a
+ * failover or restart fails within about these, rather than hanging, and the gateway carries on once Postgres is back.
+ */
+export interface DatabaseTimeouts {
+	/** To open a connection, or to get one from the pool when all are busy (KANTEL_DATABASE_CONNECT_TIMEOUT_MS). */
+	readonly connectMs: number;
+	/**
+	 * For a statement: Postgres cancels one that runs longer (`statement_timeout`), and the gateway gives up on one with
+	 * no answer 5 s after that, as on a connection whose server is gone (KANTEL_DATABASE_STATEMENT_TIMEOUT_MS). Not for
+	 * the migrations at start, which may build an index on a large table.
+	 */
+	readonly statementMs: number;
+	/** Postgres closes a connection left in a transaction this long (`idle_in_transaction_session_timeout`). */
+	readonly idleInTransactionMs: number;
+	/** TCP keepalive on every connection, starting after this long idle (KANTEL_DATABASE_KEEPALIVE_MS). */
+	readonly keepAliveMs: number;
+}
+
+export const DATABASE_TIMEOUTS: DatabaseTimeouts = {
+	connectMs: 5_000,
+	statementMs: 30_000,
+	idleInTransactionMs: 30_000,
+	keepAliveMs: 10_000,
+};
+
+/** How long past `statement_timeout` the gateway waits for an answer before it gives up on the connection. */
+const ANSWER_GRACE_MS = 5_000;
+/** The pauses between attempts to reach Postgres at start; the last repeats. */
+const START_RETRY_MS = [500, 1_000, 2_000, 5_000, 10_000];
+/** The pauses before a call is tried again: twice, quickly, so a call during an outage still fails within seconds. */
+const CALL_RETRY_MS = [100, 1_000];
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
 const SCHEMA = /^[a-z_][a-z0-9_]{0,62}$/;
 /**
@@ -57,12 +103,144 @@ const SCHEMA_LOCK = 7316102025;
  * with a URL (parse it into the settings, unconverted, and let the client interpret them, `ssl=no-verify` included),
  * then appends the search path to the URL's own `options`, where the last `-c` wins.
  */
-export function withSearchPath(databaseUrl: string, schema: string): pg.PoolConfig {
+export function withSearchPath(databaseUrl: string, schema: string, defaults: readonly string[] = []): pg.PoolConfig {
 	if (!SCHEMA.test(schema)) throw new Error(`invalid schema name ${JSON.stringify(schema)}`);
 	const parsed = parse(databaseUrl);
-	const options = [parsed.options?.trim(), `-c search_path=${schema}`].filter(Boolean).join(" ");
+	// `defaults` first, so the URL's own `-c` settings win over them, and the search path last.
+	const options = [...defaults, parsed.options?.trim(), `-c search_path=${schema}`].filter(Boolean).join(" ");
 	// The parsed settings are what pg.Client itself reads from a URL; their nulls mean "unset", as there.
 	return { ...(parsed as pg.PoolConfig), options };
+}
+
+/** Postgres's units for a time setting, in milliseconds; a bare number is milliseconds. */
+const TIME_UNITS: { readonly [unit: string]: number } = {
+	us: 0.001,
+	ms: 1,
+	s: 1_000,
+	min: 60_000,
+	h: 3_600_000,
+	d: 86_400_000,
+};
+
+/** A time setting's value (`90000`, `90s`, `'2 min'`) in milliseconds, or `undefined` when it can't be read. */
+export function settingMs(value: unknown): number | undefined {
+	const match = /^\s*'?\s*(\d+(?:\.\d+)?)\s*(us|ms|s|min|h|d)?\s*'?\s*$/.exec(String(value ?? ""));
+	if (match === null) return undefined;
+	return Number(match[1]) * (TIME_UNITS[match[2] ?? "ms"] ?? 1);
+}
+
+/**
+ * The statement timeout a connection with `settings` gets, in milliseconds (0 for none), or `undefined` when it can't be
+ * told. A `statement_timeout` setting of its own (from the URL's query) wins, as Postgres applies it after `options`;
+ * then the last `-c statement_timeout=` (or `--statement_timeout=`) in `options`.
+ */
+export function effectiveStatementMs(settings: pg.PoolConfig): number | undefined {
+	const own = (settings as { statement_timeout?: unknown }).statement_timeout;
+	if (own !== undefined && own !== null && own !== false) return settingMs(own);
+	const set = [...String(settings.options ?? "").matchAll(/(?:-c\s*|--)statement_timeout=(\S+)/g)];
+	const last = set.at(-1);
+	return last === undefined ? 0 : settingMs(last[1]);
+}
+
+/**
+ * `withSearchPath`'s settings with `timeouts`: the connect timeout and keepalive, and, with `statements`, the statement
+ * and idle-in-transaction timeouts, which a URL's own `options` override. The client gives up on an answer
+ * `ANSWER_GRACE_MS` after the statement timeout the connection ends up with, the URL's if it sets one; with none, or
+ * one it can't read, it waits.
+ */
+export function connectionSettings(
+	databaseUrl: string,
+	schema: string,
+	timeouts: DatabaseTimeouts,
+	{ statements = true }: { readonly statements?: boolean } = {},
+): pg.PoolConfig {
+	const defaults = statements
+		? [
+				`-c statement_timeout=${timeouts.statementMs}`,
+				`-c idle_in_transaction_session_timeout=${timeouts.idleInTransactionMs}`,
+			]
+		: [`-c idle_in_transaction_session_timeout=${timeouts.idleInTransactionMs}`];
+	const settings = withSearchPath(databaseUrl, schema, defaults);
+	const statementMs = statements ? effectiveStatementMs(settings) : undefined;
+	return {
+		...settings,
+		// A fresh lookup of the host for each connection: Bun keeps a failed one (fresh-socket.ts).
+		stream: freshLookupStream,
+		connectionTimeoutMillis: timeouts.connectMs,
+		keepAlive: timeouts.keepAliveMs > 0,
+		keepAliveInitialDelayMillis: timeouts.keepAliveMs,
+		...(statementMs !== undefined && statementMs > 0
+			? { query_timeout: Math.ceil(statementMs) + ANSWER_GRACE_MS }
+			: {}),
+	};
+}
+
+/**
+ * Gives each of the pool's connections a listener for its errors. `pg` emits one on a connection that breaks between
+ * statements; the pool listens only while the connection is idle, so a break while it was lent (between a batch's
+ * statements, say) had no listener and was thrown out of the process. The call using it fails on its next statement,
+ * and the driver closes it.
+ */
+function quietly(pool: pg.Pool): void {
+	pool.on("connect", (client) => client.on("error", () => undefined));
+}
+
+/**
+ * The schema and every component's tables, on a pool of one connection of its own with no statement timeout (an index
+ * on a large table can take a while). Each step is idempotent and takes an advisory lock, so gateways starting together
+ * take turns, and a start that failed half way can run it all again.
+ */
+async function migrate(config: DurableConfig, timeouts: DatabaseTimeouts): Promise<void> {
+	const pool = new pg.Pool({
+		...connectionSettings(config.databaseUrl, config.schema, timeouts, { statements: false }),
+		max: 1,
+	});
+	pool.on("error", () => undefined);
+	quietly(pool);
+	try {
+		const driver: SqlDriver = postgresPoolDriver(pool);
+		// The schema first: the gateway's connections start with it on their search path.
+		await driver.batch([
+			{ sql: `SELECT pg_advisory_xact_lock(${SCHEMA_LOCK})` },
+			{ sql: `CREATE SCHEMA IF NOT EXISTS ${config.schema}` },
+		]);
+		await migrateAudit(driver);
+		await migrateIdentity(driver);
+		await migrateComputeStore(driver);
+		if (config.computeHosts !== undefined) {
+			await migrateHosts(driver);
+			await migrateRelay(driver);
+		}
+	} finally {
+		await pool.end();
+	}
+}
+
+/**
+ * Runs `migrate` until it succeeds. While Postgres can't be reached, is starting or shutting down, or is read-only (a
+ * standby, before a failover settles), it waits and tries again with backoff, with no limit, rather than exiting; any
+ * other error (a wrong password, a missing database) is thrown.
+ */
+async function migrateOnceReachable(
+	config: DurableConfig,
+	timeouts: DatabaseTimeouts,
+	log: (message: string) => void,
+): Promise<void> {
+	const retry = config.startRetryMs ?? START_RETRY_MS;
+	for (let failures = 0; ; failures++) {
+		try {
+			await migrate(config, timeouts);
+			if (failures > 0) log("[gateway] Postgres is reachable again; starting");
+			return;
+		} catch (error) {
+			const failure = postgresFailure(error);
+			if (failure === "other") throw error;
+			const wait = retry[Math.min(failures, retry.length - 1)] ?? 1_000;
+			const why = failure === "readOnly" ? "is read-only" : "can't be reached";
+			log(`[gateway] Postgres ${why} (${(error as Error).message}); trying again in ${wait} ms`);
+			await pause(wait);
+		}
+	}
 }
 
 export async function createDurableGatewayComponents(config: DurableConfig): Promise<GatewayComponents> {
@@ -72,34 +250,37 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 	const close = async () => {
 		for (const closer of closers.splice(0).reverse()) await closer().catch((error) => log(`[gateway] close: ${error}`));
 	};
+	const timeouts = { ...DATABASE_TIMEOUTS, ...config.timeouts };
 	try {
-		// The schema first, on a connection of its own: the pool's connections start with it on their search path.
-		const setup = new pg.Client({ connectionString: config.databaseUrl });
-		await setup.connect();
-		try {
-			await setup.query("BEGIN");
-			await setup.query(`SELECT pg_advisory_xact_lock(${SCHEMA_LOCK})`);
-			await setup.query(`CREATE SCHEMA IF NOT EXISTS ${config.schema}`);
-			await setup.query("COMMIT");
-		} finally {
-			await setup.end();
-		}
+		await migrateOnceReachable(config, timeouts, log);
 		// A call sends up to three statements at once (the compute API's reads that don't depend on each other), so a few
 		// connections stay open while idle: opening one costs more than the statements it carries (about 15-25 ms here,
 		// against about 1 ms a statement), and `pg` closes idle ones after 10 s, which a call after a quiet spell paid for.
-		const pool = new pg.Pool({ ...withSearchPath(config.databaseUrl, config.schema), min: 4, max: 10 });
+		// When one turns out broken or read-only (after a restart or failover), the pool is replaced: its other connections
+		// are to the same old server.
+		const pool = postgresRenewingPool(
+			() => {
+				const created = new pg.Pool({
+					...connectionSettings(config.databaseUrl, config.schema, timeouts),
+					min: 4,
+					max: 10,
+				});
+				created.on("error", (error) => log(`[gateway] idle Postgres connection failed: ${error.message}`));
+				quietly(created);
+				return created;
+			},
+			{
+				onRenew: (why) =>
+					log(`[gateway] a Postgres connection broke or is read-only (${(why as Error)?.message}); opening new ones`),
+			},
+		);
 		closers.push(() => pool.end());
-		pool.on("error", (error) => log(`[gateway] idle Postgres connection failed: ${error.message}`));
 
-		const driver = postgresPoolDriver(pool);
-		await migrateAudit(driver);
-		await migrateIdentity(driver);
-		await migrateComputeStore(driver);
+		const driver = postgresPoolDriver(pool, {
+			retryMs: config.callRetryMs ?? CALL_RETRY_MS,
+			onConnectionLost: (error) => pool.renew(error),
+		});
 		const computeStore = createSqlComputeStore(driver);
-		if (config.computeHosts !== undefined) {
-			await migrateHosts(driver);
-			await migrateRelay(driver);
-		}
 		// Replicas over this database share the hosts: each records the hosts connected to it, and sends calls for the
 		// others' to them.
 		let cluster: GatewayCluster | undefined;
@@ -137,7 +318,7 @@ export async function createDurableGatewayComponents(config: DurableConfig): Pro
 		const liveRelay = postgresLiveRelay({
 			schema: config.schema,
 			query: (text, values) => pool.query(text, [...values]),
-			connect: () => new pg.Client(withSearchPath(config.databaseUrl, config.schema)),
+			connect: () => new pg.Client(connectionSettings(config.databaseUrl, config.schema, timeouts)),
 			log,
 		});
 		closers.push(async () => liveRelay.stop());

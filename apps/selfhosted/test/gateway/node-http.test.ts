@@ -65,12 +65,13 @@ function slowly(port: number, head: string, parts: readonly string[], gapMs: num
 }
 
 describe("which request bodies are streamed", () => {
-	it("streams a file URL's upload, a bundle and an archive, whatever the query", () => {
+	it("streams a file URL's upload, a bundle, an archive and a file's part, whatever the query", () => {
 		expect(streamsRequestBody("PUT", "/v1/file-urls/kfu_abc-DEF_123")).toBe(true);
 		expect(streamsRequestBody("POST", "/v1/bundles")).toBe(true);
 		expect(streamsRequestBody("POST", "/v1/bundles?account=acc_1&digest=sha256:00")).toBe(true);
 		expect(streamsRequestBody("PUT", "/v1/sandboxes/sbx_1/files/archive")).toBe(true);
 		expect(streamsRequestBody("PUT", "/v1/sandboxes/sbx_1/files/archive?path=/work&strip=1")).toBe(true);
+		expect(streamsRequestBody("PUT", "/v1/sandboxes/sbx_1/files/parts?path=/a&upload=u1234567&offset=0")).toBe(true);
 	});
 
 	it("reads every other body whole", () => {
@@ -83,6 +84,7 @@ describe("which request bodies are streamed", () => {
 		expect(streamsRequestBody("POST", "/v1/bundles/sha256:00")).toBe(false);
 		expect(streamsRequestBody("PUT", "/v1/bundles")).toBe(false);
 		expect(streamsRequestBody("POST", "/v1/sandboxes/sbx_1/files/archive")).toBe(false);
+		expect(streamsRequestBody("POST", "/v1/sandboxes/sbx_1/files/parts/complete")).toBe(false);
 		expect(streamsRequestBody("PUT", "/v1/sandboxes/sbx_1/files")).toBe(false);
 		expect(streamsRequestBody("PUT", "/v1/sandboxes/sbx_1/x/files/archive")).toBe(false);
 		expect(streamsRequestBody("POST", "/v2/bundles")).toBe(false);

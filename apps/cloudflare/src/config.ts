@@ -3,7 +3,7 @@
  * and AUD tag are what every visitor's token already names, and the admin email only invites someone Access must still
  * let in. The OAuth clients' secrets and KANTEL_SECRETS_KEY are Worker secrets, never vars.
  */
-import { DEFAULT_BASE_IMAGE_INDEX, parseSecretsKey } from "@kantel/compute";
+import { DEFAULT_BASE_IMAGE_INDEX, hostLostAfterSetting, parseSecretsKey } from "@kantel/compute";
 import { KantelError } from "@kantel/contracts";
 import { DEFAULT_HOST_RELEASES_URL } from "@kantel/hosts/releases";
 import { type OAuthClients, oauthClientsFromEnv } from "@kantel/identity/oauth";
@@ -79,6 +79,11 @@ export interface GatewayVars {
 	 */
 	readonly KANTEL_SNAPSHOT_EXPIRY?: string;
 	/**
+	 * How long a host may stay disconnected before it counts as lost, in minutes (at least 1): its sandboxes move to
+	 * `lost`, and it deletes them when it connects again. Unset or empty: 5.
+	 */
+	readonly KANTEL_HOST_LOST_AFTER_MINUTES?: string;
+	/**
 	 * The key environments' protected variables and secret files (and bucket sources' credentials) are sealed with in the
 	 * stack object's SQLite, as self-hosted's (`@kantel/compute/secrets`): 32 random bytes in base64, a Worker secret set
 	 * with `wrangler secret put KANTEL_SECRETS_KEY` (README). Unset: they are refused, and plain variables still work.
@@ -153,6 +158,8 @@ export interface GatewayConfig {
 	readonly stickyDisks?: boolean;
 	/** Expiry of automatic snapshots, from KANTEL_SNAPSHOT_EXPIRY=on. Absent, off. */
 	readonly snapshotExpiry?: boolean;
+	/** How long a host may be away before it is lost, from KANTEL_HOST_LOST_AFTER_MINUTES. Absent, 5 minutes. */
+	readonly hostLostAfterMs?: number;
 	/** KANTEL_SECRETS_KEY, checked: 32 bytes in base64. Absent, protected values and secret files are refused. */
 	readonly secretsKey?: string;
 	/**
@@ -210,6 +217,11 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 	const githubRunners = experimentalSwitch(vars.KANTEL_GITHUB_RUNNERS, "KANTEL_GITHUB_RUNNERS");
 	const stickyDisks = experimentalSwitch(vars.KANTEL_STICKY_DISKS, "KANTEL_STICKY_DISKS");
 	const snapshotExpiry = onOffSwitch(vars.KANTEL_SNAPSHOT_EXPIRY, "KANTEL_SNAPSHOT_EXPIRY");
+	// Left out when unset, so a config without it is as it was; a value that isn't one is refused.
+	const hostLostAfterMs =
+		trimmed(vars.KANTEL_HOST_LOST_AFTER_MINUTES) === ""
+			? undefined
+			: hostLostAfterSetting(vars.KANTEL_HOST_LOST_AFTER_MINUTES);
 	const secretsKey = trimmed(vars.KANTEL_SECRETS_KEY);
 	// A key that isn't one is refused here, as the self-hosted gateway refuses to start with it, rather than on the first
 	// protected value. The message names the setting, never the value.
@@ -244,6 +256,7 @@ export function gatewayConfig(vars: GatewayVars): GatewayConfig {
 		...(githubRunners ? { githubRunners } : {}),
 		...(stickyDisks ? { stickyDisks } : {}),
 		...(snapshotExpiry ? { snapshotExpiry } : {}),
+		...(hostLostAfterMs === undefined ? {} : { hostLostAfterMs }),
 		...(secretsKey === "" ? {} : { secretsKey }),
 	};
 }

@@ -17,6 +17,7 @@ import {
 	type ApiKeyScope,
 	type Caller,
 	type Command,
+	type CommandOutput,
 	createKantelClient,
 	type EventType,
 	type ExposedPort,
@@ -323,6 +324,8 @@ const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.recovered",
 	"sandbox.oom_kill",
 	"sandbox.upgraded",
+	"sandbox.lost",
+	"sandbox.recreated",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",
@@ -343,6 +346,15 @@ const onOff = (value: "on" | "off" | undefined): boolean | undefined =>
 	value === undefined ? undefined : value === "on";
 
 /** `--size`: one of the API's size names, which the hosts may offer fewer of (`kantel sizes`). */
+/** `--on-host-lost`'s choice, for a create's body. */
+function onHostLostOf(value: string | undefined): { onHostLost?: "recreate" | "lost" } {
+	if (value === undefined) return {};
+	if (value !== "recreate" && value !== "lost") {
+		throw new UsageError(`--on-host-lost takes recreate or lost, not "${value}"`);
+	}
+	return { onHostLost: value };
+}
+
 function sizeOf(value: string | undefined): SandboxSizeName | undefined {
 	if (value === undefined) return undefined;
 	const found = SIZES.find((size) => size === value);
@@ -1466,7 +1478,11 @@ function lifecycle(
 function printOutput(ctx: Context, command: Command): void {
 	if (command.stdout !== "") ctx.io.stdout.write(command.stdout);
 	if (command.stderr !== "") ctx.io.stderr.write(command.stderr);
-	if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
+	if (command.truncated) {
+		ctx.note(
+			`kantel: this shows its first 1 MiB of output; kantel attach ${command.sandboxId} ${command.id} reads all Kantel kept`,
+		);
+	}
 	if (command.state === "killed") ctx.note("kantel: the command was killed");
 	if (command.terminated !== undefined) ctx.note(`kantel: the isolate stopped it: too much ${command.terminated} time`);
 	noteNeedsMicrovm(ctx, command.sandboxId, command);
@@ -1542,7 +1558,8 @@ function hasCode(value: unknown): boolean {
 
 /**
  * Follows a command by its ID: prints what it has written since the last look, every second or so, until it ends, and
- * answers its exit code. Kantel keeps a command's first 1 MiB of each stream, so that is all it can show. Kantel out of
+ * answers its exit code. It reads the output by range (`OutputTail`), as much as Kantel keeps (64 MiB a stream in a
+ * microVM on a current kantel-host), or from the command's record (its first 1 MiB) where it can't. Kantel out of
  * reach for a while (a gateway restarting, a network blip, this connection reset) is asked again; given up on, it says
  * the command may still be running and how to follow it again.
  */
@@ -1554,7 +1571,13 @@ async function follow(
 	first?: Command,
 	options: FollowOptions = {},
 ): Promise<number> {
-	let shown = { stdout: 0, stderr: 0 };
+	// Its output is read by range (`OutputTail`), all Kantel keeps of it; a pseudo-shell's (`marker`) from its record,
+	// which holds back its trailer.
+	const away = { said: false };
+	const tails = {
+		stdout: new OutputTail(ctx, client, sandboxId, commandId, "stdout", options.marker !== undefined, away),
+		stderr: new OutputTail(ctx, client, sandboxId, commandId, "stderr", options.marker !== undefined, away),
+	};
 	// Soon after its start, so a short command's end comes quickly, then every second.
 	let wait = 100;
 	const again = `kantel attach ${sandboxId} ${commandId}`;
@@ -1594,12 +1617,12 @@ async function follow(
 	}
 	for (;;) {
 		if (!ctx.json) {
+			const final = command.state !== "running";
+			await tails.stdout.more(ctx.io.stdout, final);
+			await tails.stderr.more(ctx.io.stderr, final);
 			const end = options.marker === undefined ? command.stdout.length : shownLength(command.stdout, options.marker);
-			const out = command.stdout.slice(shown.stdout, end);
-			const err = command.stderr.slice(shown.stderr);
-			if (out !== "") ctx.io.stdout.write(out);
-			if (err !== "") ctx.io.stderr.write(err);
-			shown = { stdout: Math.max(shown.stdout, end), stderr: command.stderr.length };
+			tails.stdout.fromRecord(ctx.io.stdout, command.stdout, end);
+			tails.stderr.fromRecord(ctx.io.stderr, command.stderr, command.stderr.length);
 		}
 		if (command.state !== "running") break;
 		await ctx.io.sleep(wait);
@@ -1620,7 +1643,8 @@ async function follow(
 	options.onEnd?.(command);
 	if (ctx.json) ctx.out(JSON.stringify(command, null, 2));
 	else {
-		if (command.truncated) ctx.note("kantel: the output was cut at 1 MiB");
+		const cut = cutNote(command, [tails.stdout, tails.stderr]);
+		if (cut !== undefined) ctx.note(cut);
 		if (command.state === "timed_out") {
 			const after = options.limitSeconds === undefined ? "" : ` after ${options.limitSeconds} s`;
 			ctx.note(`kantel: the command timed out${after} and was killed`);
@@ -1630,6 +1654,162 @@ async function follow(
 		if (options.quietNeedsMicrovm !== true) noteNeedsMicrovm(ctx, sandboxId, command);
 	}
 	return exitCodeOf(command);
+}
+
+/** How long `OutputTail.more` waits, after a command's end, before asking again for a part Kantel couldn't answer. */
+const OUTPUT_RETRY_MS = 2000;
+/** How long, and how often, `OutputTail.more` waits after a command's end for its sandbox's output to end too. */
+const OUTPUT_DRAIN_MS = 1000;
+const OUTPUT_DRAINS = 30;
+
+/**
+ * One stream of a followed command, read by range (`readCommandOutput`) as its bytes from the start, rather than from
+ * the command's own stdout or stderr, which hold its first 1 MiB: so it shows all Kantel keeps (64 MiB a stream in a
+ * microVM on a current kantel-host), and every offset it reads from is one of those bytes. A gateway from before the
+ * route, or a sandbox that can't answer before any of it was read, leaves it to the record.
+ */
+class OutputTail {
+	/** How much has been written out: bytes read by range, or the record's characters, from its start. */
+	shown = 0;
+	/** Some of it was read by range. */
+	private ranged = false;
+	/** Failed by range after some of it was read: nothing more of it is shown. */
+	private stopped = false;
+	/** The command has ended and all Kantel kept of the stream has been shown. */
+	private ended = false;
+	/** Kantel kept only the first `limit` bytes of the stream. */
+	cut = false;
+	limit = 0;
+
+	private readonly ctx: Context;
+	private readonly client: KantelClient;
+	private readonly sandboxId: string;
+	private readonly commandId: string;
+	readonly stream: "stdout" | "stderr";
+	/** Shown from the command's own stdout or stderr. */
+	record: boolean;
+	/** Shared by a command's streams: once one has said the sandbox isn't running, the other doesn't. */
+	private readonly away: { said: boolean };
+
+	constructor(
+		ctx: Context,
+		client: KantelClient,
+		sandboxId: string,
+		commandId: string,
+		stream: "stdout" | "stderr",
+		record: boolean,
+		away: { said: boolean },
+	) {
+		this.away = away;
+		this.ctx = ctx;
+		this.client = client;
+		this.sandboxId = sandboxId;
+		this.commandId = commandId;
+		this.stream = stream;
+		this.record = record;
+	}
+
+	/** Writes what the command's record of the stream has past what is shown, up to `end`, where it is shown from there. */
+	fromRecord(to: Output, record: string, end: number): void {
+		if (!this.record || end <= this.shown) return;
+		to.write(record.slice(this.shown, end));
+		this.shown = end;
+	}
+
+	/**
+	 * Reads the stream on from what is shown to what Kantel keeps, writing it to `to`. With `final`, the command has
+	 * ended: a part Kantel can't answer for now is asked for again a few times.
+	 */
+	async more(to: Output, final: boolean): Promise<void> {
+		if (this.record || this.stopped || this.ended) return;
+		for (let tries = 0, drains = 0; ; ) {
+			const offset = this.shown;
+			const deadline = AbortSignal.timeout(FOLLOW_LOOK_MS);
+			let part: CommandOutput;
+			try {
+				part = await this.client.readCommandOutput(
+					this.sandboxId,
+					this.commandId,
+					{ stream: this.stream, offset, encoding: "base64" },
+					{ signal: deadline },
+				);
+			} catch (error) {
+				const why = deadline.aborted ? `Kantel didn't answer within ${FOLLOW_LOOK_MS / 1000} s` : transient(error);
+				if (why !== undefined && !final) return;
+				if (why !== undefined && tries < 5) {
+					tries++;
+					await this.ctx.io.sleep(OUTPUT_RETRY_MS);
+					continue;
+				}
+				this.failed(error);
+				return;
+			}
+			const bytes = Uint8Array.from(atob(part.content), (char) => char.charCodeAt(0));
+			this.cut = part.truncated;
+			this.limit = part.limit;
+			// A part that doesn't start where this one asked (never from Kantel) adds nothing, and ends this read.
+			const fresh = part.offset === offset && bytes.byteLength > 0;
+			if (fresh) {
+				this.ranged = true;
+				to.write(bytes);
+				this.shown += bytes.byteLength;
+			}
+			if (!fresh || this.shown >= part.size) {
+				this.ended = part.ended && this.shown >= part.size;
+				// Caught up after the command's end, with its sandbox's output not yet ended (a kill it hasn't taken yet): asked
+				// again for a while, then said.
+				if (final && !this.ended && this.shown >= part.size && part.offset === offset) {
+					if (drains < OUTPUT_DRAINS) {
+						drains++;
+						await this.ctx.io.sleep(OUTPUT_DRAIN_MS);
+						continue;
+					}
+					this.stopped = true;
+					this.ctx.note(
+						`kantel: more of its ${this.stream} may still come: kantel attach ${this.sandboxId} ${this.commandId}`,
+					);
+				}
+				return;
+			}
+		}
+	}
+
+	/**
+	 * A read by range that can't go on: before any of the stream was read by range, it is shown from the record from then
+	 * on; after, nothing more of it is. Either way it says why, unless it is a gateway from before `readCommandOutput`.
+	 */
+	private failed(error: unknown): void {
+		if (this.ranged) this.stopped = true;
+		else this.record = true;
+		if (error instanceof KantelApiError && error.code === "conflict") {
+			if (!this.away.said) {
+				this.ctx.note(
+					`kantel: the rest of its output is kept in the sandbox, which isn't running: resume it, then kantel attach ${this.sandboxId} ${this.commandId}`,
+				);
+			}
+			this.away.said = true;
+		} else if (
+			!(error instanceof KantelApiError && error.status === 404 && error.code === "not_found" && !this.ranged)
+		) {
+			this.ctx.note(
+				`kantel: can't read the rest of its ${this.stream}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	}
+}
+
+/** What to say of output Kantel didn't keep all of, if anything. */
+function cutNote(command: Command, tails: readonly OutputTail[]): string | undefined {
+	const cut = tails.find((tail) => !tail.record && tail.cut);
+	if (cut !== undefined) {
+		// Short of its limit: it ended with its machine, or its sandbox kept no more output in all.
+		if (cut.shown < cut.limit) {
+			return `kantel: the end of its ${cut.stream} may be missing: it ended with its machine, or its sandbox kept no more`;
+		}
+		const size = cut.limit % (1024 * 1024) === 0 ? `${cut.limit / (1024 * 1024)} MiB` : `${cut.limit} bytes`;
+		return `kantel: the ${cut.stream} was cut at ${size}`;
+	}
+	return tails.some((tail) => tail.record) && command.truncated ? "kantel: the output was cut at 1 MiB" : undefined;
 }
 
 /** An isolate's command that needed a microVM: what to do about it. */
@@ -2054,6 +2234,12 @@ const SECTIONS: readonly Section[] = [
 						description:
 							"With --auto-upgrade (which it implies), become a microVM from this snapshot, its ID or a saved one's name",
 					},
+					"on-host-lost": {
+						type: "string",
+						value: "<recreate|lost>",
+						description:
+							"If its host is lost: recreate makes a microVM again on another host in its pool from its newest saved snapshot; lost (default) leaves it lost",
+					},
 					"no-wait": noWait,
 				},
 				details:
@@ -2149,6 +2335,7 @@ const SECTIONS: readonly Section[] = [
 						hostLabels: pairs(ctx.list("host-label"), "--host-label"),
 						...(autoUpgrade ? { autoUpgrade: true } : {}),
 						...(into === undefined ? {} : { autoUpgradeFrom: into }),
+						...onHostLostOf(ctx.string("on-host-lost")),
 						wait: !ctx.boolean("no-wait"),
 					};
 					const config = await ctx.config();

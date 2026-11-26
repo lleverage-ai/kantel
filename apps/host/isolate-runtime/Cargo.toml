@@ -6,6 +6,12 @@ license = "Apache-2.0"
 publish = false
 description = "Kantel's isolate runtime: just-bash, node and python for isolate sandboxes, one V8 isolate each, on deno_core."
 
+# The runtime is the library (kantel_isolate: src/lib.rs), for other programs to embed (EMBEDDING.md); the binary is
+# Kantel's command line, guest bundle and process allocator around it.
+[lib]
+name = "kantel_isolate"
+path = "src/lib.rs"
+
 [[bin]]
 name = "kantel-isolate"
 path = "src/main.rs"
@@ -46,7 +52,8 @@ deno_v8 = { version = "0.4", default-features = false, features = ["v8"] }
 [features]
 default = ["jemalloc"]
 # jemalloc replaces malloc for the whole process (V8 included): it returns freed memory to the OS and doesn't serialise
-# isolate threads the way glibc with few arenas does.
+# isolate threads the way glibc with few arenas does. The binary's global allocator; a library consumer turns default
+# features off and picks its own.
 jemalloc = ["dep:tikv-jemallocator", "dep:tikv-jemalloc-ctl"]
 # V8's heap sandbox (pointer compression and the sandbox): needs a V8 built with it (RUSTY_V8_ARCHIVE or a source build;
 # see README.md). `kantel-isolate version` reports which one a binary has.
@@ -59,3 +66,13 @@ panic = "unwind"
 
 [profile.dev]
 opt-level = 1
+
+# The hardening tests fork, so they run one at a time on one thread (tests/hardening.rs has its own main).
+[[test]]
+name = "hardening"
+harness = false
+
+# The out-of-memory tests fork too: a case V8 ended would otherwise end the test binary (tests/oom.rs has its own main).
+[[test]]
+name = "oom"
+harness = false

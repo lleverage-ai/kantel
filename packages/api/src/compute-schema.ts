@@ -292,6 +292,7 @@ export const SandboxState = Type.Union(
 		Type.Literal("paused"),
 		Type.Literal("moving"),
 		Type.Literal("error"),
+		Type.Literal("lost"),
 		Type.Literal("deleting"),
 		Type.Literal("deleted"),
 	],
@@ -304,10 +305,26 @@ export const SandboxState = Type.Union(
 			"first copy is made (`copying`), when it still runs them. " +
 			"`stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like " +
 			"`stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the " +
-			"last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for " +
-			"good, with its snapshots.",
+			"last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected " +
+			"past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer " +
+			"counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. " +
+			"A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. " +
+			"`deleting`, `deleted`: erased for good, with its snapshots.",
 	},
 );
+
+export const SandboxOnHostLost = Type.Union([Type.Literal("recreate"), Type.Literal("lost")], {
+	title: "SandboxOnHostLost",
+	description:
+		"What becomes of a sandbox when its host stays disconnected past the deployment's deadline " +
+		"(`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and " +
+		"can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, " +
+		"from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, " +
+		"with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. " +
+		"It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its " +
+		"pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its " +
+		"host (its create named one). Its old host deletes its copy if it comes back, before it is used.",
+});
 
 export const SandboxNotRunningCode = Type.Union(
 	[
@@ -318,6 +335,7 @@ export const SandboxNotRunningCode = Type.Union(
 		Type.Literal("sandbox_error"),
 		Type.Literal("sandbox_deleting"),
 		Type.Literal("sandbox_unresponsive"),
+		Type.Literal("sandbox_lost"),
 	],
 	{
 		title: "SandboxNotRunningCode",
@@ -327,7 +345,8 @@ export const SandboxNotRunningCode = Type.Union(
 			"`sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. " +
 			"`sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't " +
 			"answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it " +
-			"(`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again.",
+			"(`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. " +
+			"`sandbox_lost`: its host was lost (its state is `lost`); it can only be deleted.",
 	},
 );
 
@@ -889,7 +908,41 @@ export const BucketMountSource = Type.Object(
 	},
 );
 
-export const MountSource = Type.Union([BundleMountSource, BucketMountSource], { title: "MountSource" });
+export const ManifestMountSource = Type.Object(
+	{
+		kind: Type.Literal("manifest"),
+		bucketSourceId: Type.String({
+			description: "A bucket source of the sandbox's account: it holds the manifest and every file's bytes.",
+		}),
+		manifestKey: Type.String({
+			minLength: 1,
+			maxLength: 1024,
+			description: "The object holding the manifest, such as `manifests/session-42.json`.",
+		}),
+		manifestDigest: Type.String({
+			pattern: BUNDLE_DIGEST_PATTERN,
+			description:
+				"The manifest object's SHA-256, `sha256:` and 64 hex digits: a manifest that doesn't match isn't mounted.",
+		}),
+	},
+	{
+		title: "ManifestMountSource",
+		description:
+			"Exactly the files a manifest lists, from objects anywhere in a bucket source: for a set of files chosen per " +
+			"sandbox, which a prefix can't express. The manifest is a JSON object the account writes to the bucket, " +
+			'`{"version":1,"entries":[...]}`, one entry per file: `path` (relative to the mount), `key` (the object with its ' +
+			"bytes), `size`, and the object's `generation` (Cloud Storage) or `etag`, or both, so a file never reads another " +
+			"version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 " +
+			"files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object " +
+			"changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never " +
+			"changes: mount another one for other files. The host must offer manifest mounts; on one that doesn't, the mount " +
+			"is `failed`.",
+	},
+);
+
+export const MountSource = Type.Union([BundleMountSource, BucketMountSource, ManifestMountSource], {
+	title: "MountSource",
+});
 
 export const Mount = Type.Object(
 	{
@@ -1122,6 +1175,8 @@ export const Sandbox = Type.Object(
 					"plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in.",
 			}),
 		),
+		// Only `recreate` is answered: absent is `lost`, the default.
+		onHostLost: Type.Optional(SandboxOnHostLost),
 		autoUpgrade: Type.Optional(
 			Type.Boolean({
 				description:
@@ -1447,6 +1502,7 @@ export const CreateSandboxBody = Type.Object(
 					"command's answer stands. Default: the deployment's default microVM. An isolate's only.",
 			}),
 		),
+		onHostLost: Type.Optional(SandboxOnHostLost),
 		wait: Type.Optional(
 			Type.Boolean({ description: "Answer once it is `running` (or `error`) rather than as soon as it is placed." }),
 		),
@@ -1486,6 +1542,7 @@ export const UpdateSandboxBody = Type.Object(
 					"back to the deployment's default microVM.",
 			}),
 		),
+		onHostLost: Type.Optional(SandboxOnHostLost),
 	},
 	{ title: "UpdateSandboxBody" },
 );
@@ -2068,6 +2125,61 @@ export const FileContent = Type.Object(
 	},
 );
 
+// A command's output, read by range.
+
+export const CommandStream = Type.Union([Type.Literal("stdout"), Type.Literal("stderr")], {
+	title: "CommandStream",
+	description: "One of a command's output streams. Reading, `stdout` is the default.",
+});
+
+export const ReadCommandOutputQuery = Type.Object(
+	{
+		stream: Type.Optional(CommandStream),
+		encoding: Type.Optional(FileEncoding),
+		offset: Type.Optional(Type.Integer({ minimum: 0, description: "Read from this byte (default 0)." })),
+		length: Type.Optional(
+			Type.Integer({
+				minimum: 1,
+				maximum: 1024 * 1024,
+				description: "Read at most this many bytes: default, and at most, 1 MiB (1048576).",
+			}),
+		),
+	},
+	{ title: "ReadCommandOutputQuery" },
+);
+
+export const CommandOutput = Type.Object(
+	{
+		commandId: Type.String(),
+		stream: CommandStream,
+		encoding: FileEncoding,
+		content: Type.String({ description: "The part read: at most `length` bytes from `offset`." }),
+		offset: Type.Integer({ description: "The byte `content` starts at. At `size`, it's empty." }),
+		size: Type.Integer({
+			description:
+				"How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` " +
+				"plus the part's length.",
+		}),
+		ended: Type.Boolean({ description: "The command has ended, so `size` is the whole of what is kept." }),
+		truncated: Type.Boolean({
+			description:
+				"Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps " +
+				"in all), or the command ended with its machine, whose last output may not have reached the disk.",
+		}),
+		limit: Type.Integer({
+			description:
+				"The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and " +
+				"1 MiB (the command's own `stdout` and `stderr`) elsewhere.",
+		}),
+	},
+	{
+		title: "CommandOutput",
+		description:
+			"A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall " +
+			"inside a UTF-8 character.",
+	},
+);
+
 export const WriteFileBody = Type.Object(
 	{
 		path: Type.String({ minLength: 1 }),
@@ -2166,6 +2278,64 @@ export const ExtractedArchive = Type.Object(
 		bytes: Type.Integer({ description: "Bytes of the files written." }),
 	},
 	{ title: "ExtractedArchive" },
+);
+
+/** The most one part of a file written in parts carries: 64 MiB. */
+export const MAX_FILE_PART_BYTES = 64 * 1024 * 1024;
+/** The largest file written in parts: 64 GiB, and no more than the sandbox's disk has free. */
+export const MAX_FILE_PARTS_BYTES = 64 * 1024 * 1024 * 1024;
+
+const uploadId = Type.String({
+	pattern: "^[A-Za-z0-9_-]{8,64}$",
+	description:
+		"Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts " +
+		"and its completion. A new one for each upload.",
+});
+const filePartsPath = Type.String({
+	minLength: 1,
+	maxLength: 4096,
+	description: "The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount.",
+});
+
+export const FilePartsQuery = Type.Object({ path: filePartsPath, upload: uploadId }, { title: "FilePartsQuery" });
+
+export const WriteFilePartQuery = Type.Object(
+	{
+		path: filePartsPath,
+		upload: uploadId,
+		offset: Type.Integer({
+			minimum: 0,
+			maximum: MAX_FILE_PARTS_BYTES,
+			description: "The byte of the file this part starts at.",
+		}),
+	},
+	{ title: "WriteFilePartQuery" },
+);
+
+export const FilePart = Type.Object(
+	{
+		path: Type.String({ description: "The file's absolute path." }),
+		upload: Type.String(),
+		offset: Type.Integer(),
+		size: Type.Integer({ description: "The bytes of this part written." }),
+	},
+	{ title: "FilePart", description: "A part written. Nothing is at `path` until the upload is completed." },
+);
+
+export const CompleteFilePartsBody = Type.Object(
+	{
+		path: filePartsPath,
+		upload: uploadId,
+		size: Type.Integer({ minimum: 0, maximum: MAX_FILE_PARTS_BYTES, description: "The whole file's size in bytes." }),
+		sha256: Type.String({
+			pattern: "^[0-9a-fA-F]{64}$",
+			description: "The whole file's SHA-256, in hex.",
+		}),
+		mode: Type.Optional(
+			Type.String({ description: "Octal permissions, such as `0755` (default `0644`); not `0000`." }),
+		),
+	},
+	{ title: "CompleteFilePartsBody" },
 );
 
 // Ports, desktop, browser and SSH.
@@ -3543,6 +3713,8 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.environments_changed"),
 		Type.Literal("sandbox.oom_kill"),
 		Type.Literal("sandbox.upgraded"),
+		Type.Literal("sandbox.lost"),
+		Type.Literal("sandbox.recreated"),
 		Type.Literal("sandbox.deleted"),
 		Type.Literal("snapshot.saved"),
 		Type.Literal("snapshot.deleted"),
@@ -3564,6 +3736,10 @@ export const EventType = Type.Union(
 			"`data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the " +
 			"microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and " +
 			"`data.durationMs`. " +
+			"`sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` " +
+			"(`data.previousState`, and `data.reason`); it can only be deleted now. " +
+			"`sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` " +
+			"`recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). " +
 			"`sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.",
 	},
 );
@@ -4549,6 +4725,11 @@ export const BucketProvider = Type.Union([Type.Literal("s3"), Type.Literal("gcs"
 	description: "`s3`: Amazon S3 or an S3-compatible store (with `endpoint`). `gcs`: Google Cloud Storage.",
 });
 
+const EXPIRES_AT =
+	"When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the " +
+	"source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of " +
+	"a file not already in the host's cache fails (EIO) until they are replaced.";
+
 export const BucketCredentials = Type.Union(
 	[
 		Type.Object(
@@ -4556,8 +4737,24 @@ export const BucketCredentials = Type.Union(
 				accessKeyId: Type.String({ minLength: 1, maxLength: 256 }),
 				secretAccessKey: Type.String({ minLength: 1, maxLength: 1024 }),
 				sessionToken: Type.Optional(Type.String({ maxLength: 8192 })),
+				expiresAt: Type.Optional(Type.Integer({ description: EXPIRES_AT })),
 			},
-			{ title: "BucketAccessKey", description: "An S3 access key, or a GCS HMAC key." },
+			{
+				title: "BucketAccessKey",
+				description: "An S3 access key (temporary ones with `sessionToken` and `expiresAt`), or a GCS HMAC key.",
+			},
+		),
+		Type.Object(
+			{
+				accessToken: Type.String({ minLength: 1, maxLength: 8192 }),
+				expiresAt: Type.Integer({ description: EXPIRES_AT }),
+			},
+			{
+				title: "BucketAccessToken",
+				description:
+					"A Cloud Storage OAuth access token, such as a down-scoped one for the objects the sandboxes may read " +
+					"(`gcs` only). Short-lived: replace it before `expiresAt`. Experimental, as mounts are.",
+			},
 		),
 		Type.Object(
 			{
@@ -4603,7 +4800,7 @@ export const BucketSource = Type.Object(
 	{
 		title: "BucketSource",
 		description:
-			"A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials " +
+			"A bucket an account's sandboxes may mount prefixes or manifests of, with the credentials that read it. The credentials " +
 			"are write-only.",
 	},
 );
@@ -4613,6 +4810,11 @@ export const BucketSourceList = Type.Object({ items: Type.Array(BucketSource) },
 export const BucketSourcePath = Type.Object(
 	{ bucketSourceId: id("The bucket source's ID.") },
 	{ title: "BucketSourcePath" },
+);
+
+export const SetBucketSourceCredentialsBody = Type.Object(
+	{ credentials: BucketCredentials },
+	{ title: "SetBucketSourceCredentialsBody" },
 );
 
 export const CreateBucketSourceBody = Type.Object(
@@ -4889,6 +5091,7 @@ export type Invite = Static<typeof Invite>;
 export type Caller = Static<typeof Caller>;
 export type SandboxType = Static<typeof SandboxType>;
 export type SandboxState = Static<typeof SandboxState>;
+export type SandboxOnHostLost = Static<typeof SandboxOnHostLost>;
 export type SandboxNotRunningCode = Static<typeof SandboxNotRunningCode>;
 export type SandboxNotRunning = Static<typeof SandboxNotRunning>;
 export type SandboxVisibility = Static<typeof SandboxVisibility>;
@@ -4908,6 +5111,7 @@ export type SandboxMoveTarget = Static<typeof SandboxMoveTarget>;
 export type SandboxShapesQuery = Static<typeof SandboxShapesQuery>;
 export type BundleMountSource = Static<typeof BundleMountSource>;
 export type BucketMountSource = Static<typeof BucketMountSource>;
+export type ManifestMountSource = Static<typeof ManifestMountSource>;
 export type MountSource = Static<typeof MountSource>;
 export type Mount = Static<typeof Mount>;
 export type MountStatus = Static<typeof MountStatus>;
@@ -4920,8 +5124,13 @@ export type BucketProvider = Static<typeof BucketProvider>;
 export type BucketCredentials = Static<typeof BucketCredentials>;
 export type BucketSource = Static<typeof BucketSource>;
 export type CreateBucketSourceBody = Static<typeof CreateBucketSourceBody>;
+export type SetBucketSourceCredentialsBody = Static<typeof SetBucketSourceCredentialsBody>;
 export type FileUrl = Static<typeof FileUrl>;
 export type ExtractedArchive = Static<typeof ExtractedArchive>;
+export type FilePartsQuery = Static<typeof FilePartsQuery>;
+export type WriteFilePartQuery = Static<typeof WriteFilePartQuery>;
+export type FilePart = Static<typeof FilePart>;
+export type CompleteFilePartsBody = Static<typeof CompleteFilePartsBody>;
 export type Command = Static<typeof Command>;
 export type RunCommandBody = Static<typeof RunCommandBody>;
 export type FileEntry = Static<typeof FileEntry>;
@@ -5069,6 +5278,8 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.environments_changed",
 	"sandbox.oom_kill",
 	"sandbox.upgraded",
+	"sandbox.lost",
+	"sandbox.recreated",
 	"sandbox.deleted",
 	"snapshot.saved",
 	"snapshot.deleted",

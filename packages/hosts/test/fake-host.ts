@@ -60,6 +60,8 @@ export class FakeHost {
 	readonly calls: { readonly method: string; readonly params: { readonly [key: string]: unknown } }[] = [];
 	/** For a test: a call of a method it answers a promise for is answered once that settles (a slow host). */
 	hold?: (method: string, params: { readonly [key: string]: unknown }) => Promise<void> | undefined;
+	/** For a test: `sandbox.delete` of one it has none of answers ok, not `not_found` as kantel-host does. */
+	deletesMissing = false;
 	/** Files `sandbox.files.open` streams, by path; a write lands here once all of it has arrived. */
 	readonly files = new Map<string, Uint8Array>();
 	/** How many bytes a read's frames carry each. */
@@ -84,6 +86,10 @@ export class FakeHost {
 	readonly reads = new Map<number, { readonly data: Uint8Array; sent: number; acked: number }>();
 	/** `sandbox.files.extract` calls: the archive, the target. */
 	readonly extracts: { readonly archive: string; readonly target: string }[] = [];
+	/** `sandbox.files.part` calls: the upload, the offset and the bytes' length. */
+	readonly parts: { readonly upload: string; readonly offset: number; readonly length: number }[] = [];
+	/** A part call at this offset fails, as a full disk does. */
+	failPartAt?: number;
 	/** How a create is answered as served (`HostSandbox.source`): `boot` for a template snapshot it couldn't restore. */
 	createSource = "pool";
 	/** For a test: the size a create is answered as made, instead of the one asked for (a restore's own size). */
@@ -392,6 +398,17 @@ export class FakeHost {
 				this.reads.set(open.stream, { data, sent: 0, acked: 0 });
 				return this.sendRead(open.stream);
 			}
+			case "sandbox.files.part": {
+				const part = message.params as { upload: string; offset: number; data: string };
+				const length = atob(part.data).length;
+				if (part.offset === this.failPartAt) return fail("capacity", "the sandbox's disk is full");
+				this.parts.push({ upload: part.upload, offset: part.offset ?? 0, length });
+				return answer({ size: length });
+			}
+			case "sandbox.files.complete":
+				return answer({ size: (message.params as { size?: number }).size ?? 0, mode: "644" });
+			case "sandbox.files.abort":
+				return answer({});
 			case "sandbox.files.extract": {
 				const extract = message.params as { archive: string; target: string };
 				this.extracts.push({ archive: extract.archive, target: extract.target });
@@ -438,6 +455,8 @@ export class FakeHost {
 				) {
 					return fail("not_found", "not the copy that move exported");
 				}
+				// One it has none of (`deletesMissing` off): `not_found`, as kantel-host answers.
+				if (!this.deletesMissing && !this.sandboxes.has(params.sandboxId)) return fail("not_found", "no such sandbox");
 				this.exportedBy.delete(params.sandboxId);
 				this.sandboxes.delete(params.sandboxId);
 				this.disks.delete(params.sandboxId);

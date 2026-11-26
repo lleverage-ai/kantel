@@ -28,13 +28,14 @@ import {
 	type StoredBlob,
 } from "./mounts.ts";
 import { type Sealer, sealedAt } from "./secrets.ts";
-import type {
-	Collection,
-	ComputeStore,
-	DeleteClaim,
-	StoredBucketSource,
-	StoredBundle,
-	StoredSandbox,
+import {
+	type Collection,
+	type ComputeStore,
+	type DeleteClaim,
+	type StoredBucketSource,
+	type StoredBundle,
+	type StoredSandbox,
+	UNDELETED_SANDBOX_STATES,
 } from "./store.ts";
 import { gunzipIfGzipped, TarCheck } from "./tar.ts";
 import { homeFor, randomId, randomSecret, randomSlug, resolvePath, sha256Hex } from "./util.ts";
@@ -56,6 +57,7 @@ type MountRoutes =
 	| "createBucketSource"
 	| "listBucketSources"
 	| "getBucketSource"
+	| "setBucketSourceCredentials"
 	| "deleteBucketSource";
 
 export type MountHandlers = Pick<RouteHandlers<SignedInComputeRoutes, Principal>, MountRoutes>;
@@ -149,7 +151,38 @@ const credentialsAad = (id: string) => sealedAt("bucketSources", id, "credential
 
 /** Why a host didn't answer for a mount it was given: it predates mounts, or that kind of them. */
 export const unanswered = (mount: computeSchema.Mount): string =>
-	mount.source.kind === "bundle" ? "This host can't mount bundles yet" : "This host can't mount buckets yet";
+	mount.source.kind === "bundle"
+		? "This host can't mount bundles yet"
+		: mount.source.kind === "manifest"
+			? "This host can't mount manifests yet"
+			: "This host can't mount buckets yet";
+
+/**
+ * Refuses credentials a bucket source of `provider` can't take: a service account key or an access token that isn't
+ * for Cloud Storage, a key that isn't JSON, or credentials that have already expired.
+ */
+function checkCredentials(
+	provider: computeSchema.BucketProvider,
+	credentials: computeSchema.BucketCredentials,
+	at: number,
+) {
+	if ("serviceAccountKey" in credentials) {
+		if (provider !== "gcs") {
+			throw new KantelError("invalid", "An S3 bucket source takes an access key, not a service account key");
+		}
+		try {
+			JSON.parse(credentials.serviceAccountKey);
+		} catch {
+			throw new KantelError("invalid", "serviceAccountKey must be the service account's JSON key");
+		}
+	}
+	if ("accessToken" in credentials && provider !== "gcs") {
+		throw new KantelError("invalid", "An access token reads only a gcs bucket source: give S3 an access key");
+	}
+	if ("expiresAt" in credentials && credentials.expiresAt !== undefined && credentials.expiresAt <= at) {
+		throw new KantelError("invalid", "These credentials have already expired (expiresAt)");
+	}
+}
 
 /**
  * A sandbox's mounts once its backend placed it: each the status the backend answered for its path, or `failed` when
@@ -291,14 +324,15 @@ export function createMounts(deps: MountsDeps) {
 		matches: (source: computeSchema.MountSource) => boolean,
 		listed?: readonly StoredSandbox[],
 	) {
-		const sandboxes = listed ?? (await store.sandboxes.list({ accountId }));
+		const sandboxes = listed ?? (await store.sandboxes.list({ accountId }, { state: UNDELETED_SANDBOX_STATES }));
 		return sandboxes.filter((sandbox) => mountsOfSource(sandbox, matches)).length;
 	}
 
 	const bundleMatches = (digest: string) => (source: computeSchema.MountSource) =>
 		source.kind === "bundle" && source.digest === digest;
+	/** A bucket or manifest mount of the bucket source: either reads it with its credentials. */
 	const bucketMatches = (id: string) => (source: computeSchema.MountSource) =>
-		source.kind === "bucket" && source.bucketSourceId === id;
+		(source.kind === "bucket" || source.kind === "manifest") && source.bucketSourceId === id;
 
 	const bundleView = async (
 		bundle: StoredBundle,
@@ -633,6 +667,12 @@ export function createMounts(deps: MountsDeps) {
 						`The mount at ${path} is a bundle, which never changes: mount another digest for other files`,
 					);
 				}
+				if (mount.source.kind === "manifest") {
+					throw new KantelError(
+						"invalid",
+						`The mount at ${path} is a manifest, which never changes: mount another manifest for other files`,
+					);
+				}
 			}
 			const buckets = mounts.filter(
 				(mount) => mount.source.kind === "bucket" && (path === undefined || mount.path === path),
@@ -771,7 +811,10 @@ export function createMounts(deps: MountsDeps) {
 			requireScope(principal, "sandboxes:read", role);
 			const bundles = await store.bundles.list({ accountId: account.id });
 			bundles.sort((a, b) => b.createdAt - a.createdAt);
-			const sandboxes = await store.sandboxes.list({ accountId: account.id });
+			const sandboxes =
+				bundles.length === 0
+					? []
+					: await store.sandboxes.list({ accountId: account.id }, { state: UNDELETED_SANDBOX_STATES });
 			return { items: await Promise.all(bundles.map((bundle) => bundleView(bundle, sandboxes))) };
 		},
 
@@ -811,16 +854,7 @@ export function createMounts(deps: MountsDeps) {
 						throw new KantelError("invalid", "endpoint must be an http(s) URL");
 					}
 				}
-				if (body.provider === "gcs" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
-					try {
-						JSON.parse(body.credentials.serviceAccountKey);
-					} catch {
-						throw new KantelError("invalid", "serviceAccountKey must be the service account's JSON key");
-					}
-				}
-				if (body.provider === "s3" && body.credentials !== undefined && "serviceAccountKey" in body.credentials) {
-					throw new KantelError("invalid", "An S3 bucket source takes an access key, not a service account key");
-				}
+				if (body.credentials !== undefined) checkCredentials(body.provider, body.credentials, now());
 				const id = randomId("bks", 8);
 				const credentials =
 					body.credentials === undefined
@@ -846,12 +880,25 @@ export function createMounts(deps: MountsDeps) {
 			const { account, role } = await actingAccount(store, principal, query.account);
 			requireScope(principal, "account:read", role);
 			const sources = await store.bucketSources.list({ accountId: account.id });
-			const sandboxes = await store.sandboxes.list({ accountId: account.id });
+			const sandboxes =
+				sources.length === 0
+					? []
+					: await store.sandboxes.list({ accountId: account.id }, { state: UNDELETED_SANDBOX_STATES });
 			return { items: await Promise.all(sources.map((source) => bucketView(source, sandboxes))) };
 		},
 
 		getBucketSource: async (principal, { params }) =>
 			bucketView(await bucketSourceFor(principal, params.bucketSourceId, "account:read")),
+
+		setBucketSourceCredentials: async (principal, { params, body }) => {
+			const source = await bucketSourceFor(principal, params.bucketSourceId, "account:admin");
+			checkCredentials(source.provider, body.credentials, now());
+			const credentials = await deps.sealer().seal(JSON.stringify(body.credentials), credentialsAad(source.id));
+			// Only the credentials: a delete's claim, and everything else, stay as they are.
+			const updated = await store.bucketSources.update(source.id, (current) => ({ ...current, credentials }));
+			if (updated === undefined) throw new KantelError("not_found", "No such bucket source");
+			return bucketView(updated);
+		},
 
 		deleteBucketSource: async (principal, { params }) => {
 			const source = await bucketSourceFor(principal, params.bucketSourceId, "account:admin");
@@ -904,11 +951,12 @@ export function createMounts(deps: MountsDeps) {
 						throw new KantelError("not_found", `No bundle ${mount.source.digest} in the account (upload it first)`);
 					}
 				} else {
+					// A bucket or manifest mount: its files come through a bucket source, which must be the account's.
 					const source = await store.bucketSources.get(mount.source.bucketSourceId);
 					if (source === undefined || source.accountId !== accountId || claimed(source)) {
 						throw new KantelError("not_found", `No bucket source ${mount.source.bucketSourceId} in the account`);
 					}
-					if (mount.source.prefix.startsWith("/")) {
+					if (mount.source.kind === "bucket" && mount.source.prefix.startsWith("/")) {
 						throw new KantelError("invalid", "A bucket mount's prefix is a key prefix: it doesn't start with /");
 					}
 				}

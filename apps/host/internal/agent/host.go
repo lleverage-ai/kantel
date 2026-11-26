@@ -325,7 +325,7 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 	total := hostinfo.MemoryMiB()
 	reserve := h.cfg.reserveMemoryMiB(total)
-	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureSnapshotKeep, proto.FeatureSandboxEnv}
+	features := []string{proto.FeatureEgressPolicy, proto.FeatureCustomShapes, proto.FeatureExecControl, proto.FeatureExecOutput, proto.FeatureSnapshotKeep, proto.FeatureSandboxEnv}
 	// File streams are served for a tier's sandboxes only when it streams files (the microVM tier); a call for another's
 	// is refused as unsupported.
 	for _, name := range h.order {
@@ -337,6 +337,12 @@ func (h *Host) makeFacts() proto.Facts {
 	for _, name := range h.order {
 		if _, ok := h.tiers[name].(ArchiveExtractor); ok {
 			features = append(features, proto.FeatureFilesExtract)
+			break
+		}
+	}
+	for _, name := range h.order {
+		if _, ok := h.tiers[name].(FilePartWriter); ok {
+			features = append(features, proto.FeatureFileParts)
 			break
 		}
 	}
@@ -372,6 +378,9 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBucket}) {
 		features = append(features, proto.FeatureBucketMounts, proto.FeatureMountsSync)
+	}
+	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountManifest}) {
+		features = append(features, proto.FeatureManifestMounts)
 	}
 	if t, ok := h.tiers[microvm.Tier]; ok && supportsMounts(t, proto.Mount{Kind: proto.MountBundle}) {
 		features = append(features, proto.FeatureBundleMounts)
@@ -1053,6 +1062,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return nil, err
 		}
 		return h.killCommand(ctx, p)
+	case proto.MethodExecOutput:
+		p, err := decode[proto.ExecOutputParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.commandOutput(ctx, p)
 	case proto.MethodFileRead:
 		p, err := decode[proto.FileParams](params)
 		if err != nil {
@@ -1091,6 +1106,12 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			return h.fencedWrite(ctx, t, p, data)
 		}
 		return map[string]bool{"ok": true}, t.WriteFile(ctx, p, data)
+	case proto.MethodFilePart, proto.MethodFileComplete, proto.MethodFileAbort:
+		p, err := decode[proto.FilePartParams](params)
+		if err != nil {
+			return nil, err
+		}
+		return h.fileParts(ctx, method, p)
 	case proto.MethodFileExtract:
 		p, err := decode[proto.FileExtractParams](params)
 		if err != nil {

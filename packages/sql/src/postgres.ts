@@ -32,26 +32,271 @@ async function runAll(client: PostgresQueryable, statements: readonly SqlStateme
 	for (const statement of statements) await rowsOf(client, statement.sql, statement.params);
 }
 
-/** A driver over a `pg` pool: each batch takes a connection and runs in `BEGIN` … `COMMIT`. */
-export function postgresPoolDriver(pool: PostgresPool): SqlDriver {
+/**
+ * Socket errors that mean the database can't be reached, or the connection to it is gone (Node's `error.code`).
+ */
+const SOCKET_CODES = new Set([
+	"ECONNREFUSED",
+	"ECONNRESET",
+	"ECONNABORTED",
+	"EPIPE",
+	"ETIMEDOUT",
+	"EHOSTUNREACH",
+	"EHOSTDOWN",
+	"ENETUNREACH",
+	"ENETDOWN",
+	"ENOTFOUND",
+	"EAI_AGAIN",
+]);
+
+/**
+ * What `pg` and `pg-pool` say when a connection is gone, couldn't be made in time, or a statement got no answer in
+ * time (`query_timeout`). They carry no code.
+ */
+const LOST_MESSAGES =
+	/Connection terminated|timeout exceeded when trying to connect|Query read timeout|not queryable|Client was closed|Connection is closed|socket hang up/i;
+
+/** Postgres's SQLSTATEs for a server that is shutting down, starting up or in recovery, or dropped the connection. */
+const UNAVAILABLE_STATES = new Set(["57P01", "57P02", "57P03", "53300"]);
+
+/** Postgres's SQLSTATE for a write on a read-only server, such as a primary demoted to a standby after a failover. */
+const READ_ONLY_STATE = "25006";
+
+/**
+ * How a Postgres call failed, as far as trying again goes:
+ *
+ *   unavailable  the database couldn't be reached, or the connection broke: a statement sent on it may or may not have
+ *                run
+ *   readOnly     the server refused the write (it's read-only, as an old primary is after a failover): nothing ran,
+ *                and the connection is to the wrong server
+ *   other        anything else: a constraint, a syntax error, a timeout the server enforced
+ */
+export function postgresFailure(error: unknown): "unavailable" | "readOnly" | "other" {
+	if (typeof error !== "object" || error === null) return "other";
+	const { code, message } = error as { code?: unknown; message?: unknown };
+	if (code === READ_ONLY_STATE) return "readOnly";
+	if (typeof code === "string") {
+		if (SOCKET_CODES.has(code) || UNAVAILABLE_STATES.has(code) || code.startsWith("08")) return "unavailable";
+	}
+	if (typeof message === "string" && LOST_MESSAGES.test(message)) return "unavailable";
+	const cause = (error as { cause?: unknown }).cause;
+	return cause === undefined || cause === error ? "other" : postgresFailure(cause);
+}
+
+/**
+ * The connection broke after `COMMIT` was sent, so the batch may or may not have been applied. It is never sent again
+ * by itself: the caller decides, reading what's there first if it matters. `cause` is the connection's error.
+ */
+export class PostgresCommitUnknownError extends Error {
+	override readonly name = "PostgresCommitUnknownError";
+	constructor(cause: unknown) {
+		super(
+			`The connection to Postgres broke while a batch was committing, so it may or may not have been applied (${
+				(cause as Error)?.message ?? String(cause)
+			})`,
+			{ cause },
+		);
+	}
+}
+
+export interface PostgresPoolDriverOptions {
+	/**
+	 * The pauses before each new attempt at a call that failed before Postgres could have applied it: no connection to be
+	 * had, a read-only server, or (a batch) a connection that broke before its `COMMIT` was sent. One entry an attempt;
+	 * none (the default) tries once. A statement or `COMMIT` that may have run is never tried again.
+	 */
+	readonly retryMs?: readonly number[];
+	/**
+	 * Told when a connection turned out broken or read-only, so the pool's other connections, likely to the same old
+	 * server, can be replaced (`postgresRenewingPool`).
+	 */
+	readonly onConnectionLost?: (error: unknown) => void;
+}
+
+const pause = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+/** A call's error from before Postgres could have applied anything, so another attempt is safe. */
+class NotSent extends Error {
+	constructor(override readonly cause: unknown) {
+		super("not sent");
+	}
+}
+
+/** Worth another attempt: nothing was applied, and the cause was the connection or the server, not the call. */
+const retryable = (error: unknown) => error instanceof NotSent && postgresFailure(error.cause) !== "other";
+
+/** The call's own error, as the caller should see it. */
+async function unwrap<T>(call: Promise<T>): Promise<T> {
+	try {
+		return await call;
+	} catch (error) {
+		throw error instanceof NotSent ? error.cause : error;
+	}
+}
+
+/**
+ * A driver over a `pg` pool: each batch takes a connection and runs in `BEGIN` … `COMMIT`. A broken or read-only
+ * connection is released to be closed, not reused. With `retryMs`, a call that failed before Postgres could have applied
+ * it is tried again on another connection; a batch whose connection broke after `COMMIT` was sent fails with
+ * `PostgresCommitUnknownError`.
+ */
+export function postgresPoolDriver(pool: PostgresPool, options: PostgresPoolDriverOptions = {}): SqlDriver {
+	const retryMs = options.retryMs ?? [];
+	const lost = (error: unknown) => {
+		if (postgresFailure(error) !== "other") options.onConnectionLost?.(error);
+	};
+	/** Runs `attempt` until it succeeds, throws something not worth another go, or the pauses run out. */
+	const withRetries = async <T>(attempt: () => Promise<T>, again: (error: unknown) => boolean): Promise<T> => {
+		for (let tried = 0; ; tried++) {
+			try {
+				return await attempt();
+			} catch (error) {
+				const wait = retryMs[tried];
+				if (wait === undefined || !again(error)) throw error;
+				await pause(wait);
+			}
+		}
+	};
+	/** A connection from the pool; failing to get one is marked as nothing having been sent. */
+	const connect = async () => {
+		try {
+			return await pool.connect();
+		} catch (error) {
+			lost(error);
+			throw new NotSent(error);
+		}
+	};
 	return {
 		dialect: "postgres",
-		query: (text, params) => rowsOf(pool, text, params),
+		query: <Row extends SqlRow>(text: string, params?: readonly SqlValue[]) =>
+			unwrap(
+				withRetries(async () => {
+					const client = await connect();
+					try {
+						const rows = await rowsOf<Row>(client, text, params);
+						client.release();
+						return rows;
+					} catch (error) {
+						const failure = postgresFailure(error);
+						client.release(failure !== "other");
+						lost(error);
+						// A read-only server refused the statement: it didn't run.
+						throw failure === "readOnly" ? new NotSent(error) : error;
+					}
+				}, retryable),
+			),
 		async batch(statements) {
 			if (statements.length === 0) return;
-			const client = await pool.connect();
-			let failed = false;
-			try {
-				await client.query("BEGIN");
-				await runAll(client, statements);
-				await client.query("COMMIT");
-			} catch (error) {
-				failed = true;
-				await client.query("ROLLBACK").catch(() => undefined);
-				throw error;
-			} finally {
-				client.release(failed);
-			}
+			await unwrap(
+				withRetries(async () => {
+					const client = await connect();
+					let committing = false;
+					let failed = false;
+					try {
+						await client.query("BEGIN");
+						await runAll(client, statements);
+						committing = true;
+						await client.query("COMMIT");
+					} catch (error) {
+						failed = true;
+						const failure = postgresFailure(error);
+						lost(error);
+						if (failure === "unavailable" && committing) throw new PostgresCommitUnknownError(error);
+						// On a connection that still answers, end the transaction; a broken one is closed, which ends it.
+						if (failure !== "unavailable") await client.query("ROLLBACK").catch(() => undefined);
+						// Before COMMIT, a broken connection or a read-only server leaves nothing applied.
+						throw failure === "other" ? error : new NotSent(error);
+					} finally {
+						client.release(failed);
+					}
+				}, retryable),
+			);
+		},
+	};
+}
+
+/** A pool that can be closed: `pg`'s `Pool`. */
+export interface PostgresEndablePool extends PostgresPool {
+	end(): Promise<void>;
+}
+
+export interface PostgresRenewingPool extends PostgresEndablePool {
+	/**
+	 * Replaces the pool with a new one, so new calls get new connections, and closes the old one once every call waiting
+	 * on it for a connection has one (or gave up) and the connections it lent are back. At most once per
+	 * `minIntervalMs`; calls in between do nothing.
+	 */
+	renew(why: unknown): void;
+}
+
+/**
+ * A pool over pools: `create` makes one, and `renew` swaps it for another. After a failover a pool's idle connections
+ * are all to the old server, broken or read-only, and each would fail one call before it is closed; and a connection
+ * whose server vanished without closing it answers nothing until a statement times out. Renewing drops them together
+ * the first time one fails.
+ */
+export function postgresRenewingPool(
+	create: () => PostgresEndablePool,
+	options: { readonly minIntervalMs?: number; readonly onRenew?: (why: unknown) => void } = {},
+): PostgresRenewingPool {
+	const minIntervalMs = options.minIntervalMs ?? 1_000;
+	/**
+	 * A pool and the calls waiting on it: a connection asked for, or a query, not yet answered. `pg`'s `end` stops
+	 * handing connections to calls still queued for one, which would leave them waiting for ever (with no connect
+	 * timeout), so a retired pool is ended only once they're answered.
+	 */
+	interface Tracked {
+		readonly pool: PostgresEndablePool;
+		waiting: number;
+		drained?: () => void;
+		ending?: Promise<void>;
+	}
+	const track = (): Tracked => ({ pool: create(), waiting: 0 });
+	const endOnce = (tracked: Tracked) => {
+		tracked.ending ??= tracked.pool.end().catch(() => undefined);
+		return tracked.ending;
+	};
+	const waitingOn = <T>(tracked: Tracked, call: () => Promise<T>): Promise<T> => {
+		tracked.waiting += 1;
+		const done = () => {
+			tracked.waiting -= 1;
+			if (tracked.waiting === 0) tracked.drained?.();
+		};
+		const answer = call();
+		answer.then(done, done);
+		return answer;
+	};
+	const drained = (tracked: Tracked) =>
+		tracked.waiting === 0 ? Promise.resolve() : new Promise<void>((resolve) => (tracked.drained = resolve));
+	let current = track();
+	let renewedAt = Number.NEGATIVE_INFINITY;
+	let ended = false;
+	const retiring = new Map<Tracked, Promise<void>>();
+	return {
+		query: (text, params) => {
+			const tracked = current;
+			return waitingOn(tracked, () => tracked.pool.query(text, params));
+		},
+		connect: () => {
+			const tracked = current;
+			return waitingOn(tracked, () => tracked.pool.connect());
+		},
+		renew(why) {
+			const now = Date.now();
+			if (ended || now - renewedAt < minIntervalMs) return;
+			renewedAt = now;
+			const old = current;
+			current = track();
+			options.onRenew?.(why);
+			const closing = drained(old).then(() => endOnce(old));
+			retiring.set(old, closing);
+			void closing.then(() => retiring.delete(old));
+		},
+		async end() {
+			// Closing down: every pool now, whoever is still waiting.
+			ended = true;
+			const pools = [current, ...retiring.keys()];
+			await Promise.all(pools.map(endOnce));
 		},
 	};
 }

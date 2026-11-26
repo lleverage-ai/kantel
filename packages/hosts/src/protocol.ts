@@ -267,6 +267,12 @@ export const HOST_FEATURES = {
 	 * after the call, or fails saying why. A host without it can't promise that, so a refresh isn't asked of it.
 	 */
 	mountsSync: "mounts-sync",
+	/**
+	 * Manifest mounts (`HostMount` of kind `manifest`): the host reads the manifest object from the bucket source, checks
+	 * it against `digest`, and mounts exactly its files; and it reads bucket sources whose credentials are an
+	 * `accessToken` or carry `expiresAt`. A host without it is sent neither.
+	 */
+	mountsManifest: "mounts-manifest",
 	/** `sandbox.files.open`: a file's bytes streamed both ways on a port stream (signed file URLs, archives). */
 	fileStreams: "file-streams",
 	/**
@@ -274,6 +280,12 @@ export const HOST_FEATURES = {
 	 * (archives).
 	 */
 	filesExtract: "files-extract",
+	/**
+	 * `sandbox.files.part`, `.complete` and `.abort` (`HostFilePart`): a file written a part at a time into a staged file
+	 * beside it, moved into place only once its size and SHA-256 are checked (microVMs whose image's guest agent takes
+	 * them; an older image's answers `unsupported`).
+	 */
+	fileParts: "file-parts",
 	/**
 	 * `sandbox.create` takes `vcpus`, `memoryMiB` and `diskGiB` for a microVM off the host's named sizes (it boots from
 	 * scratch), and an isolate's `memoryMiB` (enforced where the host's runtime says `memoryEnforced`).
@@ -318,6 +330,13 @@ export const HOST_FEATURES = {
 	 * 30 s).
 	 */
 	execControl: "exec-control",
+	/**
+	 * `sandbox.exec.output` (`HostExecOutputParams`): any part of a command's output as its sandbox keeps it, answered
+	 * `HostExecOutput`. A microVM's guest agent keeps each stream of a command run with an ID on the sandbox's disk, up to
+	 * `limit` bytes. A sandbox that keeps none (an isolate, a guest agent from before) is `unsupported`, and a command
+	 * whose output it doesn't keep is `not_found`. Without it, a command's output is its result's alone.
+	 */
+	execOutput: "exec-output",
 	/**
 	 * `sandbox.processes` (`HostProcessesParams`): a running microVM's busiest processes, from its guest agent, answered
 	 * `HostProcessList`. An isolate's, and a sandbox's whose guest agent is from before it could, are `unsupported`.
@@ -716,6 +735,31 @@ export interface HostExecRef {
 	readonly waitMs?: number;
 }
 
+/** `sandbox.exec.output`'s params: at most `length` bytes (at most `HOST_EXEC_OUTPUT_MAX_READ`) of a stream from `offset`. */
+export interface HostExecOutputParams {
+	readonly commandId: string;
+	readonly stream: "stdout" | "stderr";
+	readonly offset?: number;
+	readonly length?: number;
+}
+
+/** The most of a stream one `sandbox.exec.output` answers (the Go side's `ExecOutputMaxRead`). */
+export const HOST_EXEC_OUTPUT_MAX_READ = 1024 * 1024;
+
+/**
+ * `sandbox.exec.output`'s answer: `data` (base64) from `offset` (the offset asked for, or `size` when that is past it).
+ * `size` is how much of the stream is kept now, which only grows while the command runs; `ended` says it has ended;
+ * `truncated` says the stream went past `limit`, and the rest was dropped.
+ */
+export interface HostExecOutput {
+	readonly data: string;
+	readonly offset: number;
+	readonly size: number;
+	readonly ended?: boolean;
+	readonly truncated?: boolean;
+	readonly limit: number;
+}
+
 /** The longest a host holds a `sandbox.exec.get` for its command to end (the Go side's `ExecMaxWaitMs`). */
 export const HOST_EXEC_MAX_WAIT_MS = 60_000;
 
@@ -756,6 +800,21 @@ export const FILE_STREAM_ACK_BYTES = 1024 * 1024;
  */
 export const FILE_STREAM_FRAME_MAX_BYTES = 1024 * 1024;
 
+/** A file part call's (`sandbox.files.part`) most bytes, decoded: well inside a replica's relayed call (4 MiB). */
+export const FILE_PART_CALL_MAX_BYTES = 2 * 1024 * 1024;
+
+/** `sandbox.files.part`'s, `.complete`'s and `.abort`'s params (`HOST_FEATURES.fileParts`). */
+export interface HostFilePart {
+	readonly sandboxId: string;
+	readonly path: string;
+	readonly upload: string;
+	readonly offset?: number;
+	readonly data?: string;
+	readonly size?: number;
+	readonly sha256?: string;
+	readonly mode?: number;
+}
+
 /** The largest message a host reads from Kantel (`ws.SetReadLimit` in the host's `conn.go`): it drops the link past it. */
 export const HOST_MESSAGE_LIMIT_BYTES = 64 * 1024 * 1024;
 /**
@@ -777,6 +836,13 @@ export type HostMount =
 			readonly bucketSourceId: string;
 			readonly prefix: string;
 			readonly refreshTtlSeconds?: number;
+	  }
+	| {
+			readonly path: string;
+			readonly kind: "manifest";
+			readonly bucketSourceId: string;
+			readonly manifestKey: string;
+			readonly digest: string;
 	  };
 
 /** A mount's status as the host reports it, by path. */
@@ -810,8 +876,14 @@ export interface HostBucketSource {
 	readonly endpoint?: string;
 	readonly region?: string;
 	readonly credentials?:
-		| { readonly accessKeyId: string; readonly secretAccessKey: string; readonly sessionToken?: string }
-		| { readonly serviceAccountKey: string };
+		| {
+				readonly accessKeyId: string;
+				readonly secretAccessKey: string;
+				readonly sessionToken?: string;
+				readonly expiresAt?: number;
+		  }
+		| { readonly serviceAccountKey: string }
+		| { readonly accessToken: string; readonly expiresAt: number };
 }
 
 /**
@@ -1614,6 +1686,8 @@ export const HostMethods = {
 	 * that had already ended.
 	 */
 	execKill: "sandbox.exec.kill",
+	/** `HostExecOutputParams` (`HOST_FEATURES.execOutput`): a part of a command's kept output, `HostExecOutput`. */
+	execOutput: "sandbox.exec.output",
 	fileRead: "sandbox.files.read",
 	fileWrite: "sandbox.files.write",
 	fileDelete: "sandbox.files.delete",
@@ -1679,6 +1753,16 @@ export const HostMethods = {
 	 * requires that feature first (a create's `guestFeatures`, on a host with `HOST_FEATURES.guestFeatures`).
 	 */
 	fileExtract: "sandbox.files.extract",
+	/** Kantel to host, `HostFilePart` with `offset` and `data` (base64, at most `FILE_PART_CALL_MAX_BYTES`): answered `{ size }`. */
+	filePart: "sandbox.files.part",
+	/**
+	 * Kantel to host, `HostFilePart` with `size`, `sha256` and `mode`: the upload checked and moved over `path`, answered
+	 * `{ size, mode }` (mode in octal). A failed check is `invalid` and discards it; one unknown is `conflict` unless `path`
+	 * already has that size and SHA-256.
+	 */
+	fileComplete: "sandbox.files.complete",
+	/** Kantel to host, `HostFilePart`: the upload discarded, answered `{}`. */
+	fileAbort: "sandbox.files.abort",
 	/**
 	 * Host to Kantel: `{ sandboxId, bucketSourceId }`, answered with `HostBucketSource`, or `not_found` unless the
 	 * sandbox is on that host and mounts that bucket source.

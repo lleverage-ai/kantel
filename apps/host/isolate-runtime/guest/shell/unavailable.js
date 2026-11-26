@@ -69,5 +69,8 @@ export const UNAVAILABLE = [
 	...Object.entries(PROGRAMS),
 ];
 
-export const message = (name) =>
-	`${name}: not available in an isolate, which runs only its shell's own commands, node and python. Use a microVM.\n`;
+/** The shell's line for one; with `effects: "none"`, it says nothing of the command ran. */
+export const message = (name, effects) =>
+	`${name}: not available in an isolate, which runs only its shell's own commands, node and python. Use a microVM.${
+		effects === "none" ? " Nothing in this command ran." : ""
+	}\n`;

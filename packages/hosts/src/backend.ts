@@ -65,18 +65,23 @@ import {
 import type { FileStreamHandle, PortSink } from "./hub.ts";
 import type { PortRouter } from "./ports.ts";
 import {
+	FILE_PART_CALL_MAX_BYTES,
 	FILE_STREAM_ACK_BYTES,
 	FILE_STREAM_FRAME_MAX_BYTES,
 	FILE_STREAM_WINDOW_BYTES,
+	HOST_EXEC_OUTPUT_MAX_READ,
 	HOST_FEATURES,
 	HOST_WRITE_FILE_MAX_BYTES,
 	type HostDiskUsage,
 	type HostEgress,
 	type HostEnvParams,
+	type HostExecOutput,
+	type HostExecOutputParams,
 	type HostExecParams,
 	type HostExecRef,
 	type HostExecResult,
 	type HostExecStatus,
+	type HostFilePart,
 	type HostGuest,
 	type HostIsolateRuntime,
 	HostMethods,
@@ -203,6 +208,8 @@ function execResult(result: HostExecResult): ExecResult {
 		stdout: result.stdout,
 		stderr: result.stderr,
 		timedOut: result.timedOut === true,
+		// The host's guest cut a stream: kept as cut, though what is left fits the compute API's own cap.
+		...(result.truncated === true ? { truncated: true } : {}),
 		// From an isolate, as its host said: what it needed a microVM for, and why its runtime stopped it. One the host only
 		// inferred from the shell's answer stays inferred: a hint, which autoUpgrade never acts on.
 		...(needs !== undefined && typeof needs.command === "string" && typeof needs.reason === "string"
@@ -476,13 +483,27 @@ function fileEntry(entry: HostFileEntry): BackendFileEntry {
 export function hostMount(mount: BackendMount): HostMount {
 	const { source } = mount;
 	if (source.kind === "bundle") return { path: mount.path, kind: "bundle", digest: source.digest };
-	return {
-		path: mount.path,
-		kind: "bucket",
-		bucketSourceId: source.bucketSourceId,
-		prefix: source.prefix,
-		...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
-	};
+	if (source.kind === "manifest") {
+		return {
+			path: mount.path,
+			kind: "manifest",
+			bucketSourceId: source.bucketSourceId,
+			manifestKey: source.manifestKey,
+			digest: source.manifestDigest,
+		};
+	}
+	if (source.kind === "bucket") {
+		return {
+			path: mount.path,
+			kind: "bucket",
+			bucketSourceId: source.bucketSourceId,
+			prefix: source.prefix,
+			...(source.refreshTtlSeconds === undefined ? {} : { refreshTtlSeconds: source.refreshTtlSeconds }),
+		};
+	}
+	// A kind a later release stored, which this one can't hand on as it is: never as another kind.
+	const unknown: { readonly kind: string } = source;
+	throw new KantelError("not_supported", `This gateway can't mount ${unknown.kind} sources yet`);
 }
 
 /** A spec's or boot's mounts for the hosts service; absent when there are none. */
@@ -742,7 +763,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 	async function callForCommand<T>(
 		sandboxId: string,
 		method: string,
-		params: HostExecRef,
+		params: HostExecRef | HostExecOutputParams,
 		signal?: AbortSignal,
 		timeoutMs?: number,
 	): Promise<T> {
@@ -869,6 +890,14 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		const { hostId } = await tierOf(sandboxId);
 		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.fileStreams)) {
 			throw new KantelError("not_supported", "This sandbox's host can't stream files");
+		}
+	}
+
+	/** Refuses a sandbox whose host doesn't take files in parts: an older kantel-host would answer an unknown method. */
+	async function partsHost(sandboxId: string): Promise<void> {
+		const { hostId } = await tierOf(sandboxId);
+		if (!(await featuresOf(hostId)).includes(HOST_FEATURES.fileParts)) {
+			throw new KantelError("not_supported", "This sandbox's host can't take files in parts; upgrade kantel-host");
 		}
 	}
 
@@ -1045,6 +1074,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
 				? {}
 				: { stickyDisks: spec.stickyDisks.map((disk) => ({ ...disk })) }),
+			...(spec.replacesLost === undefined ? {} : { replacesLost: { hostId: spec.replacesLost.hostId } }),
 		});
 		const create = (
 			hostIds: readonly string[],
@@ -1303,6 +1333,26 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			}
 			return { types: [...types], sizes: [...sizes.values()], hosts: backendHosts };
 		},
+		fenceHost(hostId, sandboxIds, seenAt) {
+			return hosts.sandboxes.fence(hostId, sandboxIds, seenAt);
+		},
+		hostSandboxes(hostId) {
+			return hosts.sandboxes.placedOnHost(hostId);
+		},
+		async fencedOn(sandboxId) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			// A late copy of a deleted sandbox, fenced only to be deleted (`orphan`), is no loss's fence.
+			if (placement?.fenced === undefined || placement.orphan === true) return undefined;
+			return {
+				sandboxId,
+				hostId: placement.hostId,
+				...(placement.attempt === undefined ? {} : { attempt: placement.attempt }),
+			};
+		},
+		async createAdmitted(sandboxId, attempt) {
+			const placement = await hosts.sandboxes.placement(sandboxId);
+			return placement !== undefined && placement.attempt === attempt && placement.fenced === undefined;
+		},
 		async hostConnected(hostId) {
 			if (hosts.hub.connected(hostId)) return true;
 			// Not connected, or not one of these hosts at all (a routed backend's other side): only a host there is to read
@@ -1330,6 +1380,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (placement === undefined || placement.attempt !== attempt || placement.state === "starting") {
 				return { state: "pending" };
 			}
+			// Lost with its host (`fenceHost`): the loss settles it, never a retry or a fail here.
+			if (placement.fenced !== undefined) return { state: "pending" };
 			const reportedAt = placement.updatedAt;
 			// Its host's hello didn't name it: never made there, or gone with its create.
 			if (placement.state === "lost") return { state: "lost", reason: CREATE_LOST, reportedAt };
@@ -1685,6 +1737,26 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(status.truncated === true ? { truncated: true } : {}),
 			} satisfies CommandProgress;
 		},
+		async commandOutput(sandboxId, commandId, stream, range) {
+			const { hostId } = await tierOf(sandboxId);
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.execOutput)) {
+				throw new KantelError("not_supported", "This sandbox's host keeps no command output past its result");
+			}
+			const answer = await callForCommand<HostExecOutput>(sandboxId, HostMethods.execOutput, {
+				commandId,
+				stream,
+				offset: range.offset,
+				length: Math.min(range.length, HOST_EXEC_OUTPUT_MAX_READ),
+			});
+			return {
+				bytes: fromBase64(answer.data),
+				offset: answer.offset,
+				size: answer.size,
+				ended: answer.ended === true,
+				truncated: answer.truncated === true,
+				limit: answer.limit,
+			};
+		},
 		async readFile(sandboxId, path, range) {
 			const answer = await call<{ data: string; fileSize?: number }>(
 				sandboxId,
@@ -1881,6 +1953,71 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			if (!finished)
 				throw new KantelError("unavailable", "The sandbox's host ended the write before all of it arrived");
 			return { size: end.size };
+		},
+		async writeFilePart(sandboxId, path, upload, offset, body) {
+			await partsHost(sandboxId);
+			// The body goes to the host in calls of at most FILE_PART_CALL_MAX_BYTES at their own offsets, one at a time:
+			// each is relayed between replicas as any call is, and no more than one is held here.
+			const buffer = new Uint8Array(FILE_PART_CALL_MAX_BYTES);
+			let filled = 0;
+			let written = 0;
+			const flush = async () => {
+				const params: HostFilePart = {
+					sandboxId,
+					path,
+					upload,
+					offset: offset + written,
+					data: toBase64(buffer.subarray(0, filled)),
+				};
+				const answer = await call<{ readonly size: number }>(sandboxId, HostMethods.filePart, params);
+				if (answer.size !== filled) {
+					throw new KantelError(
+						"unavailable",
+						`The sandbox's host wrote ${answer.size} bytes of a ${filled}-byte part`,
+					);
+				}
+				written += filled;
+				filled = 0;
+			};
+			const reader = body.getReader();
+			try {
+				for (;;) {
+					const { value, done } = await reader.read();
+					if (done) break;
+					let at = 0;
+					while (at < value.byteLength) {
+						const take = Math.min(value.byteLength - at, buffer.byteLength - filled);
+						buffer.set(value.subarray(at, at + take), filled);
+						filled += take;
+						at += take;
+						if (filled === buffer.byteLength) await flush();
+					}
+				}
+				// An empty part still makes the upload (an empty file).
+				if (filled > 0 || written === 0) await flush();
+			} catch (error) {
+				reader.cancel().catch(() => undefined);
+				throw error;
+			}
+			return { size: written };
+		},
+		async completeFileParts(sandboxId, path, upload, size, sha256, mode) {
+			await partsHost(sandboxId);
+			const params: HostFilePart = { sandboxId, path, upload, size, sha256, ...(mode === undefined ? {} : { mode }) };
+			// As long as reading a large file through for its SHA-256 takes.
+			const answer = await call<{ readonly size: number }>(
+				sandboxId,
+				HostMethods.fileComplete,
+				params,
+				undefined,
+				30 * 60_000,
+			);
+			return { name: path.split("/").pop() ?? path, path, kind: "file", size: answer.size, modifiedAt: now() };
+		},
+		async abortFileParts(sandboxId, path, upload) {
+			await partsHost(sandboxId);
+			const params: HostFilePart = { sandboxId, path, upload };
+			await call(sandboxId, HostMethods.fileAbort, params);
 		},
 		async deleteFile(sandboxId, path) {
 			await call(sandboxId, "sandbox.files.delete", { path, recursive: true });

@@ -263,15 +263,24 @@ export interface BrowserEmbed {
 	readonly endMessage?: string;
 }
 
-/** An S3 access key, or a GCS HMAC key. */
+/** An S3 access key (temporary ones with `sessionToken` and `expiresAt`), or a GCS HMAC key. */
 export interface BucketAccessKey {
 	readonly accessKeyId: string;
 	readonly secretAccessKey: string;
 	readonly sessionToken?: string;
+	/** When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. */
+	readonly expiresAt?: number;
+}
+
+/** A Cloud Storage OAuth access token, such as a down-scoped one for the objects the sandboxes may read (`gcs` only). Short-lived: replace it before `expiresAt`. Experimental, as mounts are. */
+export interface BucketAccessToken {
+	readonly accessToken: string;
+	/** When they stop working (ms since the epoch). Hosts use them no later, and from a minute before ask for the source again, so replace them ahead of time (`setBucketSourceCredentials`). Once they have expired, a read of a file not already in the host's cache fails (EIO) until they are replaced. */
+	readonly expiresAt: number;
 }
 
 /** Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered. */
-export type BucketCredentials = BucketAccessKey | BucketServiceAccountKey;
+export type BucketCredentials = BucketAccessKey | BucketAccessToken | BucketServiceAccountKey;
 
 /** An object-store prefix, through a bucket source the account holds. The host reads objects as they are opened; the bucket source's credentials stay on the host, never in the sandbox. */
 export interface BucketMountSource {
@@ -292,7 +301,7 @@ export interface BucketServiceAccountKey {
 	readonly serviceAccountKey: string;
 }
 
-/** A bucket an account's sandboxes may mount prefixes of, with the credentials that read it. The credentials are write-only. */
+/** A bucket an account's sandboxes may mount prefixes or manifests of, with the credentials that read it. The credentials are write-only. */
 export interface BucketSource {
 	/** The bucket source's ID, such as `bks_4kq9x2mt`. */
 	readonly id: string;
@@ -423,6 +432,26 @@ export interface CommandNeedsMicrovm {
 	readonly inferred?: boolean;
 }
 
+/** A part of at most 1 MiB of a command's stdout or stderr. Use `encoding=base64` for parts, as a cut can fall inside a UTF-8 character. */
+export interface CommandOutput {
+	readonly commandId: string;
+	/** One of a command's output streams. Reading, `stdout` is the default. */
+	readonly stream: CommandStream;
+	readonly encoding: FileEncoding;
+	/** The part read: at most `length` bytes from `offset`. */
+	readonly content: string;
+	/** The byte `content` starts at. At `size`, it's empty. */
+	readonly offset: number;
+	/** How many bytes of the stream Kantel keeps now. While the command runs it grows: read again from `offset` plus the part's length. */
+	readonly size: number;
+	/** The command has ended, so `size` is the whole of what is kept. */
+	readonly ended: boolean;
+	/** Some of the stream may be missing past what is kept: it went past `limit` (or past what its sandbox keeps in all), or the command ended with its machine, whose last output may not have reached the disk. */
+	readonly truncated: boolean;
+	/** The most of each stream Kantel keeps for this command: 64 MiB in a microVM on a current kantel-host, and 1 MiB (the command's own `stdout` and `stderr`) elsewhere. */
+	readonly limit: number;
+}
+
 export interface CommandPage {
 	readonly items: readonly Command[];
 	/** Present when more items follow. */
@@ -431,8 +460,24 @@ export interface CommandPage {
 
 export type CommandState = "running" | "exited" | "killed" | "timed_out";
 
+/** One of a command's output streams. Reading, `stdout` is the default. */
+export type CommandStream = "stdout" | "stderr";
+
 /** In an isolate: its runtime stopped the command for using too much CPU time (`cpu`), memory (`memory`) or wall time (`wall`). */
 export type CommandTermination = "cpu" | "memory" | "wall";
+
+export interface CompleteFilePartsBody {
+	/** The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
+	readonly path: string;
+	/** Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. */
+	readonly upload: string;
+	/** The whole file's size in bytes. */
+	readonly size: number;
+	/** The whole file's SHA-256, in hex. */
+	readonly sha256: string;
+	/** Octal permissions, such as `0755` (default `0644`); not `0000`. */
+	readonly mode?: string;
+}
 
 export interface ComputePageQuery {
 	/** At most this many; default 50. */
@@ -643,6 +688,8 @@ export interface CreateSandboxBody {
 	readonly autoUpgrade?: boolean;
 	/** What its `autoUpgrade` makes the microVM from: a microVM's snapshot, a snapshot's ID or a saved snapshot's name in the account, as `upgradeSandbox`'s `from` takes it. Checked now and read again at the upgrade, so a saved snapshot saved again under the name gives its newest; one gone by then fails the upgrade, and the command's answer stands. Default: the deployment's default microVM. An isolate's only. */
 	readonly autoUpgradeFrom?: string;
+	/** What becomes of a sandbox when its host stays disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its host (its create named one). Its old host deletes its copy if it comes back, before it is used. */
+	readonly onHostLost?: SandboxOnHostLost;
 	/** Answer once it is `running` (or `error`) rather than as soon as it is placed. */
 	readonly wait?: boolean;
 }
@@ -866,7 +913,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -878,9 +925,9 @@ export interface Event {
 
 export interface EventData {
 	readonly name?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state?: SandboxState;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly previousState?: SandboxState;
 	readonly reason?: string;
 	/** Why a sandbox couldn't be placed on a host. `no_host`: no host it may use is connected. `no_host_for_type`: none runs its type. `no_host_with_labels`: none has every label in `hostLabels`. `no_host_offers_size`: none offers its size or can make its resources. `no_host_enforces_egress`: none that could take it enforces egress grants or protected variables. `no_host_for_template`: none that could take it runs templates, or builds the template's custom image. `insufficient_capacity`: hosts match but none has the memory or disk free now; retry later. `host_unavailable`: the host its disk or snapshot is on can't take it now (offline, draining or not one it may use, or gone during the boot). `account_limit`: the account runs as many sandboxes as it may. */
@@ -916,7 +963,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -928,6 +975,8 @@ export type EventType =
 	| "sandbox.environments_changed"
 	| "sandbox.oom_kill"
 	| "sandbox.upgraded"
+	| "sandbox.lost"
+	| "sandbox.recreated"
 	| "sandbox.deleted"
 	| "snapshot.saved"
 	| "snapshot.deleted";
@@ -1009,6 +1058,23 @@ export interface FileList {
 	readonly items: readonly FileEntry[];
 	/** Present when more items follow. */
 	readonly nextCursor?: string;
+}
+
+/** A part written. Nothing is at `path` until the upload is completed. */
+export interface FilePart {
+	/** The file's absolute path. */
+	readonly path: string;
+	readonly upload: string;
+	readonly offset: number;
+	/** The bytes of this part written. */
+	readonly size: number;
+}
+
+export interface FilePartsQuery {
+	/** The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
+	readonly path: string;
+	/** Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. */
+	readonly upload: string;
 }
 
 export interface FilePathQuery {
@@ -1652,7 +1718,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -1673,7 +1739,7 @@ export interface ListFilesQuery {
 export interface ListSandboxesQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state?: SandboxState;
 	/** Include stopped, paused and errored sandboxes. Default: only active ones. */
 	readonly all?: boolean;
@@ -1725,12 +1791,23 @@ export interface LiveSandboxChange {
 	readonly type: "sandbox";
 	readonly sandboxId: string;
 	readonly accountId: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly previousState?: SandboxState;
 	/** Epoch milliseconds, UTC. */
 	readonly at: number;
+}
+
+/** Exactly the files a manifest lists, from objects anywhere in a bucket source: for a set of files chosen per sandbox, which a prefix can't express. The manifest is a JSON object the account writes to the bucket, `{"version":1,"entries":[...]}`, one entry per file: `path` (relative to the mount), `key` (the object with its bytes), `size`, and the object's `generation` (Cloud Storage) or `etag`, or both, so a file never reads another version's bytes; optionally `mtimeMs`. An entry `{path, dir: true}` makes an empty directory. At most 200,000 files and 64 MiB. An entry that can't be shown as written fails the mount, naming it. A file whose object changed since reads as a stale file handle. The host reads bytes only as they are read, and the manifest never changes: mount another one for other files. The host must offer manifest mounts; on one that doesn't, the mount is `failed`. */
+export interface ManifestMountSource {
+	readonly kind: "manifest";
+	/** A bucket source of the sandbox's account: it holds the manifest and every file's bytes. */
+	readonly bucketSourceId: string;
+	/** The object holding the manifest, such as `manifests/session-42.json`. */
+	readonly manifestKey: string;
+	/** The manifest object's SHA-256, `sha256:` and 64 hex digits: a manifest that doesn't match isn't mounted. */
+	readonly manifestDigest: string;
 }
 
 export interface Member {
@@ -1773,7 +1850,7 @@ export interface Mount {
 	readonly source: MountSource;
 }
 
-export type MountSource = BundleMountSource | BucketMountSource;
+export type MountSource = BundleMountSource | BucketMountSource | ManifestMountSource;
 
 /** `pending`: its host is still putting it in place. `ready`: its files are there. `failed`: they aren't, and `error` says why; the sandbox runs without it. */
 export type MountStatus = "pending" | "ready" | "failed";
@@ -1969,6 +2046,16 @@ export interface PutTelemetryBody {
 	readonly signals?: readonly ("metrics" | "logs")[];
 }
 
+export interface ReadCommandOutputQuery {
+	/** One of a command's output streams. Reading, `stdout` is the default. */
+	readonly stream?: CommandStream;
+	readonly encoding?: FileEncoding;
+	/** Read from this byte (default 0). */
+	readonly offset?: number;
+	/** Read at most this many bytes: default, and at most, 1 MiB (1048576). */
+	readonly length?: number;
+}
+
 export interface ReadFileQuery {
 	readonly path: string;
 	readonly encoding?: FileEncoding;
@@ -2045,7 +2132,7 @@ export interface Sandbox {
 	readonly resources?: SandboxResources;
 	/** The base image a microVM was made from, such as `ubuntu-26.04`. */
 	readonly image?: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
 	/** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
 	readonly health?: SandboxHealth;
@@ -2071,6 +2158,8 @@ export interface Sandbox {
 	readonly lastActiveAt?: number;
 	/** When its idle stop will stop it if it isn't used before then, while running with one: `lastActiveAt` plus `idleStopMinutes`. It stops within about 30 seconds after, once every gateway's record of use is in. */
 	readonly idleStopsAt?: number;
+	/** What becomes of a sandbox when its host stays disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its host (its create named one). Its old host deletes its copy if it comes back, before it is used. */
+	readonly onHostLost?: SandboxOnHostLost;
 	/** An isolate that becomes a microVM by itself when a command needs one (the command's `needsMicrovm`): Kantel upgrades it (`upgradeSandbox`) and runs the command again there, once. Absent: false. */
 	readonly autoUpgrade?: boolean;
 	/** The snapshot its `autoUpgrade` starts the microVM from, as it was named (a snapshot's ID or a saved snapshot's name), read again at the upgrade: a saved snapshot saved again under the name gives its newest. Absent: the deployment's default microVM. */
@@ -2300,10 +2389,10 @@ export interface SandboxMoveTarget {
 
 /** The `details` of the `conflict` (409) a call that needs a running sandbox (commands, files, ports, file URLs, archives) answers when the sandbox isn't running. A call made while it is starting waits for it, up to 60 seconds, before it answers `sandbox_starting`. Kantel never resumes a stopped sandbox for such a call. */
 export interface SandboxNotRunning {
-	/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. */
+	/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. `sandbox_lost`: its host was lost (its state is `lost`); it can only be deleted. */
 	readonly code: SandboxNotRunningCode;
 	readonly sandboxId: string;
-	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+	/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 	readonly state: SandboxState;
 	/** Why it stopped, paused or failed, where Kantel recorded it (the sandbox's `reason`): `auto-stop` when its auto-stop time came, `idle-stop` when it went `idleStopMinutes` without use, a rule's reason when Kantel stopped it, or what failed. A stop someone asked for has none. Not `details.reason`, which is a placement's. */
 	readonly stopReason?: string;
@@ -2311,7 +2400,7 @@ export interface SandboxNotRunning {
 	readonly hint: string;
 }
 
-/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. */
+/** Why a call that needs a running sandbox was refused. `sandbox_starting`: it was still starting when the call's wait for it ran out; send the call again. `sandbox_stopping`, `sandbox_stopped`, `sandbox_paused`, `sandbox_error`: resume it (`POST /sandboxes/{sandboxId}/resume`), then send the call again. `sandbox_deleting`: it is being deleted. `sandbox_unresponsive`: it is running, but its guest agent doesn't answer (its `health` is `unresponsive`; `stopReason` says why, such as out of memory): recover it (`POST /sandboxes/{sandboxId}/recover`, a restart that keeps its disk), or wait for the agent to answer again. `sandbox_lost`: its host was lost (its state is `lost`); it can only be deleted. */
 export type SandboxNotRunningCode =
 	| "sandbox_starting"
 	| "sandbox_stopping"
@@ -2319,7 +2408,11 @@ export type SandboxNotRunningCode =
 	| "sandbox_paused"
 	| "sandbox_error"
 	| "sandbox_deleting"
-	| "sandbox_unresponsive";
+	| "sandbox_unresponsive"
+	| "sandbox_lost";
+
+/** What becomes of a sandbox when its host stays disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its host (its create named one). Its old host deletes its copy if it comes back, before it is used. */
+export type SandboxOnHostLost = "recreate" | "lost";
 
 export interface SandboxPage {
 	readonly items: readonly Sandbox[];
@@ -2451,7 +2544,7 @@ export interface SandboxStartup {
 	readonly totalMs: number;
 }
 
-/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `deleting`, `deleted`: erased for good, with its snapshots. */
+/** `starting`: being placed and booted. `running`: commands run now. `stopping`: its disk is being saved. `moving`: being moved to another host (`POST /sandboxes/{sandboxId}/move`; its `move` says how far), then started there; commands and file calls wait for it as they do for a start, except while a running sandbox's first copy is made (`copying`), when it still runs them. `stopped`: no machine; its disk is kept as its newest snapshot, and running programs are gone. `paused`: like `stopped`, but its memory is kept too, so `resume` carries on where it left off (microVMs only). `error`: the last operation failed or the machine was lost; `recover` or `resume` it. `lost`: its host stayed disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`, 5 minutes by default), so Kantel no longer counts on its machine or disk; the host deletes it if it comes back, and the only call it takes is a delete. A sandbox whose `onHostLost` is `recreate` is made again on another host instead, where it can be. `deleting`, `deleted`: erased for good, with its snapshots. */
 export type SandboxState =
 	| "starting"
 	| "running"
@@ -2460,6 +2553,7 @@ export type SandboxState =
 	| "paused"
 	| "moving"
 	| "error"
+	| "lost"
 	| "deleting"
 	| "deleted";
 
@@ -2584,6 +2678,11 @@ export interface SaveSnapshotBody {
 }
 
 export type ScanSeverity = "critical" | "high" | "medium" | "low" | "unknown";
+
+export interface SetBucketSourceCredentialsBody {
+	/** Write-only: kept encrypted, given only to the host of a sandbox that mounts the bucket, never answered. */
+	readonly credentials: BucketCredentials;
+}
 
 /** `encoding` says how `content` is written: `utf8` (the default) or `base64`. */
 export interface SetEnvironmentFileBody {
@@ -3139,6 +3238,8 @@ export interface UpdateSandboxBody {
 	readonly autoUpgrade?: boolean;
 	/** Sets what its `autoUpgrade` makes the microVM from, as a create's `autoUpgradeFrom` takes it; `null` goes back to the deployment's default microVM. */
 	readonly autoUpgradeFrom?: string | null;
+	/** What becomes of a sandbox when its host stays disconnected past the deployment's deadline (`KANTEL_HOST_LOST_AFTER_MINUTES`). `lost` (the default): it moves to `lost`, with a `sandbox.lost` event, and can only be deleted. `recreate`: it is made again under the same ID on another connected host in its pool, from its newest saved snapshot, and comes back running if it was running or starting, and stopped otherwise, with a `sandbox.recreated` event naming the snapshot. What it did since that snapshot is gone with its host. It is lost instead (`sandbox.lost`, its `reason` saying why) when it has no saved snapshot another host in its pool holds or can fetch, when no other host in its pool can take it, or when it is an isolate or kept to its host (its create named one). Its old host deletes its copy if it comes back, before it is used. */
+	readonly onHostLost?: SandboxOnHostLost;
 }
 
 /** A `spec` that differs from the current one makes a new version. */
@@ -3236,7 +3337,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -3280,6 +3381,15 @@ export interface WriteFileBody {
 	readonly encoding?: FileEncoding;
 	/** Octal permissions, such as `0755`. */
 	readonly mode?: string;
+}
+
+export interface WriteFilePartQuery {
+	/** The file's path: absolute, or relative to a microVM's `/home/user`. Not in or over a mount. */
+	readonly path: string;
+	/** Your name for this upload, 8 to 64 letters, digits, `-` or `_`, such as a UUID: the same on each of its parts and its completion. A new one for each upload. */
+	readonly upload: string;
+	/** The byte of the file this part starts at. */
+	readonly offset: number;
 }
 
 // Runtime
@@ -3726,6 +3836,13 @@ export interface KantelClient {
 	listCommands(sandboxId: string, query?: ComputePageQuery, options?: CallOptions): Promise<CommandPage>;
 	/** Get a command. Its state, and once it has ended its exit code and output. While it runs, its output so far, where its sandbox reports it (a microVM on a current kantel-host), detached or not. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}` */
 	getCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
+	/** Read a command's output. Any part of a command's stdout or stderr, up to 1 MiB a read, by `offset` and `length`, while it runs and after it ends. A microVM keeps 64 MiB of each stream on its own disk until it is deleted, through stops and its machine failing; read it while the sandbox runs, as files are (a stopped one is `conflict`, with a `SandboxNotRunning`, unless the command exited and its own `stdout` and `stderr` hold all of it, as UTF-8). Elsewhere it reads what the command holds: its first 1 MiB. A key needs `exec`. `GET /sandboxes/{sandboxId}/commands/{commandId}/output` */
+	readCommandOutput(
+		sandboxId: string,
+		commandId: string,
+		query?: ReadCommandOutputQuery,
+		options?: CallOptions,
+	): Promise<CommandOutput>;
 	/** Kill a command. Ends a running command and the processes it started; one that has ended is answered as it is. Where its host's kantel-host is too old to stop it, it is marked killed all the same and its `stderr` says it may still be running. A key needs `exec`. `DELETE /sandboxes/{sandboxId}/commands/{commandId}` */
 	killCommand(sandboxId: string, commandId: string, options?: CallOptions): Promise<Command>;
 	/** Read a file. A file of up to 1 MiB, as UTF-8 text unless `encoding` asks for base64. A larger file is read in parts of up to 1 MiB with `offset` and `length`; `size` in the answer is the whole file's. Use base64 for a part of a binary file, or of a text file cut mid-character. A key needs `files`. `GET /sandboxes/{sandboxId}/files` */
@@ -3736,6 +3853,12 @@ export interface KantelClient {
 	deleteFile(sandboxId: string, query: FilePathQuery, options?: CallOptions): Promise<void>;
 	/** List a directory. A key needs `files`. `GET /sandboxes/{sandboxId}/files/list` */
 	listFiles(sandboxId: string, query?: ListFilesQuery, options?: CallOptions): Promise<FileList>;
+	/** Write a part of a file. A file goes up in parts, in any order and at once if you like, each the raw bytes from its `offset`, under an `upload` ID of yours; then one completion with its size and SHA-256. Nothing is at `path` until the completion has checked both, and then the file replaces what was there in one step. microVMs only. A part is the request's raw body, at most 64 MiB (67108864 bytes); the file is at most 64 GiB, and no more than the sandbox's disk has free (`exhausted`). Sending a part again writes it again. The parts are kept beside the file, on the sandbox's disk, until the upload is completed or aborted; an upload with no part for an hour, and every upload of a sandbox that stops without its memory, is discarded. A key needs `files`. `PUT /sandboxes/{sandboxId}/files/parts` */
+	writeFilePart(sandboxId: string, body: RawBody, query: WriteFilePartQuery, options?: CallOptions): Promise<FilePart>;
+	/** Complete a file written in parts. Checks that the parts written come to `size` bytes with the SHA-256 `sha256`, then moves the file into place with `mode` (default `0644`), owned by the sandbox's user, replacing what was at `path`. A check that fails is `invalid`, and the upload is discarded with nothing at `path`: send it again under a new `upload` ID. Completing again answers as the first time while `path` still has that size and SHA-256, so a lost answer can be asked for again; an upload that isn't known is `conflict`. A key needs `files`. `POST /sandboxes/{sandboxId}/files/parts/complete` */
+	completeFileParts(sandboxId: string, body: CompleteFilePartsBody, options?: CallOptions): Promise<FileEntry>;
+	/** Abort a file written in parts. Discards an upload's parts. What is at `path` is untouched. An upload that isn't known is fine too. A key needs `files`. `DELETE /sandboxes/{sandboxId}/files/parts` */
+	abortFileParts(sandboxId: string, query: FilePartsQuery, options?: CallOptions): Promise<void>;
 	/** Get an upload URL for a file. A short-lived URL on the API, streamed straight to the sandbox's host: `PUT` the file to it as the raw request body, of any size, with no `Authorization` header; the answer is `{ path, size }`. Missing directories are made, and a file already there is replaced only once the upload is complete. The URL is bound to this sandbox and path, and expires after `ttlSeconds`. A path in a read-only mount is refused (`conflict`). The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/files/upload-url` */
 	createUploadUrl(sandboxId: string, body: FileUrlBody, options?: CallOptions): Promise<FileUrl>;
 	/** Get a download URL for a file. A short-lived URL on the API, streamed straight from the sandbox's host: `GET` it, with no `Authorization` header, for the file's bytes as they are when it is fetched, whatever its size (`HEAD` for its size alone). The URL is bound to this sandbox and path, and expires after `ttlSeconds`. The sandbox must be running when the URL is used. Treat it as a secret. A key needs `files`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/files/download-url` */
@@ -4004,7 +4127,7 @@ export interface KantelClient {
 	updateAccountPool(poolId: string, body?: UpdatePoolBody, options?: CallOptions): Promise<Pool>;
 	/** Delete one of an account's pools. Only an empty pool that isn't the default: `conflict` while a host is in it. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned account hosts on (`KANTEL_ACCOUNT_HOSTS`). `DELETE /pools/{poolId}` */
 	deleteAccountPool(poolId: string, options?: CallOptions): Promise<void>;
-	/** Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle at `path` is `invalid` (it never changes: mount another digest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/mounts/refresh` */
+	/** Bring a sandbox's bucket mounts up to date. Lists each bucket mount's prefix again (just the one at `path` with it) and answers once the sandbox shows that listing: anything in the bucket before the call is there for the next file the sandbox opens, and anything deleted is gone. Call it after changing a bucket a sandbox mounts, such as publishing a new version of a skill, before the sandbox uses it. A file already open keeps reading the version it opened. Each `listedAt` is when the listing began. A listing that fails, or a sandbox that doesn't take it, is `unavailable`, naming the mount: the mount carries on with what it showed before. A bundle or manifest mount at `path` is `invalid` (it never changes: mount another digest or manifest), and a `path` with no mount `not_found`. A sandbox that is starting is waited for; one that is stopped or paused is `conflict`: resume it first. A sandbox with no bucket mounts answers no items. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /sandboxes/{sandboxId}/mounts/refresh` */
 	refreshSandboxMounts(sandboxId: string, body?: RefreshMountsBody, options?: CallOptions): Promise<RefreshedMountList>;
 	/** Upload a bundle. Stores a tar of files once in the account (the caller's personal account unless `account` names an organisation), named by its SHA-256, for sandboxes to mount read-only (`mounts` on create). Uploading a tar the account has already is answered with that bundle (200), and stores nothing again. With `digest`, bytes that don't match are refused. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `POST /bundles` */
 	uploadBundle(body: RawBody, query?: UploadBundleQuery, options?: CallOptions): Promise<Bundle>;
@@ -4014,12 +4137,18 @@ export interface KantelClient {
 	getBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<Bundle>;
 	/** Delete a bundle. Removes it from the account. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included, since they mount it again when they start: delete those sandboxes first. A key needs `sandboxes:write`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bundles/{digest}` */
 	deleteBundle(digest: string, query?: AccountScopedQuery, options?: CallOptions): Promise<void>;
-	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). Idempotent with `options.idempotencyKey`. `POST /bucket-sources` */
+	/** Create a bucket source. A bucket the account's sandboxes may mount prefixes or manifests of (`mounts` on create), with the credentials that read it. The credentials are kept encrypted and never shown again; only the host of a sandbox that mounts the bucket is given them, and never the sandbox. Credentials need the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). Idempotent with `options.idempotencyKey`. `POST /bucket-sources` */
 	createBucketSource(body: CreateBucketSourceBody, options?: CallOptions): Promise<BucketSource>;
 	/** List bucket sources. The account's bucket sources, oldest first. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources` */
 	listBucketSources(query?: AccountScopedQuery, options?: CallOptions): Promise<BucketSourceList>;
 	/** Get a bucket source. Never its credentials. A key needs `account:read`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `GET /bucket-sources/{bucketSourceId}` */
 	getBucketSource(bucketSourceId: string, options?: CallOptions): Promise<BucketSource>;
+	/** Replace a bucket source's credentials. Replaces the credentials that read the bucket, such as a short-lived token before it expires: hosts take the new ones the next time they ask for the source, which is within ten minutes, and from a minute before the old ones' `expiresAt`. Files already read stay in the host's cache. Credentials already past their `expiresAt` are `invalid`, and an access token is for a `gcs` source only. Needs the deployment's secrets key (`not_supported` without one). A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `PUT /bucket-sources/{bucketSourceId}/credentials` */
+	setBucketSourceCredentials(
+		bucketSourceId: string,
+		body: SetBucketSourceCredentialsBody,
+		options?: CallOptions,
+	): Promise<BucketSource>;
 	/** Delete a bucket source. Removes it and its credentials. Refused (`conflict`) while a sandbox of the account that still exists mounts it, stopped ones included: delete those sandboxes first. A key needs `account:admin`. Experimental: `not_supported` unless the deployment has turned mounts on (`KANTEL_MOUNTS=experimental`). `DELETE /bucket-sources/{bucketSourceId}` */
 	deleteBucketSource(bucketSourceId: string, options?: CallOptions): Promise<void>;
 }
@@ -4174,6 +4303,16 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 				},
 				callOptions,
 			),
+		readCommandOutput: (sandboxId, commandId, query, callOptions) =>
+			send(
+				options,
+				{
+					method: "GET",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/commands/${encodeURIComponent(commandId)}/output`,
+					query,
+				},
+				callOptions,
+			),
 		killCommand: (sandboxId, commandId, callOptions) =>
 			send(
 				options,
@@ -4197,6 +4336,29 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "GET", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/list`, query },
+				callOptions,
+			),
+		writeFilePart: (sandboxId, body, query, callOptions) =>
+			send(
+				options,
+				{
+					method: "PUT",
+					path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/parts`,
+					query,
+					raw: { body, type: "application/octet-stream" },
+				},
+				callOptions,
+			),
+		completeFileParts: (sandboxId, body, callOptions) =>
+			send(
+				options,
+				{ method: "POST", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/parts/complete`, body },
+				callOptions,
+			),
+		abortFileParts: (sandboxId, query, callOptions) =>
+			send(
+				options,
+				{ method: "DELETE", path: `/sandboxes/${encodeURIComponent(sandboxId)}/files/parts`, query },
 				callOptions,
 			),
 		createUploadUrl: (sandboxId, body, callOptions) =>
@@ -4542,6 +4704,12 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(options, { method: "GET", path: "/bucket-sources", query }, callOptions),
 		getBucketSource: (bucketSourceId, callOptions) =>
 			send(options, { method: "GET", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}` }, callOptions),
+		setBucketSourceCredentials: (bucketSourceId, body, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}/credentials`, body },
+				callOptions,
+			),
 		deleteBucketSource: (bucketSourceId, callOptions) =>
 			send(options, { method: "DELETE", path: `/bucket-sources/${encodeURIComponent(bucketSourceId)}` }, callOptions),
 	};

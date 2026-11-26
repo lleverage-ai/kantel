@@ -487,6 +487,11 @@ const FeatureFileStreams = "file-streams"
 // extracts archives (the microVM tier), with its own code: never the sandbox's tar, shell or environment.
 const FeatureFilesExtract = "files-extract"
 
+// FeatureFileParts: the host serves sandbox.files.part, sandbox.files.complete and sandbox.files.abort (FilePartParams)
+// for the sandboxes of a tier that takes files in parts (the microVM tier): a large file written a part at a time at
+// its offsets into a staged file beside it, moved into place only once its size and SHA-256 are checked.
+const FeatureFileParts = "file-parts"
+
 // FeatureCustomShapes: sandbox.create takes vcpus, memoryMiB and diskGiB for a microVM shape off the named sizes,
 // and memoryMiB for an isolate.
 const FeatureCustomShapes = "custom-shapes"
@@ -506,6 +511,11 @@ const FeatureUsageAcks = "usage-acks"
 // foreground command with a CommandID runs on past its connection to the control plane going too, to its own limit,
 // and its result is then kept for sandbox.exec.get (a host from before ended it with the connection).
 const FeatureExecControl = "exec-control"
+
+// FeatureExecOutput: sandbox.exec.output reads any part of a command's output as its sandbox keeps it (ExecOutput),
+// while it runs and after it ends: a microVM's guest agent keeps each stream of a command with a CommandID on the
+// sandbox's disk, past the start of each that ExecResult holds. Without it, a command's output is ExecResult's alone.
+const FeatureExecOutput = "exec-output"
 
 // FeatureImagePatching (experimental): the host keeps its host images by version, follows Welcome.Images, reports
 // each sandbox's and snapshot's Base, and restarts a sandbox on its current images when sandbox.start has Rebase.
@@ -551,6 +561,12 @@ const FeatureBucketMounts = "mounts-bucket"
 // mount it names shows a listing that began after the call arrived (MountStatus.ListedAt), or fails saying which
 // couldn't: a listing error, or a guest that didn't take the new listing.
 const FeatureMountsSync = "mounts-sync"
+
+// FeatureManifestMounts (HOST_FEATURES.mountsManifest): the host mounts CreateParams' manifest Mounts read-only in
+// microVM sandboxes, as it does bucket mounts but from the manifest object the mount names (checked against its
+// digest) rather than a listing, and reads bucket sources whose credentials are an access token, or expire
+// (BucketCredentials.AccessToken, ExpiresAt). Experimental, as bucket mounts are.
+const FeatureManifestMounts = "mounts-manifest"
 
 // FeatureTemplateImageBuild: the host builds templates' custom images (a Dockerfile, or an image reference) in a build
 // microVM whose only network is the sandbox egress proxy, and boots them through Kantel's initramfs (the injected
@@ -650,6 +666,10 @@ const FeatureGuestFeatures = "guest-features"
 // FileExtractParams.RealTarget into a real directory only, refusing a link at the target or above it. An agent from
 // before it reports no features, and ignores RealTarget.
 const GuestFeatureRealTarget = "extract-real-target"
+
+// GuestFeatureFileParts, in a guest agent's health, says it takes files in parts (PUT /files/part, POST
+// /files/complete, DELETE /files/part). One from before it answers those 404 or 405.
+const GuestFeatureFileParts = "file-parts"
 
 // FeatureIsolateFreeze (HOST_FEATURES.isolateFreeze): the host takes sandbox.upgrade.freeze and sandbox.upgrade.thaw
 // (UpgradeRef) for its isolates, so Kantel can copy one version of an isolate's files to a microVM on another host
@@ -1015,8 +1035,9 @@ type GuestDocker struct {
 
 // Mount kinds.
 const (
-	MountBundle = "bundle"
-	MountBucket = "bucket"
+	MountBundle   = "bundle"
+	MountBucket   = "bucket"
+	MountManifest = "manifest"
 )
 
 // Mount is one read-only mount a sandbox is created with (HostMount): the sandbox sees it at Path and can't write to
@@ -1024,13 +1045,20 @@ const (
 // once and attaches it as a read-only drive. A bucket mount is a prefix of an account's bucket source. The host lists
 // it once when it mounts (the manifest: every object's path, size, mtime and ETag), so listing and stat in the sandbox
 // are local, and fetches an object's bytes only when the sandbox reads them, through the host's read cache.
+//
+// A manifest mount (FeatureManifestMounts) is the same, except that nothing is listed: its files are the entries of
+// a manifest the account wrote to its own bucket (the object at ManifestKey, which must hash to Digest), each naming
+// the object that holds its bytes and that object's generation or ETag. It never changes: another set of files is
+// another manifest, so another mount.
 type Mount struct {
 	// Path is where it appears in the sandbox: absolute, and not one of the system's own directories.
 	Path string `json:"path"`
-	// Kind is "bundle" or "bucket".
+	// Kind is "bundle", "bucket" or "manifest".
 	Kind string `json:"kind"`
-	// Digest is a bundle's (kind "bundle"): sha256:<64 hex digits>.
+	// Digest is a bundle's (kind "bundle"), or a manifest's object's (kind "manifest"): sha256:<64 hex digits>.
 	Digest string `json:"digest,omitempty"`
+	// ManifestKey is the object holding a manifest mount's manifest, in its bucket source.
+	ManifestKey string `json:"manifestKey,omitempty"`
 	// BucketSourceID is the account's bucket source: the host asks Kantel for its location and credentials
 	// (bucket.fetch) and keeps them in memory only. They never reach the sandbox.
 	BucketSourceID string `json:"bucketSourceId,omitempty"`
@@ -1101,12 +1129,17 @@ type BucketSource struct {
 	Credentials *BucketCredentials `json:"credentials,omitempty"`
 }
 
-// BucketCredentials is an access key (an S3 key or a GCS HMAC key), or a GCS service account's JSON key.
+// BucketCredentials is an access key (an S3 key or a GCS HMAC key), a GCS service account's JSON key, or (from a host
+// with FeatureManifestMounts) a short-lived OAuth access token sent as a bearer.
 type BucketCredentials struct {
 	AccessKeyID       string `json:"accessKeyId,omitempty"`
 	SecretAccessKey   string `json:"secretAccessKey,omitempty"`
 	SessionToken      string `json:"sessionToken,omitempty"`
 	ServiceAccountKey string `json:"serviceAccountKey,omitempty"`
+	AccessToken       string `json:"accessToken,omitempty"`
+	// ExpiresAt (unix milliseconds) is when short-lived credentials stop working: the host uses them no later, and
+	// asks for the source again shortly before. 0: they don't expire.
+	ExpiresAt int64 `json:"expiresAt,omitempty"`
 }
 
 // EventMounts is the event a host sends when a sandbox's mounts change status after its create answered
@@ -1666,6 +1699,41 @@ type ExecRef struct {
 	WaitMs    int64  `json:"waitMs,omitempty"`
 }
 
+// ExecOutputParams is sandbox.exec.output's (FeatureExecOutput): at most Length bytes (at most ExecOutputMaxRead) of a
+// command's Stream (ExecStdout or ExecStderr) from Offset, as its sandbox keeps it.
+type ExecOutputParams struct {
+	SandboxID string `json:"sandboxId"`
+	CommandID string `json:"commandId"`
+	Stream    string `json:"stream"`
+	Offset    int64  `json:"offset,omitempty"`
+	Length    int64  `json:"length,omitempty"`
+}
+
+// ExecOutputParams.Stream's values.
+const (
+	ExecStdout = "stdout"
+	ExecStderr = "stderr"
+)
+
+// ExecOutputMaxRead is the most of a stream one sandbox.exec.output answers.
+const ExecOutputMaxRead = 1 << 20
+
+// ExecOutput is sandbox.exec.output's answer: a part of one of a command's streams, as its sandbox keeps it (a
+// microVM's guest agent keeps each stream of a command run with an ID on the sandbox's disk, up to Limit bytes). Data
+// is base64, from Offset (the offset asked for, or Size when that is past it). Size is how much of the stream is kept
+// now, which only grows while the command runs; Ended says it has ended, so Size is the whole of it; Truncated says
+// the rest may be missing: the stream went past Limit, or past what the sandbox keeps in all, its disk refused it, or
+// the command ended with its machine before its end was recorded. A command whose output the sandbox doesn't keep is not_found;
+// a sandbox that keeps none (an isolate, a guest agent from before) is unsupported.
+type ExecOutput struct {
+	Data      string `json:"data"`
+	Offset    int64  `json:"offset"`
+	Size      int64  `json:"size"`
+	Ended     bool   `json:"ended,omitempty"`
+	Truncated bool   `json:"truncated,omitempty"`
+	Limit     int64  `json:"limit"`
+}
+
 // ExecMaxWaitMs is the longest a sandbox.exec.get waits for a command to end.
 const ExecMaxWaitMs = 60_000
 
@@ -1777,6 +1845,31 @@ type ProcessList struct {
 	Total     int       `json:"total"`
 	SampleMs  int64     `json:"sampleMs"`
 }
+
+// FilePartParams is sandbox.files.part's, sandbox.files.complete's and sandbox.files.abort's (FeatureFileParts): the
+// upload Upload (8 to 64 of A-Z, a-z, 0-9, - and _, the client's name for it) of the file at Path (absolute).
+//
+// sandbox.files.part writes Data (base64, at most FilePartMaxBytes decoded) at Offset into the upload's staged file,
+// beside Path, making it and Path's directories; answered {"size": n}. Parts may come in any order, at once, and again.
+// sandbox.files.complete checks the staged file is Size bytes with SHA256 (hex), then gives it Mode (permissions,
+// default 0644) and the sandbox's user, and renames it over Path; answered {"size": n, "mode": "644"}. A failed check
+// is invalid and discards the upload; one unknown (none written, discarded, or completed) is conflict unless Path
+// already has that size and SHA-256, so a repeat answers as the first. sandbox.files.abort discards the upload;
+// answered {}.
+type FilePartParams struct {
+	SandboxID string `json:"sandboxId"`
+	Path      string `json:"path"`
+	Upload    string `json:"upload"`
+	Offset    int64  `json:"offset,omitempty"`
+	Data      string `json:"data,omitempty"`
+	Size      int64  `json:"size,omitempty"`
+	SHA256    string `json:"sha256,omitempty"`
+	Mode      uint32 `json:"mode,omitempty"`
+}
+
+// FilePartMaxBytes is the most one sandbox.files.part carries, decoded: its message stays well inside what a gateway
+// replica relays to another (4 MiB) and keeps the host's link free for its other sandboxes' calls.
+const FilePartMaxBytes = 2 << 20
 
 // FileExtractParams is sandbox.files.extract's: the tar at Archive (absolute, already checked by Kantel) extracted
 // into the directory Target (absolute, made if missing), its entries owned by the sandbox's user, then deleted. With
@@ -1963,7 +2056,10 @@ const (
 	MethodExecGet = "sandbox.exec.get"
 	// MethodExecKill (Kantel → host, ExecRef; FeatureExecControl) kills a running command by its CommandID, and its
 	// process group; answered ExecKilled.
-	MethodExecKill   = "sandbox.exec.kill"
+	MethodExecKill = "sandbox.exec.kill"
+	// MethodExecOutput (Kantel → host, ExecOutputParams; FeatureExecOutput) answers a part of a command's kept output,
+	// ExecOutput.
+	MethodExecOutput = "sandbox.exec.output"
 	MethodFileRead   = "sandbox.files.read"
 	MethodFileWrite  = "sandbox.files.write"
 	MethodFileDelete = "sandbox.files.delete"
@@ -2000,6 +2096,11 @@ const (
 	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's
 	// own code (FeatureFilesExtract); the result is {}.
 	MethodFileExtract = "sandbox.files.extract"
+	// MethodFilePart, MethodFileComplete and MethodFileAbort (Kantel → host, FilePartParams; FeatureFileParts) write a
+	// file in parts: see FilePartParams.
+	MethodFilePart     = "sandbox.files.part"
+	MethodFileComplete = "sandbox.files.complete"
+	MethodFileAbort    = "sandbox.files.abort"
 	// MethodTemplateBuild (TemplateBuildParams) answers a TemplateBuildResult.
 	MethodTemplateBuild = "template.build"
 	// MethodTemplateDelete (TemplateDeleteParams) deletes a template snapshot; the result is {"ok": true}.

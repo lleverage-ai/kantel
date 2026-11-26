@@ -423,6 +423,8 @@ const UI_STATES: Readonly<Record<SandboxState, UiSandboxState>> = {
 	paused: "paused",
 	moving: "moving",
 	error: "error",
+	// The UI has no lost state yet: one lost with its host shows as failed, with its reason, and can be deleted.
+	lost: "error",
 	// The UI has no deleting or deleted: one being erased is on its way out, and a deleted one is gone.
 	deleting: "stopping",
 	deleted: "stopped",
@@ -497,7 +499,9 @@ function baseFieldOf(record: object): { readonly base?: UiSandboxBase } {
 async function learnBucketSources(context: Context, accountId: string, sandboxes: readonly Sandbox[]): Promise<void> {
 	const unknown = sandboxes.some((sandbox) =>
 		(sandbox.mounts ?? []).some(
-			(mount) => mount.source.kind === "bucket" && !context.bucketSources.has(mount.source.bucketSourceId),
+			(mount) =>
+				(mount.source.kind === "bucket" || mount.source.kind === "manifest") &&
+				!context.bucketSources.has(mount.source.bucketSourceId),
 		),
 	);
 	if (!unknown) return;
@@ -514,6 +518,14 @@ async function learnBucketSources(context: Context, accountId: string, sandboxes
 function mountSourceOf(source: ApiMountSource, context: Context): UiSandboxMount["source"] {
 	if (source.kind === "bundle") return { kind: "bundle", digest: source.digest };
 	const known = context.bucketSources.get(source.bucketSourceId);
+	if (source.kind === "manifest") {
+		return {
+			kind: "manifest",
+			bucketSourceId: source.bucketSourceId,
+			manifestKey: source.manifestKey,
+			...(known === undefined ? {} : { bucketSourceName: known.name, bucket: known.bucket }),
+		};
+	}
 	return {
 		kind: "bucket",
 		bucketSourceId: source.bucketSourceId,
@@ -675,7 +687,10 @@ function sandboxOf(sandbox: Sandbox, context: Context): UiSandbox {
 		...(sandbox.poolId === undefined ? {} : { poolId: sandbox.poolId }),
 		...(Object.keys(sandbox.labels).length === 0 ? {} : { labels: sandbox.labels }),
 		...moveOf(sandbox, context),
-		...(sandbox.state === "error" && sandbox.reason !== undefined ? { error: sandbox.reason } : {}),
+		// A lost one shows as an error too (`UI_STATES`), with why.
+		...((sandbox.state === "error" || sandbox.state === "lost") && sandbox.reason !== undefined
+			? { error: sandbox.reason }
+			: {}),
 		// Running, but its guest agent doesn't answer: why, for the page's notice and its Recover.
 		...(sandbox.state === "running" && sandbox.health === "unresponsive"
 			? { unresponsive: sandbox.reason ?? "Its guest agent isn't answering. Recover it: a restart that keeps its disk" }

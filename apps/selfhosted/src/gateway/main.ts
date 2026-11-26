@@ -14,6 +14,15 @@
 //                               hosts (durable.ts), so they outlast a restart and gateways over one database share
 //                               them; unset, everything is in memory
 //   KANTEL_GATEWAY_SCHEMA       the schema their tables go in; default harbour_m1
+//   KANTEL_DATABASE_CONNECT_TIMEOUT_MS, KANTEL_DATABASE_STATEMENT_TIMEOUT_MS,
+//   KANTEL_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS, KANTEL_DATABASE_KEEPALIVE_MS
+//                               how long the gateway waits on Postgres, in milliseconds, 0 for no limit (durable.ts):
+//                               to open a connection or get one from the pool (default 5000), for a statement
+//                               (`statement_timeout`, default 30000; the gateway gives up 5 s after it), in an idle
+//                               transaction (`idle_in_transaction_session_timeout`, default 30000), and the idle time
+//                               before TCP keepalive starts (default 10000). A `-c` setting in the URL's `options` wins
+//                               over these. At start the gateway waits for Postgres with backoff, for as long as it
+//                               takes, instead of exiting
 //   KANTEL_ORGANISATION_NAME    default "Kantel"
 //   KANTEL_PROJECT_NAME         default "default"
 //   KANTEL_PROJECTS             comma-separated names of more projects: each made once and found by name after that,
@@ -63,7 +72,7 @@ import { kantelSessionProvider } from "@kantel/identity/otp";
 import { replicaUrl } from "./cluster.ts";
 import { type Bootstrap, bootstrap, createGatewayComponents } from "./components.ts";
 import { computeConfig, computeInvites, gatewayCompute, gatewayRelay, withHostUpgrades } from "./compute.ts";
-import { createDurableGatewayComponents, type DurableConfig } from "./durable.ts";
+import { createDurableGatewayComponents, type DatabaseTimeouts, type DurableConfig } from "./durable.ts";
 import { createGateway } from "./gateway.ts";
 import { createMailer, describeMail, mailConfig, plausibleAddress } from "./mail.ts";
 import { listen } from "./node-http.ts";
@@ -135,7 +144,31 @@ export function projectList(value: string | undefined): string[] {
 export function durableConfig(env: NodeJS.ProcessEnv = process.env): DurableConfig | undefined {
 	const databaseUrl = env.KANTEL_DATABASE_URL?.trim() ?? "";
 	if (databaseUrl === "") return undefined;
-	return { databaseUrl, schema: env.KANTEL_GATEWAY_SCHEMA?.trim() || "harbour_m1" };
+	return {
+		databaseUrl,
+		schema: env.KANTEL_GATEWAY_SCHEMA?.trim() || "harbour_m1",
+		timeouts: databaseTimeouts(env),
+	};
+}
+
+/** The KANTEL_DATABASE_*_MS settings that are set, each a whole number of milliseconds, 0 for no limit. */
+export function databaseTimeouts(env: NodeJS.ProcessEnv = process.env): Partial<DatabaseTimeouts> {
+	const settings: Record<keyof DatabaseTimeouts, string> = {
+		connectMs: "KANTEL_DATABASE_CONNECT_TIMEOUT_MS",
+		statementMs: "KANTEL_DATABASE_STATEMENT_TIMEOUT_MS",
+		idleInTransactionMs: "KANTEL_DATABASE_IDLE_IN_TRANSACTION_TIMEOUT_MS",
+		keepAliveMs: "KANTEL_DATABASE_KEEPALIVE_MS",
+	};
+	const timeouts: Partial<Record<keyof DatabaseTimeouts, number>> = {};
+	for (const [key, name] of Object.entries(settings) as [keyof DatabaseTimeouts, string][]) {
+		const value = env[name]?.trim() ?? "";
+		if (value === "") continue;
+		if (!/^\d{1,10}$/.test(value) || Number(value) > 2_147_483_647) {
+			throw new Error(`${name} must be a whole number of milliseconds (0 for no limit)`);
+		}
+		timeouts[key] = Number(value);
+	}
+	return timeouts;
 }
 
 /** What the last start wrote to the bootstrap file, if anything readable; an older version's file reads the same. */
@@ -225,6 +258,7 @@ export async function serveGateway(cfg = gatewayConfig()) {
 		...(cfg.compute.githubRunners === true ? { githubRunners: true } : {}),
 		...(cfg.compute.stickyDisks === true ? { stickyDisks: true } : {}),
 		...(cfg.compute.snapshotExpiry === true ? { snapshotExpiry: true } : {}),
+		...(cfg.compute.hostLostAfterMs === undefined ? {} : { hostLostAfterMs: cfg.compute.hostLostAfterMs }),
 	});
 	seeded = { ...seeded, computeKey: compute.superAdminKey };
 	console.log(

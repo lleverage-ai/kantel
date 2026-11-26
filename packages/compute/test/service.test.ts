@@ -245,6 +245,141 @@ describe("sandboxes", () => {
 		expect((await failure(tom.readFile(sandbox.id, { path: "a.txt", length: 1024 * 1024 + 1 }))).code).toBe("invalid");
 	});
 
+	it("reads a command's output past 1 MiB from its sandbox, and from its record where the sandbox keeps none", async () => {
+		const stub = createStubBackend();
+		const kept = new TextEncoder().encode("x".repeat(3 * MiB));
+		const asked: { commandId: string; stream: string; offset: number; length: number }[] = [];
+		let keeps = true;
+		const backend: SandboxBackend = {
+			...stub,
+			exec: async (id, request) =>
+				request.command === "big"
+					? { exitCode: 0, stdout: "x".repeat(MiB + 10), stderr: "", timedOut: false }
+					: stub.exec(id, request),
+			commandOutput: async (_id, commandId, stream, range) => {
+				if (!keeps) throw new KantelError("not_supported", "This sandbox's host keeps no command output");
+				asked.push({ commandId, stream, ...range });
+				const offset = Math.min(range.offset, kept.byteLength);
+				return {
+					bytes: kept.subarray(offset, offset + range.length),
+					offset,
+					size: kept.byteLength,
+					ended: true,
+					truncated: false,
+					limit: 64 * MiB,
+				};
+			},
+		};
+		const { api, tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const big = await tom.runCommand(sandbox.id, { command: "big" });
+		expect(big).toMatchObject({ truncated: true });
+		expect(big.stdout.length).toBe(MiB);
+
+		// Past its record's 1 MiB, from its sandbox.
+		const part = await tom.readCommandOutput(sandbox.id, big.id, { offset: 2 * MiB, length: 5, encoding: "base64" });
+		expect(part).toMatchObject({ commandId: big.id, stream: "stdout", offset: 2 * MiB, size: 3 * MiB, ended: true });
+		expect(part).toMatchObject({ truncated: false, limit: 64 * MiB, encoding: "base64" });
+		expect(atob(part.content)).toBe("xxxxx");
+		expect(asked).toEqual([{ commandId: big.id, stream: "stdout", offset: 2 * MiB, length: 5 }]);
+		// No length is a read's most, 1 MiB.
+		expect((await tom.readCommandOutput(sandbox.id, big.id, { stream: "stderr" })).content.length).toBe(MiB);
+		expect(asked.at(-1)).toMatchObject({ stream: "stderr", offset: 0, length: MiB });
+
+		// A sandbox that keeps none (an older kantel-host): its record's first 1 MiB, cut.
+		keeps = false;
+		const recorded = await tom.readCommandOutput(sandbox.id, big.id, { offset: MiB - 2 });
+		expect(recorded).toMatchObject({
+			content: "xx",
+			offset: MiB - 2,
+			size: MiB,
+			ended: true,
+			truncated: true,
+			limit: MiB,
+		});
+		expect(await tom.readCommandOutput(sandbox.id, big.id, { stream: "stderr" })).toMatchObject({
+			content: "",
+			size: 0,
+			truncated: false,
+		});
+
+		// Running, the sandbox answers even for one its record holds whole, so a reader's offsets are always its bytes.
+		keeps = true;
+		const small = await tom.runCommand(sandbox.id, { command: "echo small" });
+		asked.length = 0;
+		await tom.readCommandOutput(sandbox.id, small.id);
+		expect(asked).toHaveLength(1);
+		// Killed: its record may lack what it wrote as it was killed, so a stopped sandbox doesn't answer from it.
+		const held = await tom.runCommand(sandbox.id, { command: "sleep 600", detached: true });
+		await tom.killCommand(sandbox.id, held.id);
+		// Stopped: one its record holds whole is read from there; one cut, or killed, needs the sandbox running.
+		await tom.stopSandbox(sandbox.id, { wait: true });
+		expect((await failure(tom.readCommandOutput(sandbox.id, held.id))).code).toBe("conflict");
+		expect(await tom.readCommandOutput(sandbox.id, small.id)).toMatchObject({ content: "small\n", ended: true });
+		const stopped = await failure(tom.readCommandOutput(sandbox.id, big.id, { offset: 2 * MiB }));
+		expect(stopped.code).toBe("conflict");
+		expect(stopped.details).toMatchObject({ code: "sandbox_stopped" });
+		expect((await failure(tom.readCommandOutput(sandbox.id, "cmd_none"))).code).toBe("not_found");
+		// A record with U+FFFD may stand for bytes that weren't UTF-8: it doesn't answer for the sandbox's own.
+		await api.store.commands.update(small.id, (command) => ({ ...command, stdout: "\uFFFDsmall\n" }));
+		expect((await failure(tom.readCommandOutput(sandbox.id, small.id))).code).toBe("conflict");
+	});
+
+	it("writes a file in parts through a backend that takes them, and refuses where none does", async () => {
+		// The stub keeps files in the gateway's memory and takes no parts; a host's guest stages and checks them
+		// (apps/host/internal/guest/parts.go). This one records what the service asks of it.
+		const asked: unknown[][] = [];
+		const stub = createStubBackend();
+		const backend: SandboxBackend = {
+			...stub,
+			async writeFilePart(_sandboxId, path, upload, offset, body) {
+				const bytes = new Uint8Array(await new Response(body).arrayBuffer());
+				asked.push(["part", path, upload, offset, new TextDecoder().decode(bytes)]);
+				return { size: bytes.byteLength };
+			},
+			async completeFileParts(_sandboxId, path, upload, size, sha256, mode) {
+				asked.push(["complete", path, upload, size, sha256, mode]);
+				return { name: "f.bin", path, kind: "file", size, modifiedAt: 1 };
+			},
+			async abortFileParts(_sandboxId, path, upload) {
+				asked.push(["abort", path, upload]);
+			},
+		};
+		const { tom } = setup(backend);
+		const sandbox = await tom.createSandbox({ type: "microvm", wait: true });
+		const content = new TextEncoder().encode("the first part");
+		const query = { path: "big/f.bin", upload: "upload-one", offset: 30 };
+		expect(await tom.writeFilePart(sandbox.id, content, query)).toEqual({
+			path: "/home/user/big/f.bin",
+			upload: "upload-one",
+			offset: 30,
+			size: 14,
+		});
+		const sha256 = "AB".repeat(32);
+		const done = { path: "big/f.bin", upload: "upload-one", size: 44, sha256, mode: "0640" };
+		expect(await tom.completeFileParts(sandbox.id, done)).toMatchObject({ path: "/home/user/big/f.bin", size: 44 });
+		await tom.abortFileParts(sandbox.id, { path: "/tmp/x", upload: "upload-two" });
+		expect(asked).toEqual([
+			["part", "/home/user/big/f.bin", "upload-one", 30, "the first part"],
+			["complete", "/home/user/big/f.bin", "upload-one", 44, "ab".repeat(32), 0o640],
+			["abort", "/tmp/x", "upload-two"],
+		]);
+
+		// No permissions at all is refused rather than read as none given; past the largest file, refused.
+		expect((await failure(tom.completeFileParts(sandbox.id, { ...done, mode: "0000" }))).code).toBe("invalid");
+		const past = { ...query, offset: 64 * 1024 * MiB - 2 };
+		expect((await failure(tom.writeFilePart(sandbox.id, content, past))).code).toBe("invalid");
+		expect(asked).toHaveLength(3);
+
+		// An isolate, and a deployment whose backend takes no parts (the stub's stand-ins): not_supported.
+		const isolate = await tom.createSandbox({ wait: true });
+		expect((await failure(tom.writeFilePart(isolate.id, content, query))).code).toBe("not_supported");
+		const plain = setup().tom;
+		const standIn = await plain.createSandbox({ type: "microvm", wait: true });
+		expect((await failure(plain.writeFilePart(standIn.id, content, query))).code).toBe("not_supported");
+		expect((await failure(plain.completeFileParts(standIn.id, done))).code).toBe("not_supported");
+	});
+
 	it("runs a detached command in the background and records how it ended", async () => {
 		const { api, tom } = setup();
 		const sandbox = await tom.createSandbox({ wait: true });
@@ -5041,8 +5176,11 @@ describe("snapshot expiry", () => {
 			sandboxes: {
 				...base.sandboxes,
 				// Every read of what depends on it, the mark is put back and made again (another token) while it reads.
-				list: async (where?: Parameters<typeof base.sandboxes.list>[0]) => {
-					const read = await base.sandboxes.list(where);
+				list: async (
+					where?: Parameters<typeof base.sandboxes.list>[0],
+					anyOf?: Parameters<typeof base.sandboxes.list>[1],
+				) => {
+					const read = await base.sandboxes.list(where, anyOf);
 					if (where === undefined && target !== undefined) {
 						remarks += 1;
 						const token = `ret_again_${remarks}`;
@@ -5216,11 +5354,11 @@ describe("snapshot expiry", () => {
 				sandboxes: {
 					...sandboxes,
 					// Expiry's read of every sandbox, once its snapshots are marked: the fork lands just before or just after it.
-					list: async (where?: Parameters<typeof sandboxes.list>[0]) => {
+					list: async (where?: Parameters<typeof sandboxes.list>[0], anyOf?: Parameters<typeof sandboxes.list>[1]) => {
 						const run = where === undefined ? hook : undefined;
 						if (run !== undefined) hook = undefined;
 						if (run !== undefined && when === "before") await run();
-						const read = await sandboxes.list(where);
+						const read = await sandboxes.list(where, anyOf);
 						if (run !== undefined && when === "after") await run();
 						return read;
 					},
@@ -5806,5 +5944,112 @@ describe("listing sandboxes", () => {
 			expect(anyOf?.state?.length).toBeGreaterThan(0);
 			expect(anyOf?.state).not.toContain("deleted");
 		}
+	});
+
+	it("records an owed delete when a host is unreachable, counts it in allocated, and finishes it on host reconnect (#967)", async () => {
+		const store = createMemoryStore();
+		const base = createStubBackend();
+		let hostUp = true;
+		let destroyCalls = 0;
+		const backend: SandboxBackend = {
+			...base,
+			hostConnected: async () => hostUp,
+			destroy: async (sandboxId, opts) => {
+				destroyCalls++;
+				if (!hostUp) throw new KantelError("unavailable", "Host is not connected");
+				await base.destroy(sandboxId, opts);
+			},
+		};
+		const { tom, root, api } = setup(backend, { store });
+		const sbx = await tom.createSandbox({ wait: true, name: "owed-delete" });
+		const hostId = (await store.sandboxes.get(sbx.id))?.hostId ?? STUB_HOST_ID;
+
+		// Host drops before DELETE arrives: delete fails with unavailable, marks deleteOwed, and keeps it counted in allocated.
+		hostUp = false;
+		await expect(tom.deleteSandbox(sbx.id)).rejects.toThrow(/not connected/);
+		expect(destroyCalls).toBe(1);
+		const errored = await store.sandboxes.get(sbx.id);
+		expect(errored?.state).toBe("error");
+		expect(errored?.deleteOwed).toBeDefined();
+
+		const hostsBefore = await root.listHosts();
+		const stubBefore = hostsBefore.items.find((h) => h.id === hostId);
+		expect(stubBefore?.allocated.sandboxes).toBe(1);
+
+		// Host reconnects: reportHostConnection triggers finishOwedDelete automatically without a second DELETE call.
+		hostUp = true;
+		await api.service.reportHostConnection(hostId, true);
+		await api.service.idle();
+		expect(destroyCalls).toBe(2);
+		const gone = await store.sandboxes.get(sbx.id);
+		expect(gone?.state).toBe("deleted");
+		expect(gone?.deleteOwed).toBeUndefined();
+
+		const hostsAfter = await root.listHosts();
+		const stubAfter = hostsAfter.items.find((h) => h.id === hostId);
+		expect(stubAfter?.allocated.sandboxes).toBe(0);
+	});
+
+	it("reclaims an owed delete abandoned in deleting after its lease expires, respects a live claim, and clears intent on recovery", async () => {
+		const store = createMemoryStore();
+		const base = createStubBackend();
+		let destroyCalls = 0;
+		const backend: SandboxBackend = {
+			...base,
+			hostConnected: async () => true,
+			destroy: async (sandboxId, opts) => {
+				destroyCalls++;
+				await base.destroy(sandboxId, opts);
+			},
+		};
+		let clock = 1_700_000_000_000;
+		const first = setup(backend, { store, now: () => clock });
+		const sbx = await first.tom.createSandbox({ wait: true, name: "abandoned-delete" });
+		const saved = await first.tom.saveSnapshot({ name: "kept-save", sandboxId: sbx.id });
+		const autoSnap = await first.tom.takeSnapshot(sbx.id, {});
+		const stored = await store.sandboxes.get(sbx.id);
+		if (stored === undefined) throw new Error("missing sandbox");
+
+		// Simulate a gateway/DO crash right after finishOwedDelete claimed `error` -> `deleting`.
+		await store.sandboxes.put({
+			...stored,
+			state: "deleting",
+			deleteOwed: { at: clock, previousState: "running", actor: stored.createdBy, claimedAt: clock },
+		});
+
+		// Fresh service over the same store: while the claim lease is still live, sweep must NOT steal it.
+		const restarted = setup(backend, { store, now: () => clock });
+		await restarted.api.service.sweep();
+		await restarted.api.service.idle();
+		expect(destroyCalls).toBe(0);
+		expect((await store.sandboxes.get(sbx.id))?.state).toBe("deleting");
+
+		// Once the lease expires (past STOP_LEASE_MS), sweep reclaims it, deletes VM + auto snapshot, keeps saved snapshot.
+		clock += 10 * 60_000;
+		await restarted.api.service.sweep();
+		await restarted.api.service.idle();
+		expect(destroyCalls).toBe(1);
+		const gone = await store.sandboxes.get(sbx.id);
+		expect(gone?.state).toBe("deleted");
+		expect(gone?.deleteOwed).toBeUndefined();
+		expect(await store.snapshots.get(autoSnap.id)).toBeUndefined();
+		expect((await store.snapshots.get(saved.id))?.sandboxId).toBeUndefined();
+
+		// Explicit recovery from `error` clears an old deleteOwed marker so a later sweep does not delete it.
+		const sbx2 = await restarted.tom.createSandbox({ wait: true, name: "recovered-not-deleted" });
+		const stored2 = await store.sandboxes.get(sbx2.id);
+		if (stored2 === undefined) throw new Error("missing sandbox 2");
+		await store.sandboxes.put({
+			...stored2,
+			state: "error",
+			deleteOwed: { at: clock, previousState: "running", actor: stored2.createdBy },
+		});
+		await restarted.tom.recoverSandbox(sbx2.id);
+		await restarted.api.service.idle();
+		expect((await store.sandboxes.get(sbx2.id))?.state).toBe("running");
+		expect((await store.sandboxes.get(sbx2.id))?.deleteOwed).toBeUndefined();
+		await restarted.api.service.sweep();
+		await restarted.api.service.idle();
+		expect((await store.sandboxes.get(sbx2.id))?.state).toBe("running");
 	});
 });
