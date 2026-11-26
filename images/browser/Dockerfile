@@ -35,13 +35,13 @@ FROM node:22-bookworm-slim@sha256:de170b39439eb0e5a3444ad7d60b015614a381e10fecae
 # fixes CVE-2026-125350, an XML use-after-free exploited in the wild,
 # 157.0.8103.78 fixes 5 critical use-after-frees, and 158.0.8127.36 fixes 5
 # more critical bugs (CVE-2026-131031 GPU, -131060 Media, -131008
-# GarbageCollection, -131054 ANGLE, -130975 WebAudio). Debian has no chromium
-# 157 or 158 yet. A profile the 157 headless shell wrote still opened in
+# GarbageCollection, -131054 ANGLE, -130975 WebAudio), and 158.0.8127.88 fixes
+# critical CVE-2026-134401 (Variations). Debian has no chromium 157 or 158 yet. A profile the 157 headless shell wrote still opened in
 # chromium 156.0.8078.79 with its cookies and localStorage (tested 3 Nov 2026).
 # Move both to the same build once bookworm-security publishes a chromium at
 # least this new.
-ARG HEADLESS_SHELL_VERSION=158.0.8127.36
-ARG HEADLESS_SHELL_SHA256=2d3a23017323c54fd457a678e4351f895c4076d8050e39d5aa6247f93448b73a
+ARG HEADLESS_SHELL_VERSION=158.0.8127.88
+ARG HEADLESS_SHELL_SHA256=63401333cc587645bfaeea7f0c90958b327d249251e23954a47f30112ca23d5b
 # LLE-17270: Chrome before 156.0.8078.73 has 4 critical bugs a page can reach
 # (CVE-2026-118306, -118331, -118344, -118348), and before 156.0.8078.79 a
 # GarbageCollection bug that escapes the sandbox (CVE-2026-119263). Both

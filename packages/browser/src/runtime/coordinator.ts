@@ -431,7 +431,7 @@ export function createBrowserCoordinator(options: CoordinatorOptions): BrowserCo
 			// chromium: Debian has no chromium 157 yet, and 156 misses the fix for CVE-2026-125350, exploited in the wild
 			// (LLE-17270), and Chrome 157's and 158's critical fixes. Easier to fingerprint and no extensions, which Kantel
 			// loads none of. Drop `engine` to go back to Debian's chromium once bookworm-security has HEADLESS_SHELL_VERSION
-			// (158.0.8127.36) or later.
+			// (158.0.8127.88) or later.
 			await agentJson(
 				"/start",
 				{ method: "POST", body: JSON.stringify({ viewport, engine: BROWSER_ENGINE }) },
