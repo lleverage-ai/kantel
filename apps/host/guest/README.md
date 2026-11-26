@@ -225,7 +225,7 @@ Build the whole set with `release.sh`, never with `--publish` (which refuses a `
 runtime), writes `manifest.json` with each file's SHA-256, and `SHA256SUMS`:
 
 ```sh
-VERSION=host-images-20261117.cft-157.0.8103.78   # release.sh wants host-images-<yyyymmdd>; a new one for every build
+VERSION=host-images-20261126.cft-158.0.8127.88   # release.sh wants host-images-<yyyymmdd>; a new one for every build
 KANTEL_BROWSER=cft apps/host/guest/release.sh out "$VERSION"
 apps/host/guest/boot-check-arm64.sh out
 (cd out && sha256sum -c SHA256SUMS)

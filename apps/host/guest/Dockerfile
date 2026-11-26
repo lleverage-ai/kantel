@@ -101,12 +101,14 @@ RUN if [ "$KANTEL_BROWSER" = debian ]; then \
 # Widevine CDM it bundles goes: it may not be distributed without a separate licence from Google, and nothing here plays
 # DRM media. The libraries it needs come from Ubuntu, from the list in the zip (deb.deps, which apt resolves to 26.04's
 # t64 packages), at the snapshot. Its sandbox is Chromium's: no setuid helper, the namespace sandbox, as Debian's
-# Chromium runs here. The build fails below CFT_MIN_VERSION, the first release with every fix LLE-18651 needs. The
-# daily security refresh doesn't update it (apt doesn't manage it): a newer one is a new CFT_VERSION.
-ARG CFT_VERSION=157.0.8103.78
-ARG CFT_SHA256_AMD64=9223832977a13db3646201b1341c1f9cf08afa3ceae92540116d7b0c062364fb
-ARG CFT_SHA256_ARM64=f354d666822a11d8fe99e923c44be77dd226fab2750c5b5947e6318818bf10f1
-ARG CFT_MIN_VERSION=157.0.8103.78
+# Chromium runs here. The build fails below CFT_MIN_VERSION, the first release with every fix LLE-18651 needs (now
+# Chrome 158's 5 critical desktop fixes too: CVE-2026-131031, -131060, -131008, -131054, -130975, and 158.0.8127.88's
+# critical CVE-2026-134401 in Variations). The daily security refresh doesn't update it (apt doesn't manage it): a newer
+# one is a new CFT_VERSION.
+ARG CFT_VERSION=158.0.8127.88
+ARG CFT_SHA256_AMD64=59e3b43f8b3aaa292238fbdcfb36a93127debd53e212510dcdc2cc8812b4b57e
+ARG CFT_SHA256_ARM64=91669b5de79af808d498037dd974e4b09461776a1b5240b3bb656abd17e5d3ab
+ARG CFT_MIN_VERSION=158.0.8127.88
 RUN if [ "$KANTEL_BROWSER" = cft ]; then \
 	case "$TARGETARCH" in \
 		amd64) cft_platform=linux64 cft_sum=$CFT_SHA256_AMD64 ;; \
