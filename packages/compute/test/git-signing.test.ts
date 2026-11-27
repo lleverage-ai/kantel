@@ -7,11 +7,14 @@ import { join } from "node:path";
 import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/api/sdk";
 import { KantelError } from "@kantel/contracts";
+import { nodeSqliteDatabase } from "@kantel/sql/testing";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
 import type { BackendGitSigning, BootOptions, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { normaliseAllowedEmails, parseGitSigningKey } from "../src/git-signing.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
+import { createSqlComputeStore, migrateComputeStore } from "../src/sql-store.ts";
+import { type ComputeStore, createMemoryStore } from "../src/store.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
 import { bytesToBase64 } from "../src/util.ts";
 
@@ -26,9 +29,11 @@ const SECRETS_KEY = bytesToBase64(new Uint8Array(32).fill(11));
 const PASSPHRASE = "correct-horse-battery-staple-test";
 
 const opened: ComputeApi[] = [];
+const cleanups: (() => Promise<void>)[] = [];
 
 afterEach(async () => {
 	for (const api of opened.splice(0)) await api.close();
+	for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -174,8 +179,11 @@ interface Recorded {
 
 function setup(
 	options: {
+		readonly store?: ComputeStore;
 		readonly secretsKey?: string;
+		readonly now?: () => number;
 		readonly hostFeatures?: readonly string[];
+		readonly onStop?: (sandboxId: string, keepMemory: boolean) => Promise<void> | void;
 		readonly onUpdateSigning?: (
 			sandboxId: string,
 			signing: BackendGitSigning | null,
@@ -208,6 +216,10 @@ function setup(
 			recorded.resumes.push({ sandboxId, options: bootOptions });
 			return stub.resume(sandboxId, bootOptions);
 		},
+		stop: async (sandboxId, stopOptions) => {
+			await options.onStop?.(sandboxId, stopOptions.keepMemory);
+			return stub.stop(sandboxId, stopOptions);
+		},
 		fork: async (source, targets) => {
 			recorded.specs.push(...targets);
 			return stub.fork(source, targets);
@@ -219,12 +231,15 @@ function setup(
 	};
 	const sentWebhooks: string[] = [];
 	const api = createComputeApi({
+		...(options.store === undefined ? {} : { store: options.store }),
 		backend,
 		secretsKey: options.secretsKey === undefined ? SECRETS_KEY : options.secretsKey,
-		now: () => {
-			clock += 10;
-			return clock;
-		},
+		now:
+			options.now ??
+			(() => {
+				clock += 10;
+				return clock;
+			}),
 		authenticatePerson: async (request) => {
 			const token = request.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
 			return token === undefined ? undefined : PEOPLE[token];
@@ -840,5 +855,212 @@ describe("environment host-side Git signing", () => {
 		const afterEmails = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
 		expect(afterEmails?.privateKey).toBe(encKey3);
 		expect(afterEmails?.passphrase).toBe("key3-passphrase");
+	});
+
+	for (const storeKind of ["memory", "sql"] as const) {
+		it(`allows passphrase-only clear and replacement on unchanged keys (${storeKind} store)`, async () => {
+			let store: ComputeStore;
+			if (storeKind === "memory") {
+				store = createMemoryStore();
+			} else {
+				const database = await nodeSqliteDatabase.open();
+				cleanups.push(() => database.close());
+				await migrateComputeStore(database.driver);
+				store = createSqlComputeStore(database.driver);
+			}
+			const { api, tom } = setup({ store });
+			const env = await tom.createEnvironment({ name: `passphrase-${storeKind}` });
+			const unencKey = buildSshEd25519Key({ seedByte: 0x61, encrypted: false });
+			const encKey = buildSshEd25519Key({ seedByte: 0x62, encrypted: true });
+
+			await tom.setEnvironmentGitSigning(env.id, {
+				privateKey: unencKey,
+				passphrase: "unnecessary-initial-passphrase",
+				allowedEmails: ["jeff@lleverage.ai"],
+			});
+			const sandbox = await tom.createSandbox({
+				name: `passphrase-vm-${storeKind}`,
+				type: "microvm",
+				environment: env.id,
+				wait: true,
+			});
+
+			// Clearing a passphrase on an unencrypted key must succeed even though the store clones/deserialises SealedValue.
+			const cleared = await tom.setEnvironmentGitSigning(env.id, { passphrase: "" });
+			expect(cleared.gitSigning?.allowedEmails).toEqual(["jeff@lleverage.ai"]);
+			const afterClear = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
+			expect(afterClear?.privateKey).toBe(unencKey);
+			expect(afterClear?.passphrase).toBeUndefined();
+
+			// Replacing a passphrase on an encrypted key without re-supplying privateKey must succeed too.
+			await tom.setEnvironmentGitSigning(env.id, {
+				privateKey: encKey,
+				passphrase: "old-passphrase",
+				allowedEmails: ["jeff@lleverage.ai"],
+			});
+			const replaced = await tom.setEnvironmentGitSigning(env.id, { passphrase: "new-passphrase" });
+			expect(replaced.gitSigning?.allowedEmails).toEqual(["jeff@lleverage.ai"]);
+			const afterReplace = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
+			expect(afterReplace?.privateKey).toBe(encKey);
+			expect(afterReplace?.passphrase).toBe("new-passphrase");
+		});
+	}
+
+	it("revokes host signing authority when a failed pause leaves a microVM running in compute state error", async () => {
+		let failNextSigning = 0;
+		let failStop = true;
+		let returnNotFound = false;
+		const { api, tom, recorded } = setup({
+			onStop: async () => {
+				if (failStop) throw new KantelError("unavailable", "snapshot failed while VM stayed running");
+			},
+			onUpdateSigning: async () => {
+				if (returnNotFound) throw new KantelError("not_found", "No such sandbox on any host");
+				if (failNextSigning > 0) {
+					failNextSigning--;
+					throw new KantelError("unavailable", "host temporarily unreachable");
+				}
+			},
+		});
+		const env = await tom.createEnvironment({ name: "error-pause-env" });
+		await tom.setEnvironmentGitSigning(env.id, {
+			privateKey: buildPgpEd25519Key({ uid: "jeff@lleverage.ai", seedByte: 0x71 }),
+		});
+		const vm = await tom.createSandbox({
+			name: "error-pause-vm",
+			type: "microvm",
+			environment: env.id,
+			wait: true,
+		});
+
+		// Pause fails and transitions compute state to `error` while the VM stays live on the host.
+		await tom.stopSandbox(vm.id, { keepMemory: true }).catch(() => undefined);
+		await expect.poll(async () => (await tom.getSandbox(vm.id)).state).toBe("error");
+
+		// 1. Key deletion while in `error` immediately pushes revocation to the host.
+		await tom.deleteEnvironmentGitSigning(env.id);
+		await expect.poll(() => recorded.signing.length).toBe(1);
+		expect(recorded.signing[0]?.sandboxId).toBe(vm.id);
+		expect(recorded.signing[0]?.signing).toBeNull();
+
+		// 2. Transient delivery failure on an `error` VM is retried by sweep once the host is reachable again.
+		await tom.setEnvironmentGitSigning(env.id, {
+			privateKey: buildSshEd25519Key({ seedByte: 0x72 }),
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		await expect.poll(() => recorded.signing.length).toBe(2);
+		failNextSigning = 1;
+		await tom.deleteEnvironmentGitSigning(env.id);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(recorded.signing).toHaveLength(2);
+		await api.service.sweep();
+		await expect.poll(() => recorded.signing.length).toBe(3);
+		expect(recorded.signing[2]?.signing).toBeNull();
+
+		// 3. Detaching the environment from an `error` VM also revokes signing on the host.
+		await tom.setEnvironmentGitSigning(env.id, {
+			privateKey: buildSshEd25519Key({ seedByte: 0x73 }),
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		await expect.poll(() => recorded.signing.length).toBe(4);
+		await tom.detachSandboxEnvironment(vm.id, env.id);
+		await expect.poll(() => recorded.signing.length).toBe(5);
+		expect(recorded.signing[4]?.signing).toBeNull();
+
+		// 4. Deleting an environment attached to an `error` VM revokes signing, and `not_found` on a dead error VM converges.
+		await tom.attachSandboxEnvironment(vm.id, { environment: env.id });
+		await expect.poll(() => recorded.signing.length).toBe(6);
+		failStop = false;
+		returnNotFound = true;
+		await tom.deleteEnvironment(env.id);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		await api.service.sweep();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		// Once `not_found` settled `signingApplied`, a second sweep does not retry forever.
+		returnNotFound = false;
+		await api.service.sweep();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(recorded.signing).toHaveLength(6);
+	});
+
+	it("retries pending revocations after a gateway restart before sandbox floors were written", async () => {
+		const database = await nodeSqliteDatabase.open();
+		cleanups.push(() => database.close());
+		await migrateComputeStore(database.driver);
+		const store = createSqlComputeStore(database.driver);
+
+		// Fixed clock exercises multi-environment revocations even when a lower-versioned env changes under a higher one.
+		const fixedClock = () => 1_760_000_000_000;
+		const gw1 = setup({ store, now: fixedClock });
+		const envPrimary = await gw1.tom.createEnvironment({ name: "crash-primary" });
+		const envSibling = await gw1.tom.createEnvironment({ name: "crash-sibling" });
+
+		// Bump envSibling's signingVersion above envPrimary's, then remove envSibling's key so envPrimary wins at boot.
+		await gw1.tom.setEnvironmentGitSigning(envPrimary.id, {
+			privateKey: buildPgpEd25519Key({ uid: "primary@lleverage.ai", seedByte: 0x81 }),
+		});
+		await gw1.tom.setEnvironmentGitSigning(envSibling.id, {
+			privateKey: buildSshEd25519Key({ seedByte: 0x82 }),
+			allowedEmails: ["sib@lleverage.ai"],
+		});
+		await gw1.tom.setEnvironmentGitSigning(envSibling.id, {
+			allowedEmails: ["sib2@lleverage.ai"],
+		});
+		await gw1.tom.deleteEnvironmentGitSigning(envSibling.id);
+
+		const vm = await gw1.tom.createSandbox({
+			name: "crash-vm",
+			type: "microvm",
+			environments: [envPrimary.id, envSibling.id],
+			wait: true,
+		});
+		const storedBeforeCrash = await store.sandboxes.get(vm.id);
+		expect(storedBeforeCrash?.signingFloor).toBeUndefined();
+		const appliedBeforeCrash = storedBeforeCrash?.signingApplied ?? 0;
+		expect(appliedBeforeCrash).toBeGreaterThan(0);
+
+		// Case 1: Simulate key deletion committing to `store.environments` and the gateway stopping BEFORE sandbox floors
+		// are written (and even with envPrimary's new signingVersion still below envSibling's).
+		await store.environments.update(envPrimary.id, (current) => {
+			const { gitSigning: _removed, ...rest } = current;
+			return { ...rest, signingVersion: (current.signingVersion ?? 0) + 1 };
+		});
+		await gw1.api.close();
+
+		// A fresh gateway restarted on the same SQL store must detect the committed deletion on sweep, raise
+		// signingFloor strictly past `appliedBeforeCrash`, send null to the host, and converge.
+		const gw2 = setup({ store, now: fixedClock });
+		await gw2.api.service.sweep();
+		await expect.poll(() => gw2.recorded.signing.length).toBe(1);
+		expect(gw2.recorded.signing[0]?.sandboxId).toBe(vm.id);
+		expect(gw2.recorded.signing[0]?.signing).toBeNull();
+		expect(gw2.recorded.signing[0]?.version).toBeGreaterThan(appliedBeforeCrash);
+
+		// Second sweep after convergence sends nothing more.
+		await gw2.api.service.sweep();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(gw2.recorded.signing).toHaveLength(1);
+
+		// Case 2: Simulate `deleteEnvironment` deleting the environment record and the gateway stopping BEFORE detaching
+		// the sandbox or writing `signingFloor`.
+		await gw2.tom.setEnvironmentGitSigning(envPrimary.id, {
+			privateKey: buildSshEd25519Key({ seedByte: 0x83 }),
+			allowedEmails: ["primary@lleverage.ai"],
+		});
+		await expect.poll(() => gw2.recorded.signing.length).toBe(2);
+		const appliedBeforeEnvDelete = (await store.sandboxes.get(vm.id))?.signingApplied ?? 0;
+		await store.environments.delete(envPrimary.id);
+		await gw2.api.close();
+
+		const gw3 = setup({ store, now: fixedClock });
+		await gw3.api.service.sweep();
+		await expect.poll(() => gw3.recorded.signing.length).toBe(1);
+		expect(gw3.recorded.signing[0]?.sandboxId).toBe(vm.id);
+		expect(gw3.recorded.signing[0]?.signing).toBeNull();
+		expect(gw3.recorded.signing[0]?.version).toBeGreaterThan(appliedBeforeEnvDelete);
+
+		await gw3.api.service.sweep();
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(gw3.recorded.signing).toHaveLength(1);
 	});
 });

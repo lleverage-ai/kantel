@@ -420,6 +420,12 @@ export type StoredSandbox = Omit<
 	 */
 	readonly signingApplied?: number;
 	/**
+	 * Canonical token of the committed signing inputs (attached environments' signing versions plus `signingFloor`)
+	 * last acknowledged by its backend. Differs from the current token whenever an environment signing change or
+	 * deletion committed even if the gateway stopped before updating `signingFloor`.
+	 */
+	readonly signingAppliedState?: string;
+	/**
 	 * Environment set-up it still has to do, recorded when the change that needs it is (a create, an attach, a move), and
 	 * taken off by its ID once a set-up has done it: never before, so a stopped set-up leaves it for the next, and never
 	 * an item another change added. Absent: none.

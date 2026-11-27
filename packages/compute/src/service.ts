@@ -169,7 +169,14 @@ import {
 	sandboxUnresponsive,
 } from "./not-running.ts";
 import { createPoolService, defaultPoolOf, type PoolRunners, poolOwnerOf } from "./pools.ts";
-import { createEphemeralSealer, createSealer, type SealedValue, type Sealer, sealedAt } from "./secrets.ts";
+import {
+	createEphemeralSealer,
+	createSealer,
+	type SealedValue,
+	type Sealer,
+	sameSealedValue,
+	sealedAt,
+} from "./secrets.ts";
 import { COPY_RETRY_MS, type CopyHost, copyTarget, keepingCopies, SNAPSHOT_COPIES } from "./snapshot-copies.ts";
 import {
 	type ComputeStore,
@@ -4565,22 +4572,60 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const resolved = (environments: readonly StoredEnvironment[]): EnvironmentResolution =>
 		resolveEnvironments(environments, clonePath);
 
+	/** States where a microVM may still be running on its host and hold cached signing authority. */
+	const SIGNING_LIVE_STATES: ReadonlySet<SandboxState> = new Set(["running", "stopping", "error"]);
+
+	/**
+	 * Canonical token for the committed signing inputs of a sandbox: the ordered (id, signingVersion) pairs of its
+	 * attached environments that have (or had) a signing key, plus its own `signingFloor`. Empty string when none apply.
+	 */
+	const signingStateToken = (environments: readonly StoredEnvironment[], floor: number | undefined): string => {
+		const parts: string[] = [];
+		for (const environment of environments) {
+			const version = environment.signingVersion ?? environment.gitSigning?.version;
+			if (version !== undefined) parts.push(`${environment.id}=${version}`);
+		}
+		if (floor !== undefined) parts.push(`floor=${floor}`);
+		return parts.join(",");
+	};
+
+	const hasPendingSigning = (
+		sandbox: Pick<StoredSandbox, "signingFloor" | "signingApplied" | "signingAppliedState">,
+		environments: readonly StoredEnvironment[],
+	): boolean => {
+		const state = signingStateToken(environments, sandbox.signingFloor);
+		const appliedState = sandbox.signingAppliedState ?? "";
+		if (state !== appliedState) return true;
+		const version = signingVersionOf(environments, sandbox.signingFloor);
+		return version !== undefined && (sandbox.signingApplied ?? Number.NEGATIVE_INFINITY) < version;
+	};
+
+	type EgressResolution = {
+		egress?: BackendEgress;
+		egressRevision?: number;
+		gitSigning?: BackendGitSigning;
+		clearGitSigning?: boolean;
+		signingVersion?: number;
+		signingState?: string;
+	};
+
+	const backendEgressOf = (egress: EgressResolution): Omit<EgressResolution, "signingState"> => {
+		const { signingState: _state, ...rest } = egress;
+		return rest;
+	};
+
+	const sentSigningOf = (egress: { readonly signingVersion?: number; readonly signingState?: string }) => ({
+		...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+		...(egress.signingState === undefined ? {} : { signingState: egress.signingState }),
+	});
+
 	/**
 	 * A sandbox's egress for the backend, `{ egress }` to spread into a spec: the account's proxy settings when they're
 	 * on, with its protected variables' hosts (never a value) and its environment's and its own grants. With the proxy
 	 * off, a sandbox with protected variables or grants still goes through it, open but for the grants, so its
 	 * placeholders are swapped. With neither, nothing.
 	 */
-	const egressFor = async (
-		accountId: string,
-		subject?: EgressSubject,
-	): Promise<{
-		egress?: BackendEgress;
-		egressRevision?: number;
-		gitSigning?: BackendGitSigning;
-		clearGitSigning?: boolean;
-		signingVersion?: number;
-	}> => {
+	const egressFor = async (accountId: string, subject?: EgressSubject): Promise<EgressResolution> => {
 		// The revision goes with no egress too: a boot states its egress, none being the host's default, and an update
 		// read before it (an empty egress included) is then older and refused.
 		const revision = subject?.egressRevision === undefined ? {} : { egressRevision: subject.egressRevision };
@@ -4592,6 +4637,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const signingWinner = subject === undefined ? undefined : resolution.gitSigning;
 		const resolvedSigningVersion =
 			subject === undefined ? undefined : signingVersionOf(environments, subject.signingFloor);
+		const resolvedSigningState =
+			subject === undefined ? undefined : signingStateToken(environments, subject.signingFloor);
 		const signing =
 			subject === undefined
 				? {}
@@ -4605,10 +4652,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								version: resolvedSigningVersion ?? signingWinner.item.version,
 							},
 							signingVersion: resolvedSigningVersion ?? signingWinner.item.version,
+							signingState: resolvedSigningState,
 						}
 					: {
 							clearGitSigning: true as const,
 							...(resolvedSigningVersion === undefined ? {} : { signingVersion: resolvedSigningVersion }),
+							signingState: resolvedSigningState,
 						};
 		const bound = subject === undefined ? [] : protectedWinners(subject, resolution).map(({ winner }) => winner.item);
 		const grants = [...resolution.grants, ...(subject?.grants ?? [])];
@@ -4844,30 +4893,60 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		pushEgress(running);
 	}
 
-	/** Records that a sandbox's backend took its signing config at `version`: `signingApplied` only moves on. */
-	const markSigningApplied = (sandboxId: string, version: number | undefined) =>
+	/** Records that a sandbox's backend took its signing config at `version` / `state`: `signingApplied` only moves on. */
+	const markSigningApplied = (sandboxId: string, version: number | undefined, state: string | undefined) =>
 		version === undefined
 			? Promise.resolve(undefined)
-			: patchSandbox(sandboxId, (current) =>
-					(current.signingApplied ?? Number.NEGATIVE_INFINITY) >= version
-						? undefined
-						: { ...current, signingApplied: version },
-				);
+			: patchSandbox(sandboxId, (current) => {
+					const applied = current.signingApplied ?? Number.NEGATIVE_INFINITY;
+					if (applied > version) return undefined;
+					const nextState = state === undefined || state === "" ? undefined : state;
+					if (applied === version && current.signingAppliedState === nextState) return undefined;
+					return { ...current, signingApplied: version, signingAppliedState: nextState };
+				});
 
 	/**
-	 * Sends a running (or booting) microVM its current host-side Git signing config (or null to clear), and records
-	 * `signingApplied` only once the host acknowledges it. A failure leaves `signingApplied` behind `signingFloor` so
-	 * the sweep retries once the host is reachable again.
+	 * Sends a live (or booting) microVM its current host-side Git signing config (or null to clear), and records
+	 * `signingApplied` and `signingAppliedState` only once the host acknowledges it. A failure leaves them behind the
+	 * committed policy so the sweep retries once the host is reachable again.
 	 */
-	async function deliverSigning(sandbox: StoredSandbox): Promise<number | undefined> {
+	async function deliverSigning(sandbox: StoredSandbox): Promise<{ version: number; state: string } | undefined> {
 		if (sandbox.type !== "microvm") return undefined;
 		const update = backend.updateSigning?.bind(backend);
 		if (update === undefined) return undefined;
-		const environments = await environmentsOf(sandbox);
-		const resolution = resolved(environments);
-		const winner = resolution.gitSigning;
-		if (winner === undefined && sandbox.signingFloor === undefined) return undefined;
-		const version = signingVersionOf(environments, sandbox.signingFloor) ?? now();
+		let current = sandbox;
+		let environments = await environmentsOf(current);
+		let resolution = resolved(environments);
+		let winner = resolution.gitSigning;
+		let resolvedVersion = signingVersionOf(environments, current.signingFloor);
+		let state = signingStateToken(environments, current.signingFloor);
+		const appliedState = current.signingAppliedState ?? "";
+		if (winner === undefined && resolvedVersion === undefined && appliedState === "") return undefined;
+		// If committed signing inputs changed (e.g. a key or environment deletion committed before `signingFloor` was
+		// written, or a lower-versioned attached environment changed under a higher-versioned one) without producing a
+		// version strictly past what the host last acknowledged, raise `signingFloor` first so the host rejects older
+		// in-flight `signing.fetch` responses and serves this version on any subsequent fetch.
+		if (
+			state !== appliedState &&
+			(resolvedVersion === undefined || resolvedVersion <= (current.signingApplied ?? Number.NEGATIVE_INFINITY))
+		) {
+			const floor = nextSecretsVersion(
+				Math.max(resolvedVersion ?? 0, current.signingApplied ?? 0, current.signingFloor ?? 0),
+				now(),
+			);
+			const bumped = await patchSandbox(current.id, (latest) => ({
+				...latest,
+				signingFloor: Math.max(floor, latest.signingFloor ?? 0),
+			}));
+			if (bumped === undefined) return undefined;
+			current = bumped;
+			environments = await environmentsOf(current);
+			resolution = resolved(environments);
+			winner = resolution.gitSigning;
+			resolvedVersion = signingVersionOf(environments, current.signingFloor);
+			state = signingStateToken(environments, current.signingFloor);
+		}
+		const version = resolvedVersion ?? now();
 		const signing: BackendGitSigning | null =
 			winner === undefined
 				? null
@@ -4878,9 +4957,19 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						publicKey: winner.item.publicKey,
 						version,
 					};
-		await update(sandbox.id, signing, version);
-		await markSigningApplied(sandbox.id, version);
-		return version;
+		try {
+			await update(current.id, signing, version);
+		} catch (error) {
+			// A sandbox in `error` may never have been created on a host or already be gone there; `not_found` confirms
+			// no running VM remains on any host to hold cached signing authority.
+			if (current.state === "error" && error instanceof KantelError && error.code === "not_found") {
+				await markSigningApplied(current.id, version, state);
+				return { version, state };
+			}
+			throw error;
+		}
+		await markSigningApplied(current.id, version, state);
+		return { version, state };
 	}
 
 	/** How many sends of each sandbox's Git signing config are under way, by ID: the sweep leaves those sandboxes be. */
@@ -4893,13 +4982,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			deliveringSigning.set(sandbox.id, (deliveringSigning.get(sandbox.id) ?? 0) + 1);
 			const work = (async () => {
 				const current = await store.sandboxes.get(sandbox.id);
-				if (current === undefined || current.state !== "running" || current.type !== "microvm") return;
+				if (current === undefined || !SIGNING_LIVE_STATES.has(current.state) || current.type !== "microvm") return;
 				try {
 					await deliverSigning(current);
 				} catch (error) {
 					if (!unenforceable(error)) throw error;
-					// Its host doesn't support host-side Git signing: don't leave it running pretending signing applied.
-					await enforceStop(current.id, UNSUPPORTED_SIGNING, true, current);
+					// Its host doesn't support host-side Git signing: don't leave a running VM pretending signing applied.
+					if (current.state === "running") {
+						await enforceStop(current.id, UNSUPPORTED_SIGNING, true, current);
+					}
 				}
 			})();
 			keepGoing(
@@ -4912,14 +5003,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	};
 
-	/** Moves every live sandbox of `environment` past its previous signing version and pushes updates to running ones. */
+	/** Moves every potentially live or booting sandbox of `environment` past its previous signing version and pushes to hosts. */
 	async function pushEnvironmentSigning(
 		environment: Pick<StoredEnvironment, "id" | "accountId" | "signingVersion">,
 	): Promise<void> {
-		const live = await liveFrom(environment);
+		const tracked = (await sandboxesWith(environment)).filter(
+			(sandbox) => sandbox.state === "starting" || SIGNING_LIVE_STATES.has(sandbox.state),
+		);
 		const bumped = (
 			await Promise.all(
-				live.map(async (sandbox) => {
+				tracked.map(async (sandbox) => {
 					const currentVersion = signingVersionOf(await environmentsOf(sandbox), sandbox.signingFloor) ?? 0;
 					const floor = nextSecretsVersion(Math.max(currentVersion, environment.signingVersion ?? 0), now());
 					return patchSandbox(sandbox.id, (current) => ({
@@ -4930,7 +5023,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}),
 			)
 		).filter((sandbox): sandbox is StoredSandbox => sandbox !== undefined);
-		pushSigning(bumped.filter((sandbox) => sandbox.state === "running"));
+		pushSigning(bumped.filter((sandbox) => SIGNING_LIVE_STATES.has(sandbox.state)));
 	}
 
 	/**
@@ -5289,6 +5382,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				// Its repositories as this call read them, which the caller (who may run commands) authorised.
 				keepGoing(track([done.id], () => provision(done.id, attached === undefined ? [] : [attached])));
 			}
+		} else if (signingTouched && SIGNING_LIVE_STATES.has(done.state)) {
+			pushSigning([done]);
 		}
 		return sandboxEnvironmentsView(done);
 	}
@@ -6436,7 +6531,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		run: () => Promise<Placement>,
 		provisioning: Provisioning | undefined,
-		sent: { readonly egressRevision: number | undefined; readonly signingVersion?: number },
+		sent: {
+			readonly egressRevision: number | undefined;
+			readonly signingVersion?: number;
+			readonly signingState?: string;
+		},
 	): Promise<StoredSandbox | undefined> {
 		const booted = await boot(sandboxId, run, undefined, sent);
 		if (booted?.state === "running" && provisioning !== undefined)
@@ -7351,8 +7450,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		run: () => Promise<Placement>,
 		written?: StoredSandbox,
-		/** The `egressRevision` and `signingVersion` of what `run` sent, read before it. */
-		sent?: { readonly egressRevision: number | undefined; readonly signingVersion?: number },
+		/** The `egressRevision`, `signingVersion` and `signingState` of what `run` sent, read before it. */
+		sent?: {
+			readonly egressRevision: number | undefined;
+			readonly signingVersion?: number;
+			readonly signingState?: string;
+		},
 		/** What else changes as it is published (an upgrade's microVM: its type, size and image). */
 		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
 		/** Only while this holds is it published or its egress sent (a settlement's claim, `settleLostCreate`). */
@@ -7390,9 +7493,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placement.startup === undefined
 				? undefined
 				: { ...placement.startup, totalMs: Math.max(placement.startup.hostMs, now() - calledAt) };
-		// The revision and signing version its backend has: what the boot sent, or what reconciling sent since.
+		// The revision and signing version/state its backend has: what the boot sent, or what reconciling sent since.
 		let applied = sent?.egressRevision;
 		let signingApplied = sent?.signingVersion;
+		let signingAppliedState = sent?.signingState;
 		// Made from a template snapshot whose host had no room, it booted the template fresh elsewhere: so its record says.
 		const bootedFresh = (template: computeSchema.SandboxTemplate): computeSchema.SandboxTemplate => {
 			const { snapshotId: _none, ...rest } = template;
@@ -7466,9 +7570,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
 					: { egressApplied: applied }),
-				...(signingApplied === undefined || (sandbox.signingApplied ?? Number.NEGATIVE_INFINITY) >= signingApplied
+				...(signingApplied === undefined && signingAppliedState === undefined
 					? {}
-					: { signingApplied }),
+					: signingApplied !== undefined && (sandbox.signingApplied ?? Number.NEGATIVE_INFINITY) > signingApplied
+						? {}
+						: {
+								...(signingApplied === undefined ? {} : { signingApplied }),
+								...(signingAppliedState === undefined
+									? {}
+									: { signingAppliedState: signingAppliedState === "" ? undefined : signingAppliedState }),
+							}),
 			});
 		};
 		const reconciles = sent !== undefined && backend.updateEgress !== undefined;
@@ -7526,7 +7637,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (signingPending(lost)) {
 						reconcilingSigning = true;
 						const appliedSigning = await deliverSigning(published(lost));
-						signingApplied = appliedSigning ?? lost.signingFloor ?? signingApplied;
+						if (appliedSigning !== undefined) {
+							signingApplied = appliedSigning.version;
+							signingAppliedState = appliedSigning.state;
+						}
 						reconcilingSigning = false;
 					}
 				} catch (error) {
@@ -7556,13 +7670,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			});
 			return undefined;
 		}
-		// Changed again while that was sent: now it runs, an ordinary update.
+		// Changed again while that was sent (or committed to an environment before `signingFloor` was written): now it
+		// runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
 		if (
 			sent !== undefined &&
 			next.type === "microvm" &&
-			next.signingFloor !== undefined &&
-			(next.signingApplied ?? Number.NEGATIVE_INFINITY) < next.signingFloor
+			(next.signingFloor !== undefined ||
+				next.signingAppliedState !== undefined ||
+				environmentIdsOf(next).length > 0) &&
+			hasPendingSigning(next, await environmentsOf(next))
 		) {
 			pushSigning([next]);
 		}
@@ -8142,7 +8259,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...pooled(starting.poolId),
 						fromSnapshot: snapshot.ref,
 						snapshotCopies: copies,
-						...egress,
+						...backendEgressOf(egress),
 						...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 						...(await stickySpecOf(starting)),
 						replacesLost: { hostId: marker.hostId },
@@ -8160,7 +8277,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					undefined,
 					{
 						egressRevision: starting.egressRevision,
-						...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+						...sentSigningOf(egress),
 					},
 					undefined,
 					unlost,
@@ -11278,14 +11395,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								fromSnapshot: from?.ref,
 								...(copies === undefined ? {} : { snapshotCopies: copies }),
 								...(start === undefined ? {} : { template: start.boot }),
-								...egress,
+								...backendEgressOf(egress),
 								...(sandboxMounts === undefined ? {} : { mounts: backendMounts(sandboxMounts) }),
 								...(await stickySpecOf(sandbox)),
 							}),
 						sandbox,
 						{
 							egressRevision,
-							...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+							...sentSigningOf(egress),
 						},
 					);
 					// Queued with the boot, so a call after the create (an exec, a stop) finds the files and repositories there.
@@ -11601,7 +11718,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											eligibleHosts: hosts,
 											// Its pool, which its source's host (or its snapshot's) admits it only while in.
 											...pooled(fork.poolId),
-											...egress,
+											...backendEgressOf(egress),
 											...(fork.mounts === undefined ? {} : { mounts: backendMounts(fork.mounts) }),
 										},
 									],
@@ -11612,7 +11729,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							undefined,
 							{
 								egressRevision,
-								...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+								...sentSigningOf(egress),
 							},
 						);
 						// An environment attached to its source while stopped: its files and repositories, which the copied disk
@@ -11713,7 +11830,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											env: starting.env,
 											eligibleHosts: hosts,
 											...sizingOf(starting),
-											...egress,
+											...backendEgressOf(egress),
 											...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 										},
 										(options) => backend.recover(current.id, options),
@@ -11721,7 +11838,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								provisioning,
 								{
 									egressRevision: starting.egressRevision,
-									...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+									...sentSigningOf(egress),
 								},
 							),
 						),
@@ -11857,7 +11974,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 											eligibleHosts: hosts,
 											// Its size and shape as recorded, as a start keeps them: only its base changes.
 											...sizingOf(stopped),
-											...egress,
+											...backendEgressOf(egress),
 											...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 											rebase: true,
 											...(rebaseTo === undefined ? {} : { rebaseTo }),
@@ -11867,7 +11984,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								provisioning,
 								{
 									egressRevision: starting.egressRevision,
-									...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+									...sentSigningOf(egress),
 								},
 							),
 						),
@@ -13024,13 +13141,16 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}),
 			);
 			const running = detached.filter((sandbox): sandbox is StoredSandbox => sandbox?.state === "running");
+			const liveSigning = detached.filter(
+				(sandbox): sandbox is StoredSandbox => sandbox !== undefined && SIGNING_LIVE_STATES.has(sandbox.state),
+			);
 			const updateSecrets = backend.updateSecrets?.bind(backend);
 			if (updateSecrets !== undefined) {
 				for (const sandbox of running) {
 					if (sandbox.secretsFloor !== undefined) keepGoing(updateSecrets(sandbox.id, sandbox.secretsFloor));
 				}
 			}
-			if (hadSigning) pushSigning(running);
+			if (hadSigning) pushSigning(liveSigning);
 			pushEgress(running);
 			return undefined;
 		},
@@ -13307,7 +13427,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						`Cannot change format from ${existing.format} to ${body.format} without supplying a new privateKey`,
 					);
 				}
-				if (expectedSealedKey !== undefined && existing.sealedKey !== expectedSealedKey) {
+				if (expectedSealedKey !== undefined && !sameSealedValue(existing.sealedKey, expectedSealedKey)) {
 					throw new KantelError(
 						"conflict",
 						"The environment's Git signing key changed concurrently; retry the passphrase update",
@@ -14551,7 +14671,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							...pooled(current.poolId),
 							...(fromSnapshot === undefined ? {} : { fromSnapshot }),
 							...(into === undefined ? {} : { intoSnapshot: into }),
-							...egress,
+							...backendEgressOf(egress),
 						},
 						operationId,
 					);
@@ -14575,8 +14695,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					placement = outcome.placement;
 				}
 				return (
-					(await commitUpgrade(sandboxId, operationId, placement, { principal, role }, egress.signingVersion)) ??
-					(await mustGetSandbox(sandboxId))
+					(await commitUpgrade(
+						sandboxId,
+						operationId,
+						placement,
+						{ principal, role },
+						egress.signingVersion,
+						egress.signingState,
+					)) ?? (await mustGetSandbox(sandboxId))
 				);
 			} finally {
 				clearInterval(heartbeat);
@@ -14681,6 +14807,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		placement: UpgradedPlacement,
 		by?: { readonly principal: Principal; readonly role: MemberRole },
 		signingVersion?: number,
+		signingState?: string,
 	): Promise<StoredSandbox | undefined> {
 		const latest = await store.sandboxes.get(sandboxId);
 		const upgrading = latest?.upgrading;
@@ -14713,6 +14840,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			{
 				egressRevision: upgrading.egressRevision,
 				...(sentSigningVersion === undefined ? {} : { signingVersion: sentSigningVersion }),
+				...(signingState === undefined ? {} : { signingState }),
 			},
 			becomes,
 		);
@@ -15323,7 +15451,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 							eligibleHosts: hosts.filter((hostId) => hostId !== current.hostId),
 							...(body.hostId === undefined ? {} : { to: body.hostId }),
 							...pooled(current.poolId),
-							...egress,
+							...backendEgressOf(egress),
 							egressRevision: starting.egressRevision,
 							...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 							...(running
@@ -15412,7 +15540,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 					placement = outcome.placement;
 				}
-				const committed = await commitMove(sandboxId, operationId, placement, egress.signingVersion);
+				const committed = await commitMove(
+					sandboxId,
+					operationId,
+					placement,
+					egress.signingVersion,
+					egress.signingState,
+				);
 				if (committed?.state === "running" && provisioning !== undefined) {
 					await provision(committed.id, provisioning.environments).catch(() => undefined);
 				}
@@ -16079,7 +16213,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...sizingOf(again),
 					env: again.env,
 					eligibleHosts: [hostId],
-					...egress,
+					...backendEgressOf(egress),
 					...(again.mounts === undefined ? {} : { mounts: backendMounts(again.mounts) }),
 				});
 				// Resumed from its memory: a kill made while it was stopped for the move reaches its command now.
@@ -16089,7 +16223,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			undefined,
 			{
 				egressRevision: again.egressRevision,
-				...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+				...sentSigningOf(egress),
 			},
 			(latest) => ({ moving: undefined, ...owedStop(latest) }),
 		).catch(() => undefined);
@@ -16111,6 +16245,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		operationId: string,
 		placement: Placement,
 		signingVersion?: number,
+		signingState?: string,
 	): Promise<StoredSandbox | undefined> {
 		const latest = await store.sandboxes.get(sandboxId);
 		const moving = latest?.moving;
@@ -16133,6 +16268,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			{
 				egressRevision: moving.egressRevision,
 				...(sentSigningVersion === undefined ? {} : { signingVersion: sentSigningVersion }),
+				...(signingState === undefined ? {} : { signingState }),
 			},
 			(latest) => ({
 				moving: undefined,
@@ -16251,15 +16387,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		const heartbeat = bootHeartbeat(starting);
 		let provisioning: Provisioning | undefined;
 		let bootOptions: BootOptions;
+		let egress: EgressResolution;
 		try {
 			provisioning = await provisionedAgain(principal, role, starting, true);
+			// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
+			egress = await egressFor(starting.accountId, starting);
 			bootOptions = {
 				fromSnapshot,
 				...sizingOf(starting),
 				env: starting.env,
 				eligibleHosts: hosts,
-				// As written now it is starting: a change from here on moves its revision on, and its boot reconciles.
-				...(await egressFor(starting.accountId, starting)),
+				...backendEgressOf(egress),
 				...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 			};
 		} catch (error) {
@@ -16284,7 +16422,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					provisioning,
 					{
 						egressRevision: starting.egressRevision,
-						...(bootOptions.signingVersion === undefined ? {} : { signingVersion: bootOptions.signingVersion }),
+						...sentSigningOf(egress),
 					},
 				);
 			}),
@@ -16380,6 +16518,50 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// away (or whose stop didn't get through, `beginStop`) stays running, and a later sweep, as on its host's
 			// reconnection, stops it.
 			let connected: Set<string> | undefined;
+			const envCache = new Map<string, Promise<StoredEnvironment | undefined>>();
+			const cachedEnvironmentsOf = async (sandbox: StoredSandbox): Promise<StoredEnvironment[]> => {
+				const ids = environmentIdsOf(sandbox);
+				if (ids.length === 0) return [];
+				const found = await Promise.all(
+					ids.map((id) => {
+						let read = envCache.get(id);
+						if (read === undefined) {
+							read = store.environments.get(id);
+							envCache.set(id, read);
+						}
+						return read;
+					}),
+				);
+				return found.filter((environment): environment is StoredEnvironment => environment !== undefined);
+			};
+			// Reconciles pending Git signing updates or revocations across every state where a microVM may still be live
+			// on its host (`running`, `stopping`, `error`), including changes committed to an environment before the
+			// gateway could write `sandbox.signingFloor`.
+			const reconcileSigningIfDue = async (sandbox: StoredSandbox) => {
+				if (backend.updateSigning === undefined || sandbox.type !== "microvm" || deliveringSigning.has(sandbox.id)) {
+					return;
+				}
+				if (
+					sandbox.signingFloor === undefined &&
+					sandbox.signingAppliedState === undefined &&
+					environmentIdsOf(sandbox).length === 0
+				) {
+					return;
+				}
+				const environments = await cachedEnvironmentsOf(sandbox);
+				if (!hasPendingSigning(sandbox, environments)) return;
+				const hostId = sandbox.hostId ?? (await backend.placedOn?.(sandbox.id).catch(() => undefined));
+				if (hostId === undefined) {
+					if (sandbox.state === "error") {
+						const state = signingStateToken(environments, sandbox.signingFloor);
+						const version = signingVersionOf(environments, sandbox.signingFloor) ?? sandbox.signingApplied ?? now();
+						await markSigningApplied(sandbox.id, version, state);
+					}
+					return;
+				}
+				connected ??= await connectedHosts();
+				if (connected.has(hostId)) pushSigning([sandbox]);
+			};
 			// A stop it was due for (`stopFor`) that a gateway went before carrying out: decided by a boot that went before
 			// taking it on (`starting`, since `stopsAt`), or taken on and never sent (`stopping`, since `stopClaimedAt`).
 			// Running again, where its machine may be, and due now, for the pass below to stop. One this gateway is still
@@ -16387,14 +16569,21 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			for (const state of ["starting", "stopping"] as const) {
 				for (const sandbox of await store.sandboxes.list({ state })) {
 					const since = state === "stopping" ? sandbox.stopClaimedAt : sandbox.stopsAt;
-					if (sandbox.stopFor === undefined || since === undefined || pending.has(sandbox.id)) continue;
-					if (since + STOP_LEASE_MS > at) continue;
+					if (
+						sandbox.stopFor === undefined ||
+						since === undefined ||
+						pending.has(sandbox.id) ||
+						since + STOP_LEASE_MS > at
+					) {
+						if (state === "stopping") await reconcileSigningIfDue(sandbox);
+						continue;
+					}
 					const marker = (current: StoredSandbox) =>
 						// One whose host was revoked under its boot (`strandOn`) isn't handed back as running.
 						(current.strandedOn ?? []).length === 0 &&
 						current.stopFor === sandbox.stopFor &&
 						(state === "stopping" ? current.stopClaimedAt : current.stopsAt) === since;
-					await transition(
+					const handedBack = await transition(
 						sandbox.id,
 						state,
 						(current) => ({
@@ -16409,6 +16598,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						}),
 						marker,
 					).catch(() => undefined);
+					if (state === "stopping" && (handedBack === undefined || !("moved" in handedBack))) {
+						await reconcileSigningIfDue(sandbox);
+					}
 				}
 			}
 			// Upgrades whose gateway has gone quiet (gone mid-upgrade), or whose outcome wasn't known: settled with their
@@ -16461,6 +16653,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				if (sandbox.memoryDropped !== undefined && at - sandbox.memoryDropped.at < DROPPED_SWEEP_MS) {
 					keepGoing(killDroppedOf(sandbox));
 				}
+				await reconcileSigningIfDue(sandbox);
 			}
 			// Owed deletes interrupted mid-retry (stuck in `deleting` past their retry lease) are reclaimed too (#967).
 			for (const sandbox of await store.sandboxes.list({ state: "deleting" })) {
@@ -16491,18 +16684,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					connected ??= await connectedHosts();
 					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushEgress([sandbox]);
 				}
-				// A Git signing update or revocation that didn't get through (its host away, a call that failed) is sent
-				// again once its host is back, until the host acknowledges `signingFloor` or newer.
-				if (
-					backend.updateSigning !== undefined &&
-					sandbox.type === "microvm" &&
-					sandbox.signingFloor !== undefined &&
-					(sandbox.signingApplied ?? Number.NEGATIVE_INFINITY) < sandbox.signingFloor &&
-					!deliveringSigning.has(sandbox.id)
-				) {
-					connected ??= await connectedHosts();
-					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushSigning([sandbox]);
-				}
+				await reconcileSigningIfDue(sandbox);
 				// Due: past its time, owed a stop (`stopFor`) whatever its time says, or gone its idle stop's time unused. A use
 				// recorded before the stop moves it (`lastActiveAt`), or seen here and not yet stored, keeps it running:
 				// `beginStop` asks again as it moves it.
