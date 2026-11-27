@@ -38,6 +38,11 @@ export const SNAPSHOT_KEEP_FEATURE = "snapshot-keep";
  */
 export const SANDBOX_ENV_FEATURE = "sandbox-env";
 /**
+ * A host that supports host-side Git commit and tag signing (`HOST_FEATURES.gitSigning`): keeps private keys in host
+ * memory only and signs validated Git objects over a per-VM vsock endpoint.
+ */
+export const GIT_SIGNING_FEATURE = "git-signing";
+/**
  * A host that makes a microVM from one of its isolates itself (`HOST_FEATURES.isolateUpgrade`, `sandbox.upgrade`): the
  * isolate's files go from its blob store into the new microVM on the host, never through Kantel.
  */
@@ -212,6 +217,8 @@ export interface MovePlanSpec {
 	readonly eligibleHosts: readonly string[];
 	readonly poolId?: string;
 	readonly running?: boolean;
+	/** Public metadata for the sandbox's host-side Git signing key, when one applies. */
+	readonly gitSigning?: BackendGitSigning;
 }
 
 /**
@@ -377,6 +384,10 @@ export interface SandboxSpec {
 	readonly snapshotCopies?: SnapshotCopies;
 	/** The account's egress proxy settings when they're on; a backend that can't enforce them ignores them. */
 	readonly egress?: BackendEgress;
+	/** Public metadata for the sandbox's host-side Git signing key; private material stays on the host via `signing.fetch`. */
+	readonly gitSigning?: BackendGitSigning;
+	/** On a fork: explicitly clear any signing config inherited from the source when the fork has none. */
+	readonly clearGitSigning?: boolean;
 	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
 	readonly template?: SandboxTemplateBoot;
 	/**
@@ -712,6 +723,41 @@ export interface BackendEgressGrant {
 	readonly rule: string;
 }
 
+/** Public metadata for a sandbox's host-side Git signing key (never holds private key material or passphrases). */
+export interface BackendGitSigning {
+	readonly format: computeSchema.GitSigningFormat;
+	readonly keyId: string;
+	readonly fingerprint: string;
+	readonly publicKey: string;
+	readonly version: number;
+}
+
+/** What a host's `signing.fetch` answers: held in host memory only. */
+export interface ResolvedSigningKey {
+	readonly version: number;
+	readonly enabled: boolean;
+	readonly format?: computeSchema.GitSigningFormat;
+	readonly keyId?: string;
+	readonly fingerprint?: string;
+	readonly allowedEmails?: readonly string[];
+	readonly privateKey?: string;
+	readonly passphrase?: string;
+}
+
+/** One host-side Git signing decision reported by a host (`signing` event). */
+export interface ReportedSigning {
+	readonly at: number;
+	readonly sandboxId: string;
+	readonly allowed: boolean;
+	readonly format?: string;
+	readonly keyId?: string;
+	readonly fingerprint?: string;
+	readonly objectType?: string;
+	readonly committer?: string;
+	readonly object?: string;
+	readonly reason?: string;
+}
+
 /** Where a machine was placed, and what it can do. */
 export interface Placement {
 	readonly hostId: string;
@@ -788,6 +834,10 @@ export interface BootOptions {
 	readonly env: { readonly [name: string]: string };
 	readonly eligibleHosts: readonly string[];
 	readonly egress?: BackendEgress;
+	/** Public metadata for the sandbox's host-side Git signing key. */
+	readonly gitSigning?: BackendGitSigning;
+	/** Explicitly clear any previous Git signing config on this boot when the sandbox has none. */
+	readonly clearGitSigning?: boolean;
 	/** The sandbox's mounts, mounted again on the new machine. */
 	readonly mounts?: readonly BackendMount[];
 	/**
@@ -1414,6 +1464,11 @@ export interface SandboxBackend {
 	 * microVM's guest rewrites its env file so new shells see it. Absent, the sandbox gets it when it next boots.
 	 */
 	updateEnv?(sandboxId: string, env: { readonly [name: string]: string }): Promise<void>;
+	/**
+	 * The sandbox's host-side Git signing key changed (set, rotated, updated, detached or removed): the host drops its
+	 * cached private key, enforces the version floor and updates a running microVM's signing config.
+	 */
+	updateSigning?(sandboxId: string, signing: BackendGitSigning | null, version: number): Promise<void>;
 	/**
 	 * The runtime of each host that can build and boot template snapshots, one entry a host. Absent (with `buildTemplate`
 	 * and `deleteTemplateSnapshot`), the backend has no templates, and their routes answer `not_supported`.

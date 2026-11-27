@@ -8,6 +8,7 @@ export * from "./backend.ts";
 export * from "./base-images.ts";
 export * from "./base-status.ts";
 export * from "./disk-holders.ts";
+export * from "./git-signing.ts";
 export * from "./github-app.ts";
 export * from "./github-runners.ts";
 export * from "./grants.ts";

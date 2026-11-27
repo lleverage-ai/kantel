@@ -409,6 +409,11 @@ export type StoredSandbox = Omit<
 	 */
 	readonly secretsFloor?: number;
 	/**
+	 * The least version its Git signing key is answered at (`signingKey`), moved on when an environment is attached,
+	 * detached or deleted, or its signing key changed, so its host drops any older key. Absent: none.
+	 */
+	readonly signingFloor?: number;
+	/**
 	 * Environment set-up it still has to do, recorded when the change that needs it is (a create, an attach, a move), and
 	 * taken off by its ID once a set-up has done it: never before, so a stopped set-up leaves it for the next, and never
 	 * an item another change added. Absent: none.
@@ -656,6 +661,21 @@ export interface StoredEnvironmentFile {
 	readonly updatedAt: number;
 }
 
+/** An environment's host-side Git signing key; its private key and optional passphrase stay sealed at rest. */
+export interface StoredEnvironmentGitSigning {
+	readonly format: computeSchema.GitSigningFormat;
+	readonly keyId: string;
+	readonly fingerprint: string;
+	readonly publicKey: string;
+	readonly allowedEmails: readonly string[];
+	/** Sealed with `gitSigningAad(envId, "privateKey")`. Never answered. */
+	readonly sealedKey: SealedValue;
+	/** Sealed with `gitSigningAad(envId, "passphrase")`. Never answered. */
+	readonly sealedPassphrase?: SealedValue;
+	readonly version: number;
+	readonly updatedAt: number;
+}
+
 export interface StoredEnvironment {
 	readonly id: string;
 	readonly accountId: string;
@@ -665,8 +685,11 @@ export interface StoredEnvironment {
 	readonly files: readonly StoredEnvironmentFile[];
 	readonly repos: readonly computeSchema.EnvironmentRepo[];
 	readonly grants: readonly computeSchema.EgressGrant[];
+	readonly gitSigning?: StoredEnvironmentGitSigning;
 	/** Moves on with every change to its protected variables, so a host knows its copy of them is stale. */
 	readonly secretsVersion: number;
+	/** Moves on with every change to its Git signing key (set, rotate, update or remove). */
+	readonly signingVersion?: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }

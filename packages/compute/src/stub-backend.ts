@@ -309,6 +309,7 @@ export function createStubBackend(options: StubBackendOptions = {}): SandboxBack
 		// It enforces what its sandboxes get however they run, makes any shape, and keeps no warm machines.
 		features: [
 			"egress-policy",
+			"git-signing",
 			CUSTOM_SHAPES_FEATURE,
 			SNAPSHOT_KEEP_FEATURE,
 			SANDBOX_ENV_FEATURE,

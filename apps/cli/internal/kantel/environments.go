@@ -275,7 +275,7 @@ func describeEnvironment(c *cli.Context, e api.Environment) string {
 	for _, g := range e.Grants {
 		grants = append(grants, []string{g.ID, grantRule(g)})
 	}
-	return strings.Join([]string{
+	lines := []string{
 		cli.Fields(c.Style, []cli.Field{
 			{"id", e.ID},
 			{"name", e.Name},
@@ -288,7 +288,14 @@ func describeEnvironment(c *cli.Context, e api.Environment) string {
 		envSection(c, "Files", []string{"PATH", "MODE", "SIZE", "UPDATED"}, files),
 		envSection(c, "Repos", []string{"URL", "PATH", "REF"}, repos),
 		envSection(c, "Grants", []string{"ID", "RULE"}, grants),
-	}, "\n")
+	}
+	if e.GitSigning != nil {
+		s := e.GitSigning
+		lines = append(lines, envSection(c, "Git signing",
+			[]string{"FORMAT", "KEY ID", "FINGERPRINT", "ALLOWED EMAILS", "UPDATED"},
+			[][]string{{string(s.Format), s.KeyID, s.Fingerprint, strings.Join(s.AllowedEmails, ", "), cli.Ago(s.UpdatedAt, now(c))}}))
+	}
+	return strings.Join(lines, "\n")
 }
 
 // environmentTable is kantel env list.
@@ -787,6 +794,30 @@ func environments() cli.Section {
 					return err
 				}
 				c.Emit(nil, deletedFrom{p, id}, func() string { return "Removed " + p + " from " + c.Arg(0) + "." })
+				return nil
+			},
+		},
+		envSigningCommand(),
+		{
+			Name: "env signing rm", Summary: "Remove an environment's host-side Git signing key",
+			Args: []cli.Arg{envArg},
+			Run: func(c *cli.Context) error {
+				client, err := Client(c)
+				if err != nil {
+					return err
+				}
+				id, err := environmentIDOf(c, client, c.Arg(0))
+				if err != nil {
+					return err
+				}
+				var raw json.RawMessage
+				updated, err := client.DeleteEnvironmentGitSigning(c.Ctx, id, api.Raw(&raw))
+				if err != nil {
+					return err
+				}
+				emitWithoutProtectedValues(c, raw, updated, func() string {
+					return "Removed Git signing key from " + c.Arg(0) + "."
+				})
 				return nil
 			},
 		},
@@ -1313,6 +1344,126 @@ func envFileCommand() *cli.Command {
 			emitWithoutProtectedValues(c, raw, fallback, func() string {
 				return fmt.Sprintf("Saved %s (%s, mode %s) in %s.\nSandboxes made from now on get it.",
 					p, cli.Bytes(float64(size)), octal(shownMode), c.Arg(0))
+			})
+			return nil
+		},
+	}
+}
+
+func envSigningCommand() *cli.Command {
+	return &cli.Command{
+		Name:    "env signing",
+		Summary: "Set or rotate a host-side Git signing key (OpenPGP or OpenSSH) for commits and tags",
+		Args:    []cli.Arg{{Name: "env"}},
+		Flags: []cli.Flag{
+			{Name: "from", Type: cli.String, Value: "<file>", Description: "Read the private key from this local file; default stdin"},
+			{Name: "format", Type: cli.String, Value: "<gpg|ssh>", Description: "Key format (gpg or ssh); auto-detected from the key if omitted"},
+			{Name: "allow-email", Type: cli.String, Multiple: true, Value: "<email>", Description: "Committer/tagger email allowed to sign with this key; repeat for multiple"},
+			{Name: "passphrase-file", Type: cli.String, Value: "<file>", Description: "Read the key's passphrase from this local file"},
+			{Name: "passphrase-stdin", Type: cli.Bool, Description: "Read the key's passphrase from stdin (use with --from or --keep-key)"},
+			{Name: "keep-key", Type: cli.Bool, Description: "Keep the stored private key and update --allow-email or passphrase only"},
+		},
+		Details: "Private signing keys are sealed at rest, held in kantel-host memory only, and never written into\n" +
+			"sandboxes, snapshots or forks. Only validated Git commits and annotated tags whose committer or tagger\n" +
+			"email is in --allow-email are signed.\n" +
+			"  gpg --armor --export-secret-keys KEYID | kantel env signing work --allow-email dev@example.com\n" +
+			"  kantel env signing work --from ~/.ssh/id_ed25519 --allow-email dev@example.com\n" +
+			"kantel env signing rm <env> removes it.",
+		Run: func(c *cli.Context) error {
+			keepKey := c.Bool("keep-key")
+			from, hasFrom := c.Str("from")
+			passFile, hasPassFile := c.Str("passphrase-file")
+			passStdin := c.Bool("passphrase-stdin")
+			if keepKey && hasFrom {
+				return cli.Usage("give either --from <file> or --keep-key, not both")
+			}
+			if hasPassFile && passStdin {
+				return cli.Usage("give either --passphrase-file or --passphrase-stdin, not both")
+			}
+			if passStdin && !keepKey && !hasFrom {
+				return cli.Usage("--passphrase-stdin requires --from <file> or --keep-key so stdin isn't used twice")
+			}
+			var formatPtr *api.GitSigningFormat
+			if f, ok := c.Str("format"); ok {
+				switch f {
+				case "gpg":
+					formatPtr = api.Ptr(api.GitSigningFormatGpg)
+				case "ssh":
+					formatPtr = api.Ptr(api.GitSigningFormatSSH)
+				default:
+					return cli.Usage(`--format takes gpg or ssh, not "` + f + `"`)
+				}
+			}
+			allowedEmails := c.List("allow-email")
+			if keepKey && len(allowedEmails) == 0 && !hasPassFile && !passStdin {
+				return cli.Usage("--keep-key needs --allow-email, --passphrase-file or --passphrase-stdin")
+			}
+			if !keepKey && !hasFrom && c.IO.StdinTTY {
+				return cli.Usage("give the private key with --from <file>, pipe it on stdin, or pass --keep-key")
+			}
+			if passStdin && c.IO.StdinTTY {
+				return cli.Usage("pipe the passphrase on stdin, or use --passphrase-file")
+			}
+			client, err := Client(c)
+			if err != nil {
+				return err
+			}
+			if err := requireProtectedValues(c, client); err != nil {
+				return err
+			}
+			body := api.SetEnvironmentGitSigningBody{
+				Format:        formatPtr,
+				AllowedEmails: allowedEmails,
+			}
+			if !keepKey {
+				var rawKey []byte
+				if hasFrom {
+					if !filepath.IsAbs(from) {
+						from = filepath.Join(c.IO.Cwd, from)
+					}
+					if rawKey, err = os.ReadFile(from); err != nil {
+						return err
+					}
+				} else if rawKey, err = readStdin(c); err != nil {
+					return err
+				}
+				keyText := string(rawKey)
+				body.PrivateKey = &keyText
+			}
+			if hasPassFile {
+				if !filepath.IsAbs(passFile) {
+					passFile = filepath.Join(c.IO.Cwd, passFile)
+				}
+				rawPass, err := os.ReadFile(passFile)
+				if err != nil {
+					return err
+				}
+				passText := strings.TrimRight(string(rawPass), "\r\n")
+				body.Passphrase = &passText
+			} else if passStdin {
+				rawPass, err := readStdin(c)
+				if err != nil {
+					return err
+				}
+				passText := strings.TrimRight(string(rawPass), "\r\n")
+				body.Passphrase = &passText
+			}
+			id, err := environmentIDOf(c, client, c.Arg(0))
+			if err != nil {
+				return err
+			}
+			var raw json.RawMessage
+			updated, err := client.SetEnvironmentGitSigning(c.Ctx, id, body, api.Raw(&raw))
+			if err != nil {
+				return err
+			}
+			emitWithoutProtectedValues(c, raw, updated, func() string {
+				if updated.GitSigning == nil {
+					return "Updated Git signing in " + c.Arg(0) + "."
+				}
+				s := updated.GitSigning
+				return fmt.Sprintf("Saved %s Git signing key %s in %s (allowed: %s).\nRunning sandboxes pick the change up at once; private keys stay on the host.",
+					s.Format, s.KeyID, updated.Name, strings.Join(s.AllowedEmails, ", "))
 			})
 			return nil
 		},

@@ -615,7 +615,9 @@ export async function createStackCompute(options: StackComputeOptions): Promise<
 	own?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		env: (hostId, sandboxId) => api.service.sandboxEnv(hostId, sandboxId),
+		signing: (hostId, sandboxId) => api.service.signingKey(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		recordSigning: (hostId, records) => api.service.recordSigning(hostId, records),
 		// Relayed streams (SSH, the desktop and browser, hosted ports) are uses of their sandbox, for its idle stop.
 		activity: (sandboxId) => api.service.noteActivity(sandboxId),
 		// Whether a running microVM's guest agent answers, so one that doesn't refuses its calls rather than hanging them.

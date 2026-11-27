@@ -268,13 +268,17 @@ function fakeHost(
 		sandboxes,
 		calls,
 		params: sentParams,
-		/** Calls Kantel as kantel-host does (`secrets.fetch`, `bucket.fetch`), and waits for its answer. */
+		/** Calls Kantel as kantel-host does (`secrets.fetch`, `signing.fetch`, `bucket.fetch`), and waits for its answer. */
 		async ask(method: string, callParams: unknown): Promise<HostMessage> {
 			asked += 1;
 			const id = `h${asked}`;
 			receive(JSON.stringify({ type: "call", id, method, params: callParams }));
 			await expect.poll(() => answers.has(id)).toBe(true);
 			return answers.get(id) as HostMessage;
+		},
+		/** Sends a host frame (e.g. a `signing` or `egress` event) over the attached socket. */
+		send(message: unknown) {
+			receive(JSON.stringify(message));
 		},
 		heard,
 		handshakes,
@@ -1018,6 +1022,148 @@ describe("Account hosts on the Worker", () => {
 		const again = await start(db, on);
 		const table = await again.stack.compute.api.service.protectedTable(hostId, sandboxId);
 		expect(table?.entries).toMatchObject([{ placeholder, value: SECRET }]);
+	});
+
+	it("seals Git signing keys in the durable object, serves signing.fetch to the sandbox's host, and records signing audit events", async () => {
+		const db = new DatabaseSync(":memory:");
+		const KEY = Buffer.alloc(32, 7).toString("base64");
+		const on = {
+			KANTEL_ACCOUNT_HOSTS: "experimental",
+			KANTEL_PUBLIC_URL: BASE,
+			KANTEL_SECRETS_KEY: KEY,
+		};
+		const { stack, call } = await start(db, on);
+		const hosts = stack.compute.hosts;
+		if (hosts === undefined) throw new Error("Account hosts are on");
+
+		const joinToken = await call("POST", "/v1/hosts/join-tokens", { name: "signing-box" });
+		const registered = await call("POST", "/v1/hosts/register", { token: joinToken.body.token }, {});
+		const { hostId, credential } = registered.body as { hostId: string; credential: string };
+		const host = fakeHost({ features: ["egress-policy", "git-signing"] });
+		const held = await hosts.connect(credential, host.socket);
+		if (held === undefined) throw new Error("The host's credential was refused");
+		host.attach(held, hostId);
+		await expect.poll(() => hosts.service.hub.connected(hostId)).toBe(true);
+
+		// Build a synthetic OpenSSH Ed25519 key in memory so no key literal sits in source.
+		const sshString = (data: Uint8Array) => {
+			const buf = new Uint8Array(4 + data.length);
+			new DataView(buf.buffer).setUint32(0, data.length);
+			buf.set(data, 4);
+			return buf;
+		};
+		const enc = (s: string) => new TextEncoder().encode(s);
+		const pub32 = new Uint8Array(32).fill(0x2a);
+		const priv64 = new Uint8Array(64).fill(0x5b);
+		priv64.set(pub32, 32);
+		const pubBlob = concatBytes(sshString(enc("ssh-ed25519")), sshString(pub32));
+		const check = new Uint8Array([0x11, 0x22, 0x33, 0x44]);
+		let privInner = concatBytes(
+			concatBytes(check, check),
+			concatBytes(
+				concatBytes(sshString(enc("ssh-ed25519")), sshString(pub32)),
+				concatBytes(sshString(priv64), sshString(enc("test"))),
+			),
+		);
+		const padLen = (8 - (privInner.length % 8)) % 8;
+		if (padLen > 0) {
+			const pad = new Uint8Array(padLen);
+			for (let i = 0; i < padLen; i++) pad[i] = i + 1;
+			privInner = concatBytes(privInner, pad);
+		}
+		const count = new Uint8Array([0, 0, 0, 1]);
+		const keyBytes = concatBytes(
+			concatBytes(
+				concatBytes(enc("openssh-key-v1\0"), sshString(enc("none"))),
+				concatBytes(sshString(enc("none")), sshString(new Uint8Array(0))),
+			),
+			concatBytes(concatBytes(count, sshString(pubBlob)), sshString(privInner)),
+		);
+		const privateKey = `-----BEGIN OPENSSH PRIVATE KEY-----\n${Buffer.from(keyBytes).toString("base64")}\n-----END OPENSSH PRIVATE KEY-----\n`;
+
+		const env = await call("POST", "/v1/environments", { name: "signed-work" });
+		expect(env.status).toBe(201);
+		const envId = env.body.id as string;
+		const set = await call("PUT", `/v1/environments/${envId}/git-signing`, {
+			format: "ssh",
+			privateKey,
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		expect(set.status).toBe(200);
+		expect(JSON.stringify(set.body)).not.toContain(privateKey);
+		const stored = db.prepare("SELECT * FROM compute_api_records").all();
+		expect(JSON.stringify(stored)).not.toContain(privateKey);
+
+		const sandbox = await call("POST", "/v1/sandboxes", { type: "microvm", environment: envId, wait: true });
+		expect(sandbox.status).toBe(201);
+		const sandboxId = sandbox.body.id as string;
+		const created = JSON.stringify(host.params.get("sandbox.create"));
+		expect(created).not.toContain(privateKey);
+		const createParams = host.params.get("sandbox.create")?.[0] as { gitSigning?: Record<string, unknown> } | undefined;
+		expect(createParams?.gitSigning).toMatchObject({ format: "ssh" });
+		expect(createParams?.gitSigning?.privateKey).toBeUndefined();
+		expect(createParams?.gitSigning?.passphrase).toBeUndefined();
+
+		// Host fetches the private key lazily over its authenticated link.
+		const fetched = await host.ask("signing.fetch", { sandboxId });
+		expect(fetched.error).toBeUndefined();
+		expect(fetched.result).toMatchObject({
+			enabled: true,
+			format: "ssh",
+			allowedEmails: ["jeff@lleverage.ai"],
+			privateKey,
+		});
+		expect((await host.ask("signing.fetch", { sandboxId: "sbx_other" })).error?.code).toBe("not_found");
+
+		// Host reports signing decisions as a `signing` event -> stored as sandbox.git_signed / sandbox.git_sign_refused.
+		host.send({
+			type: "event",
+			event: {
+				kind: "signing",
+				at: Date.now(),
+				signing: [
+					{
+						at: Date.now(),
+						sandboxId,
+						allowed: true,
+						format: "ssh",
+						keyId: "k1",
+						objectType: "commit",
+						committer: "jeff@lleverage.ai",
+						object: "4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+					},
+					{
+						at: Date.now(),
+						sandboxId,
+						allowed: false,
+						format: "ssh",
+						keyId: "k1",
+						objectType: "commit",
+						committer: "spoof@example.com",
+						reason: "committer email not allowed",
+					},
+				],
+			},
+		});
+		await expect
+			.poll(async () => {
+				const events = await call("GET", `/v1/events?sandboxId=${sandboxId}`);
+				const types = ((events.body.items as { type: string }[]) ?? []).map((e) => e.type);
+				return types.includes("sandbox.git_signed") && types.includes("sandbox.git_sign_refused");
+			})
+			.toBe(true);
+
+		// Deleting the key pushes sandbox.signing with signing: null.
+		const del = await call("DELETE", `/v1/environments/${envId}/git-signing`);
+		expect(del.status).toBe(200);
+		await expect.poll(() => (host.params.get("sandbox.signing")?.length ?? 0) > 0).toBe(true);
+		expect(host.params.get("sandbox.signing")?.[0]).toMatchObject({ sandboxId, signing: null });
+
+		// Key survives durable object restart when present; after delete, fetch reports enabled: false.
+		await stack.compute.close();
+		const again = await start(db, on);
+		const afterRestart = await again.stack.compute.api.service.signingKey(hostId, sandboxId);
+		expect(afterRestart?.enabled).toBe(false);
 	});
 
 	it("without KANTEL_SECRETS_KEY says it keeps no protected values, refuses them for users, and tells the operator", async () => {

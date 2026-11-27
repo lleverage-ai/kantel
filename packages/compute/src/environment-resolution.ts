@@ -5,7 +5,13 @@
  * so the rule lives in one place.
  */
 import type { computeSchema } from "@kantel/api";
-import type { StoredEnvironment, StoredEnvironmentFile, StoredEnvironmentVariable, StoredSandbox } from "./store.ts";
+import type {
+	StoredEnvironment,
+	StoredEnvironmentFile,
+	StoredEnvironmentGitSigning,
+	StoredEnvironmentVariable,
+	StoredSandbox,
+} from "./store.ts";
 
 /** At most this many environments on one sandbox. */
 export const MAX_SANDBOX_ENVIRONMENTS = 10;
@@ -34,6 +40,8 @@ export interface EnvironmentResolution {
 	readonly repos: ReadonlyMap<string, Winner<computeSchema.EnvironmentRepo>>;
 	/** Every environment's grants, in order. */
 	readonly grants: readonly computeSchema.EgressGrant[];
+	/** The winning host-side Git signing key (later environment wins). */
+	readonly gitSigning?: Winner<StoredEnvironmentGitSigning>;
 }
 
 /** Works out what `environments` (in order) give a sandbox. `repoPath` is where a repository is cloned. */
@@ -45,13 +53,15 @@ export function resolveEnvironments(
 	const files = new Map<string, Winner<StoredEnvironmentFile>>();
 	const repos = new Map<string, Winner<computeSchema.EnvironmentRepo>>();
 	const grants: computeSchema.EgressGrant[] = [];
+	let gitSigning: Winner<StoredEnvironmentGitSigning> | undefined;
 	for (const environment of environments) {
 		for (const item of environment.variables) variables.set(item.name, { environment, item });
 		for (const item of environment.files) files.set(item.path, { environment, item });
 		for (const item of environment.repos) repos.set(repoPath(item), { environment, item });
 		grants.push(...environment.grants);
+		if (environment.gitSigning !== undefined) gitSigning = { environment, item: environment.gitSigning };
 	}
-	return { variables, files, repos, grants };
+	return { variables, files, repos, grants, ...(gitSigning === undefined ? {} : { gitSigning }) };
 }
 
 /**
@@ -133,6 +143,23 @@ export const secretsVersionOf = (
 	return versions.length === 0 ? undefined : Math.max(...versions);
 };
 
+/**
+ * The version a sandbox's Git signing key is answered at: its environments' newest signing version, or its floor
+ * (moved on by an attach, detach, key update or delete) when that is later.
+ */
+export const signingVersionOf = (
+	environments: readonly StoredEnvironment[],
+	floor: number | undefined,
+): number | undefined => {
+	const versions = [
+		...environments
+			.map((environment) => environment.signingVersion ?? environment.gitSigning?.version)
+			.filter((version): version is number => version !== undefined),
+		...(floor === undefined ? [] : [floor]),
+	];
+	return versions.length === 0 ? undefined : Math.max(...versions);
+};
+
 /** What of each environment a sandbox doesn't take from it, for the view. */
 export function shadowedOf(
 	environment: StoredEnvironment,
@@ -150,5 +177,8 @@ export function shadowedOf(
 		repos: environment.repos
 			.map(repoPath)
 			.filter((path) => resolution.repos.get(path)?.environment.id !== environment.id),
+		...(environment.gitSigning !== undefined && resolution.gitSigning?.environment.id !== environment.id
+			? { gitSigning: true }
+			: {}),
 	};
 }

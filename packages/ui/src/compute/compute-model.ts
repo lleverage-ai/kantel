@@ -1905,6 +1905,8 @@ export type WebhookEvent =
 	| "sandbox.degraded"
 	| "sandbox.recovered"
 	| "sandbox.environments_changed"
+	| "sandbox.git_signed"
+	| "sandbox.git_sign_refused"
 	| "sandbox.oom_kill"
 	| "sandbox.upgraded"
 	| "sandbox.lost"
@@ -1922,6 +1924,8 @@ export const WEBHOOK_EVENTS: readonly { readonly event: WebhookEvent; readonly l
 	{ event: "sandbox.degraded", label: "A sandbox is degraded" },
 	{ event: "sandbox.recovered", label: "A sandbox recovered" },
 	{ event: "sandbox.environments_changed", label: "A sandbox's environments changed" },
+	{ event: "sandbox.git_signed", label: "A sandbox signed a Git commit or tag" },
+	{ event: "sandbox.git_sign_refused", label: "A sandbox's Git signing request was refused" },
 	{ event: "sandbox.oom_kill", label: "A sandbox ran out of memory" },
 	{ event: "sandbox.upgraded", label: "An isolate was upgraded to a microVM" },
 	{ event: "sandbox.lost", label: "A sandbox was lost with its host" },

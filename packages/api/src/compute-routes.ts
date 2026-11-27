@@ -147,6 +147,7 @@ import {
 	SaveSnapshotBody,
 	SetBucketSourceCredentialsBody,
 	SetEnvironmentFileBody,
+	SetEnvironmentGitSigningBody,
 	SetEnvironmentVariableBody,
 	SetPublicUrlBody,
 	Snapshot,
@@ -1694,6 +1695,41 @@ export const putEnvironmentGrants = defineRoute({
 	errors: changeErrors,
 });
 
+export const setEnvironmentGitSigning = defineRoute({
+	operationId: "setEnvironmentGitSigning",
+	method: "PUT",
+	path: "/environments/{environmentId}/git-signing",
+	tag: "environments",
+	summary: "Set an environment's host-side Git signing key",
+	description: describe(
+		"Sets or rotates an OpenPGP or OpenSSH private key used to sign Git commits and annotated tags on the host.",
+		"The private key and optional passphrase are sealed at rest, held in host memory only, and never exposed to",
+		"sandboxes, snapshots or forks. Leave `privateKey` out to update `allowedEmails` while keeping the stored key.",
+		"Needs the deployment's secrets key (`not_supported` without one).",
+		RUNNING_AT_ONCE,
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	body: SetEnvironmentGitSigningBody,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: ["invalid", "forbidden", "not_found", "conflict", "not_supported"],
+});
+
+export const deleteEnvironmentGitSigning = defineRoute({
+	operationId: "deleteEnvironmentGitSigning",
+	method: "DELETE",
+	path: "/environments/{environmentId}/git-signing",
+	tag: "environments",
+	summary: "Remove an environment's host-side Git signing key",
+	description: describe(
+		"Removes the environment's Git signing key and clears it from running sandboxes immediately.",
+		scope("account:admin"),
+	),
+	params: EnvironmentPath,
+	answer: { status: 200, description: "The environment.", schema: Environment },
+	errors: readErrors,
+});
+
 export const getSandboxEgress = defineRoute({
 	operationId: "getSandboxEgress",
 	method: "GET",
@@ -1791,6 +1827,8 @@ export const environmentComputeRoutes = {
 	deleteEnvironmentFile,
 	putEnvironmentRepos,
 	putEnvironmentGrants,
+	setEnvironmentGitSigning,
+	deleteEnvironmentGitSigning,
 	getSandboxEgress,
 	putSandboxGrants,
 	listSandboxEnvironments,

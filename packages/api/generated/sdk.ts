@@ -849,7 +849,7 @@ export interface EmbedBrowserBody {
 	readonly minutes?: number;
 }
 
-/** What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running ones at once. */
+/** What a sandbox starts with: variables, secret files, repositories, egress grants and an optional host-side Git signing key. A change reaches sandboxes made after it, except a protected variable's value, bindings, grants and the Git signing key, which reach running ones at once. */
 export interface Environment {
 	/** The environment's ID, such as `env_4kq9x2mt`. */
 	readonly id: string;
@@ -860,6 +860,8 @@ export interface Environment {
 	readonly files: readonly EnvironmentFile[];
 	readonly repos: readonly EnvironmentRepo[];
 	readonly grants: readonly EgressGrant[];
+	/** Host-side Git commit and tag signing key attached to an environment. The private key stays sealed in Kantel and in host memory only; sandboxes never see it. */
+	readonly gitSigning?: EnvironmentGitSigning;
 	/** How many sandboxes were made from it and still exist. */
 	readonly sandboxCount: number;
 	/** Epoch milliseconds, UTC. */
@@ -881,6 +883,22 @@ export interface EnvironmentFile {
 
 export interface EnvironmentFileQuery {
 	readonly path: string;
+}
+
+/** Host-side Git commit and tag signing key attached to an environment. The private key stays sealed in Kantel and in host memory only; sandboxes never see it. */
+export interface EnvironmentGitSigning {
+	/** OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace). */
+	readonly format: GitSigningFormat;
+	/** Short identifier for the key: the 16-character OpenPGP key ID, or the SSH key's SHA-256 fingerprint prefix. */
+	readonly keyId: string;
+	/** Full key fingerprint: 40-character uppercase OpenPGP fingerprint, or `SHA256:...` for SSH. */
+	readonly fingerprint: string;
+	/** Public key material: ASCII-armored OpenPGP public key, or OpenSSH `authorized_keys` line. */
+	readonly publicKey: string;
+	/** Lower-case committer/tagger email addresses this key may sign for. */
+	readonly allowedEmails: readonly string[];
+	/** Epoch milliseconds, UTC. */
+	readonly updatedAt: number;
 }
 
 export interface EnvironmentList {
@@ -913,7 +931,7 @@ export interface EnvironmentVariable {
 export interface Event {
 	/** The event's ID, such as `evt_8x7w6v`: a webhook's delivery ID, so deduplicate on it. */
 	readonly id: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, `data.reason`). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type: EventType;
 	readonly accountId: string;
 	/** Epoch milliseconds, UTC. */
@@ -955,6 +973,18 @@ export interface EventData {
 	readonly bytes?: number;
 	/** `sandbox.upgraded`: how long the upgrade took. */
 	readonly durationMs?: number;
+	/** OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace). */
+	readonly format?: GitSigningFormat;
+	/** `sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key ID. */
+	readonly keyId?: string;
+	/** `sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key fingerprint. */
+	readonly fingerprint?: string;
+	/** `sandbox.git_signed` / `sandbox.git_sign_refused`: the Git object kind. */
+	readonly objectType?: "commit" | "tag" | "unknown";
+	/** `sandbox.git_signed` / `sandbox.git_sign_refused`: the committer or tagger email. */
+	readonly committer?: string;
+	/** `sandbox.git_signed` / `sandbox.git_sign_refused`: the commit tree or tag target object hash. */
+	readonly object?: string;
 }
 
 export interface EventPage {
@@ -963,7 +993,7 @@ export interface EventPage {
 	readonly nextCursor?: string;
 }
 
-/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, `data.reason`). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 export type EventType =
 	| "sandbox.created"
 	| "sandbox.running"
@@ -973,6 +1003,8 @@ export type EventType =
 	| "sandbox.degraded"
 	| "sandbox.recovered"
 	| "sandbox.environments_changed"
+	| "sandbox.git_signed"
+	| "sandbox.git_sign_refused"
 	| "sandbox.oom_kill"
 	| "sandbox.upgraded"
 	| "sandbox.lost"
@@ -1295,6 +1327,9 @@ export interface GithubRunnersWithSecret {
 	/** The secret to give the GitHub App's webhook. Shown once. */
 	readonly webhookSecret: string;
 }
+
+/** OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace). */
+export type GitSigningFormat = "gpg" | "ssh";
 
 export interface GrantKeys {
 	/** The key that signs grants now. */
@@ -1718,7 +1753,7 @@ export interface ListEventsQuery {
 	/** The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`. */
 	readonly account?: string;
 	readonly sandboxId?: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, `data.reason`). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly type?: EventType;
 	readonly since?: number;
 	/** At most this many; default 50. */
@@ -2313,8 +2348,10 @@ export interface SandboxEnvironment {
 /** A sandbox's environments, and what each gives it. */
 export interface SandboxEnvironments {
 	readonly sandboxId: string;
-	/** In order: where two set the same variable, file or repository path, the later one wins. */
+	/** In order: where two set the same variable, file, repository path or Git signing key, the later one wins. */
 	readonly environments: readonly SandboxEnvironment[];
+	/** The host-side Git signing key active on a sandbox. */
+	readonly gitSigning?: SandboxGitSigning;
 }
 
 /** What of an environment a sandbox doesn't take from it. */
@@ -2325,6 +2362,19 @@ export interface SandboxEnvironmentShadowed {
 	readonly files: readonly string[];
 	/** Its repositories' paths a later environment clones into instead. */
 	readonly repos: readonly string[];
+	/** True when a later environment's Git signing key shadows this one's. */
+	readonly gitSigning?: boolean;
+}
+
+/** The host-side Git signing key active on a sandbox. */
+export interface SandboxGitSigning {
+	/** The environment supplying the active signing key. */
+	readonly environmentId: string;
+	/** OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace). */
+	readonly format: GitSigningFormat;
+	readonly keyId: string;
+	readonly fingerprint: string;
+	readonly allowedEmails: readonly string[];
 }
 
 /** `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first. */
@@ -2693,6 +2743,18 @@ export interface SetEnvironmentFileBody {
 	/** At most 1 MiB, in `encoding`. Required for a new file; left out, the file keeps its contents. */
 	readonly content?: string;
 	readonly encoding?: FileEncoding;
+}
+
+/** Sets or rotates an environment's host-side Git signing key, or updates its allowed emails. */
+export interface SetEnvironmentGitSigningBody {
+	/** OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace). */
+	readonly format?: GitSigningFormat;
+	/** ASCII-armored OpenPGP secret key or OpenSSH private key. Sealed at rest and never shown again. Leave out to update `allowedEmails` while keeping the stored key. */
+	readonly privateKey?: string;
+	/** Passphrase to unlock the private key, if encrypted. Sealed at rest and never shown again. */
+	readonly passphrase?: string;
+	/** Committer/tagger email addresses permitted to sign with this key. For GPG keys, defaults to the key's User ID email addresses if omitted. */
+	readonly allowedEmails?: readonly string[];
 }
 
 export interface SetEnvironmentVariableBody {
@@ -3337,7 +3399,7 @@ export interface WebhookDelivery {
 	readonly id: string;
 	readonly webhookId: string;
 	readonly eventId: string;
-	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
+	/** `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, `data.reason`). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted. */
 	readonly eventType: EventType;
 	readonly state: "pending" | "delivered" | "failed";
 	readonly attempts: number;
@@ -3965,6 +4027,14 @@ export interface KantelClient {
 	): Promise<Environment>;
 	/** Set an environment's egress grants. Replaces them. Running sandboxes made from it pick the change up at once. A key needs `account:admin`. `PUT /environments/{environmentId}/grants` */
 	putEnvironmentGrants(environmentId: string, body: PutEgressGrantsBody, options?: CallOptions): Promise<Environment>;
+	/** Set an environment's host-side Git signing key. Sets or rotates an OpenPGP or OpenSSH private key used to sign Git commits and annotated tags on the host. The private key and optional passphrase are sealed at rest, held in host memory only, and never exposed to sandboxes, snapshots or forks. Leave `privateKey` out to update `allowedEmails` while keeping the stored key. Needs the deployment's secrets key (`not_supported` without one). Running sandboxes made from it pick the change up at once. A key needs `account:admin`. `PUT /environments/{environmentId}/git-signing` */
+	setEnvironmentGitSigning(
+		environmentId: string,
+		body?: SetEnvironmentGitSigningBody,
+		options?: CallOptions,
+	): Promise<Environment>;
+	/** Remove an environment's host-side Git signing key. Removes the environment's Git signing key and clears it from running sandboxes immediately. A key needs `account:admin`. `DELETE /environments/{environmentId}/git-signing` */
+	deleteEnvironmentGitSigning(environmentId: string, options?: CallOptions): Promise<Environment>;
 	/** Get a sandbox's egress. Its environment, its protected variables (each placeholder's first 8 characters, never a value), its grants and the newest of its egress log: what its host's proxy let through or refused. A key needs `account:read`. `GET /sandboxes/{sandboxId}/egress` */
 	getSandboxEgress(sandboxId: string, query?: SandboxEgressQuery, options?: CallOptions): Promise<SandboxEgress>;
 	/** Set a sandbox's egress grants. Replaces its own grants, on top of its environment's. A running sandbox picks them up at once. A key needs `account:admin`. `PUT /sandboxes/{sandboxId}/grants` */
@@ -4506,6 +4576,18 @@ export function createKantelClient(options: KantelClientOptions): KantelClient {
 			send(
 				options,
 				{ method: "PUT", path: `/environments/${encodeURIComponent(environmentId)}/grants`, body },
+				callOptions,
+			),
+		setEnvironmentGitSigning: (environmentId, body = {}, callOptions) =>
+			send(
+				options,
+				{ method: "PUT", path: `/environments/${encodeURIComponent(environmentId)}/git-signing`, body },
+				callOptions,
+			),
+		deleteEnvironmentGitSigning: (environmentId, callOptions) =>
+			send(
+				options,
+				{ method: "DELETE", path: `/environments/${encodeURIComponent(environmentId)}/git-signing` },
 				callOptions,
 			),
 		getSandboxEgress: (sandboxId, query, callOptions) =>

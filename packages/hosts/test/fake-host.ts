@@ -551,6 +551,7 @@ export class FakeHost {
 			case "sandbox.env":
 				return answer({ ok: true });
 			case "sandbox.secrets":
+			case "sandbox.signing":
 				return answer({});
 			case "snapshot.save": {
 				const { sandboxId, snapshotId } = params as { sandboxId: string; snapshotId: string };

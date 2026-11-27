@@ -53,6 +53,7 @@ import {
 	type HostExecResult,
 	type HostFacts,
 	type HostFetchProgress,
+	type HostGitSigning,
 	type HostGrantKey,
 	type HostHello,
 	type HostImageChannel,
@@ -70,6 +71,8 @@ import {
 	type HostSandboxMemory,
 	type HostSandboxUsage,
 	type HostSecrets,
+	type HostSigningKey,
+	type HostSigningRecord,
 	type HostSize,
 	type HostStickyDisk,
 	type HostStickyHolding,
@@ -110,6 +113,10 @@ import { admits, type HostRecord, type HostStore, isLeftover, type PlacementReco
 /** Whether a host reports enforcing egress grants and protected variables. */
 export const enforcesPolicy = (host: HostRecord): boolean =>
 	storedFacts(host.facts)?.features?.includes(HOST_FEATURES.egressPolicy) === true;
+
+/** Whether a host reports supporting host-side Git signing. */
+export const supportsGitSigning = (host: HostRecord): boolean =>
+	storedFacts(host.facts)?.features?.includes(HOST_FEATURES.gitSigning) === true;
 
 /** The feature a host needs to mount each kind of source, and what a mount it can't do says. */
 const MOUNT_KINDS = {
@@ -281,6 +288,7 @@ export interface CreateSandboxInput {
 	readonly env?: { readonly [key: string]: string };
 	readonly sshAuthorizedKeys?: readonly string[];
 	readonly egress?: HostEgress;
+	readonly gitSigning?: HostGitSigning;
 	/** Only these hosts may take it (the control plane's eligible hosts: online, not draining, labelled). */
 	readonly hostIds?: readonly string[];
 	/**
@@ -342,6 +350,8 @@ export interface MoveSandboxInput {
 	readonly to?: string;
 	/** The pool it is kept to: the target must be in it as it admits the move, as its own host is. */
 	readonly poolId?: string;
+	/** Present when the moved sandbox uses host-side Git signing (restricts targets to signing-capable hosts). */
+	readonly gitSigning?: HostGitSigning;
 	/**
 	 * The start's params on the target, for the features it reports, as a boot sends them (its egress, revision and the
 	 * mounts that host takes), and how to read the mounts' statuses from its answer.
@@ -385,6 +395,7 @@ export interface MovePlanInput {
 	readonly hostIds?: readonly string[];
 	readonly poolId?: string;
 	readonly running?: boolean;
+	readonly gitSigning?: HostGitSigning;
 }
 
 /**
@@ -680,7 +691,10 @@ export interface HostComputeLink {
 	secrets(hostId: string, sandboxId: string): Promise<HostSecrets | undefined>;
 	/** A sandbox's env as the compute plane has it now, or `undefined` unless the sandbox is on `hostId`. */
 	env?(hostId: string, sandboxId: string): Promise<HostEnvAnswer | undefined>;
+	/** A sandbox's Git signing key for host memory only, or `undefined` unless the sandbox is on `hostId`. */
+	signing?(hostId: string, sandboxId: string): Promise<HostSigningKey | undefined>;
 	recordEgress(hostId: string, records: readonly HostEgressRecord[]): Promise<void>;
+	recordSigning?(hostId: string, records: readonly HostSigningRecord[]): Promise<void>;
 	/**
 	 * Fills in the bases a host reports for its own sandboxes (`HostSandbox.base`, image patching: its hello and events)
 	 * and snapshots (its snapshot list, read once a connection), so what was made before it versioned its images shows
@@ -1020,6 +1034,8 @@ export interface HostsService {
 			input?: {
 				readonly newId?: string;
 				readonly egress?: HostEgress;
+				readonly gitSigning?: HostGitSigning;
+				readonly clearGitSigning?: boolean;
 				/** The fork's own environment (its own protected placeholders); absent, its source's. */
 				readonly env?: { readonly [key: string]: string };
 				/** The fork's mounts, as for a create (`mountHandoff`, with its source's host). */
@@ -2074,8 +2090,15 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			if (compute?.env === undefined) throw new Error("The compute plane isn't linked yet");
 			return compute.env(hostId, sandboxId);
 		},
+		async signing(hostId, sandboxId) {
+			if (compute?.signing === undefined) throw new Error("The compute plane isn't linked yet");
+			return compute.signing(hostId, sandboxId);
+		},
 		onEgress(hostId, records) {
 			if (compute !== undefined) report(compute.recordEgress(hostId, records));
+		},
+		onSigning(hostId, records) {
+			if (compute?.recordSigning !== undefined) report(compute.recordSigning(hostId, records));
 		},
 		async bucketSource(hostId, sandboxId, bucketSourceId) {
 			if (compute?.bucketSource === undefined) throw new Error("The compute plane keeps no bucket sources here");
@@ -2304,6 +2327,20 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 			: new KantelError("not_supported", message);
 	};
 
+	const requireGitSigning = async (hostId: string, params: object, known?: HostRecord, boot = false): Promise<void> => {
+		const hasSigning =
+			(params as { gitSigning?: HostGitSigning }).gitSigning !== undefined ||
+			((params as { signing?: HostGitSigning | null }).signing !== undefined &&
+				(params as { signing?: HostGitSigning | null }).signing !== null);
+		if (!hasSigning) return;
+		const host = known ?? (await store.getHost(hostId));
+		if (host !== undefined && supportsGitSigning(host)) return;
+		const message = `The host ${host?.name ?? hostId} doesn't support host-side Git signing; upgrade its kantel-host`;
+		throw boot
+			? placementError("not_supported", "no_host_for_type", message)
+			: new KantelError("not_supported", message);
+	};
+
 	const onHost = async <T>(
 		hostId: string,
 		method: string,
@@ -2314,6 +2351,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// A boot puts a sandbox on a host: when that host can't take it, the error says why, as a placement's does.
 		const boot = BOOTS.has(method);
 		await requireEnforced(hostId, params, known, boot);
+		await requireGitSigning(hostId, params, known, boot);
 		try {
 			return await hub.call<T>(hostId, method, await trusted(hostId, params, known), callOptions);
 		} catch (error) {
@@ -2706,14 +2744,24 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		// Sticky disks go only where they can be attached.
 		const sticky = (input.stickyDisks?.length ?? 0) > 0;
 		if (sticky && tier !== "microvm") throw new KantelError("invalid", "Sticky disks are a microVM's");
-		const hosts = sticky
+		const stickyHosts = sticky
 			? enforcing.filter((host) => host.facts?.features?.includes(HOST_FEATURES.stickyDisks) === true)
 			: enforcing;
-		if (hosts.length === 0 && enforcing.length > 0) {
+		if (stickyHosts.length === 0 && enforcing.length > 0) {
 			throw placementError(
 				"not_supported",
 				"no_host_for_type",
 				"No host that could take it runs sticky disks; upgrade kantel-host",
+			);
+		}
+		// Host-side Git signing goes only to microVM hosts that support it.
+		const wantsGitSigning = input.gitSigning !== undefined && tier === "microvm";
+		const hosts = wantsGitSigning ? stickyHosts.filter(supportsGitSigning) : stickyHosts;
+		if (hosts.length === 0 && stickyHosts.length > 0) {
+			throw placementError(
+				"not_supported",
+				"no_host_for_type",
+				"No host that could take it supports host-side Git signing; upgrade kantel-host",
 			);
 		}
 		// Every candidate's placements in one read: the owners' isolates there, and the vCPUs booked.
@@ -3446,7 +3494,12 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 	 */
 	const moveCandidates = async (
 		source: PlacementRecord,
-		input: { readonly owner?: string; readonly hostIds?: readonly string[]; readonly to?: string },
+		input: {
+			readonly owner?: string;
+			readonly hostIds?: readonly string[];
+			readonly to?: string;
+			readonly gitSigning?: HostGitSigning;
+		},
 		live: boolean,
 	) => {
 		const sourceHost = sane(await hostOf(source.hostId));
@@ -3489,7 +3542,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 		}
 		// A host that fetches it (`sandboxMove`, in the mesh) and boots its disk: its root image is the same
 		// architecture's, and the host gets the image itself (`sandbox.import` refuses one it can't have).
-		const able = listed.filter((host) => moves(host) && meshed(host) && host.facts?.arch === sourceHost.facts?.arch);
+		const able = listed.filter(
+			(host) =>
+				moves(host) &&
+				meshed(host) &&
+				host.facts?.arch === sourceHost.facts?.arch &&
+				(input.gitSigning === undefined || supportsGitSigning(host)),
+		);
 		const shape = /^custom-/.test(source.size)
 			? { vcpus: source.vcpus, memoryMiB: source.memoryMiB, diskGiB: source.diskGiB }
 			: undefined;
@@ -3966,6 +4025,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							...(input.env === undefined ? {} : { env: input.env }),
 							...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
 							...(input.egress === undefined ? {} : { egress: input.egress }),
+							...(input.gitSigning === undefined || tier !== "microvm" ? {} : { gitSigning: input.gitSigning }),
 							...mountsParam(mounts),
 							...(sticky ? { stickyDisks: input.stickyDisks } : {}),
 						},
@@ -4030,6 +4090,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							newId,
 							snapshotId: shortId("snap"),
 							...(input.egress === undefined ? {} : { egress: input.egress }),
+							...(input.gitSigning === undefined ? {} : { gitSigning: input.gitSigning }),
+							...(input.clearGitSigning === true ? { clearGitSigning: true } : {}),
 							...(input.env === undefined ? {} : { env: input.env }),
 							...mountsParam(mounts),
 						},
@@ -4064,7 +4126,8 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					.map(sane)
 					.filter((host) => only === undefined || only.has(host.id))
 					.filter((host) => host.accountId === undefined || host.accountId === input.owner)
-					.filter((host) => !needsEgressPolicy(input.egress) || enforcesPolicy(host));
+					.filter((host) => !needsEgressPolicy(input.egress) || enforcesPolicy(host))
+					.filter((host) => input.gitSigning === undefined || supportsGitSigning(host));
 				const request = {
 					tier: "microvm" as const,
 					...(input.size === undefined ? {} : { size: input.size }),
@@ -4098,6 +4161,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					...(input.owner === undefined ? {} : { owner: input.owner }),
 					...(input.env === undefined ? {} : { env: input.env }),
 					...(input.egress === undefined ? {} : { egress: input.egress }),
+					...(input.gitSigning === undefined ? {} : { gitSigning: input.gitSigning }),
 				});
 				/**
 				 * The upgrade, kept on the isolate's placement before anything is sent: where its microVM may be, so one whose

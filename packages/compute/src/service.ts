@@ -64,6 +64,7 @@ import {
 	type BackendEgress,
 	type BackendEgressGrant,
 	type BackendFileEntry,
+	type BackendGitSigning,
 	type BackendHost,
 	type BackendMountStatus,
 	type BackendShape,
@@ -85,6 +86,8 @@ import {
 	isUpgradeOutcomeUnknown,
 	type MoveOutcome,
 	type Placement,
+	type ReportedSigning,
+	type ResolvedSigningKey,
 	refusedBeforeTheMachine,
 	type SandboxBackend,
 	type SandboxSpec,
@@ -120,7 +123,9 @@ import {
 	resolveEnvironments,
 	secretsVersionOf,
 	shadowedOf,
+	signingVersionOf,
 } from "./environment-resolution.ts";
+import { normaliseAllowedEmails, parseGitSigningKey } from "./git-signing.ts";
 import { createGithubApp, type GithubApp, importAppKey } from "./github-app.ts";
 import {
 	createGithubRunners,
@@ -183,6 +188,7 @@ import {
 	type StoredEgressEntry,
 	type StoredEnvironment,
 	type StoredEnvironmentFile,
+	type StoredEnvironmentGitSigning,
 	type StoredEnvironmentVariable,
 	type StoredEvacuation,
 	type StoredEvacuationSandbox,
@@ -281,7 +287,14 @@ interface Provisioning {
 /** What decides a sandbox's egress besides its account's proxy settings. */
 type EgressSubject = Pick<
 	StoredSandbox,
-	"environmentId" | "environmentIds" | "placeholders" | "grants" | "egressRevision" | "env" | "secretsFloor"
+	| "environmentId"
+	| "environmentIds"
+	| "placeholders"
+	| "grants"
+	| "egressRevision"
+	| "env"
+	| "secretsFloor"
+	| "signingFloor"
 >;
 
 /** What an hour of running costs: a microVM by its vCPUs and memory, an isolate by its memory (its CPU is shared). */
@@ -723,10 +736,20 @@ export interface ComputeService {
 	 */
 	sandboxEnv(hostId: string, sandboxId: string): Promise<{ env: { [name: string]: string } } | undefined>;
 	/**
+	 * A sandbox's host-side Git signing key, opened, for the host that asked over its link (`signing.fetch`): `undefined`
+	 * unless the sandbox is placed on `hostId`. Never persisted on the host or shown to sandboxes.
+	 */
+	signingKey(hostId: string, sandboxId: string): Promise<ResolvedSigningKey | undefined>;
+	/**
 	 * Keeps what a host's egress proxy reported, in each sandbox's log (the newest `MAX_EGRESS_ENTRIES`). Records for a
 	 * sandbox not on `hostId` are dropped, and a path's query string is never kept.
 	 */
 	recordEgress(hostId: string, records: readonly ReportedEgress[]): Promise<void>;
+	/**
+	 * Records host-side Git signing audit events (`sandbox.git_signed` / `sandbox.git_sign_refused`) reported by a host
+	 * for sandboxes placed on `hostId`.
+	 */
+	recordSigning(hostId: string, records: readonly ReportedSigning[]): Promise<void>;
 	/**
 	 * Fills in the bases a host says its sandboxes' disks and its snapshots are on (image patching, experimental: its
 	 * hello, its events and its snapshot list), so what was made before the host versioned its images shows its base
@@ -1234,6 +1257,7 @@ const STOP_LEASE_MS = 5 * 60_000;
 const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
 /** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
 const EGRESS_POLICY_FEATURE = "egress-policy";
+const GIT_SIGNING_FEATURE = "git-signing";
 /** What a host reports when it sends its own usage ticks (`HOST_FEATURES.usage` in @kantel/hosts). */
 const USAGE_FEATURE = "usage";
 /**
@@ -2256,6 +2280,8 @@ const newPlaceholder = (): string => randomSecret("kph_", 40);
 const variableAad = (environmentId: string, name: string) =>
 	sealedAt("environments", environmentId, `variables.${name}`);
 const fileAad = (environmentId: string, path: string) => sealedAt("environments", environmentId, `files.${path}`);
+const gitSigningAad = (environmentId: string, field: "privateKey" | "passphrase") =>
+	sealedAt("environments", environmentId, `gitSigning.${field}`);
 
 /** An environment's protected values' next version: it only moves on, and a time keeps it so across a deletion. */
 const nextSecretsVersion = (previous: number, at: number) => Math.max(previous + 1, at);
@@ -4546,7 +4572,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 	const egressFor = async (
 		accountId: string,
 		subject?: EgressSubject,
-	): Promise<{ egress?: BackendEgress; egressRevision?: number }> => {
+	): Promise<{
+		egress?: BackendEgress;
+		egressRevision?: number;
+		gitSigning?: BackendGitSigning;
+		clearGitSigning?: boolean;
+	}> => {
 		// The revision goes with no egress too: a boot states its egress, none being the host's default, and an update
 		// read before it (an empty egress included) is then older and refused.
 		const revision = subject?.egressRevision === undefined ? {} : { egressRevision: subject.egressRevision };
@@ -4555,10 +4586,25 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			subject === undefined ? [] : environmentsOf(subject),
 		]);
 		const resolution = resolved(environments);
+		const signingWinner = subject === undefined ? undefined : resolution.gitSigning;
+		const signing =
+			signingWinner !== undefined
+				? {
+						gitSigning: {
+							format: signingWinner.item.format,
+							keyId: signingWinner.item.keyId,
+							fingerprint: signingWinner.item.fingerprint,
+							publicKey: signingWinner.item.publicKey,
+							version: signingVersionOf(environments, subject?.signingFloor) ?? signingWinner.item.version,
+						},
+					}
+				: subject?.signingFloor !== undefined
+					? { clearGitSigning: true as const }
+					: {};
 		const bound = subject === undefined ? [] : protectedWinners(subject, resolution).map(({ winner }) => winner.item);
 		const grants = [...resolution.grants, ...(subject?.grants ?? [])];
 		const on = proxy?.enabled;
-		if (!on && bound.length === 0 && grants.length === 0) return revision;
+		if (!on && bound.length === 0 && grants.length === 0) return { ...revision, ...signing };
 		const base: BackendEgress = proxy?.enabled
 			? {
 					defaultAction: proxy.defaultAction,
@@ -4585,6 +4631,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(subject?.egressRevision === undefined ? {} : { revision: subject.egressRevision }),
 			},
 			...revision,
+			...signing,
 		};
 	};
 
@@ -4787,6 +4834,63 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		pushEgress(running);
 	}
 
+	/** Sends a running sandbox its current host-side Git signing config (or null to clear). */
+	async function deliverSigning(sandbox: StoredSandbox): Promise<void> {
+		if (sandbox.type !== "microvm") return;
+		const update = backend.updateSigning?.bind(backend);
+		if (update === undefined) return;
+		const environments = await environmentsOf(sandbox);
+		const resolution = resolved(environments);
+		const winner = resolution.gitSigning;
+		if (winner === undefined && sandbox.signingFloor === undefined) return;
+		const version = signingVersionOf(environments, sandbox.signingFloor) ?? now();
+		const signing: BackendGitSigning | null =
+			winner === undefined
+				? null
+				: {
+						format: winner.item.format,
+						keyId: winner.item.keyId,
+						fingerprint: winner.item.fingerprint,
+						publicKey: winner.item.publicKey,
+						version,
+					};
+		await update(sandbox.id, signing, version);
+	}
+
+	const pushSigning = (sandboxes: readonly StoredSandbox[]) => {
+		if (backend.updateSigning === undefined) return;
+		for (const sandbox of sandboxes) {
+			keepGoing(
+				(async () => {
+					const current = await store.sandboxes.get(sandbox.id);
+					if (current === undefined || current.state !== "running") return;
+					await deliverSigning(current);
+				})(),
+			);
+		}
+	};
+
+	/** Moves every live sandbox of `environment` past its previous signing version and pushes updates to running ones. */
+	async function pushEnvironmentSigning(
+		environment: Pick<StoredEnvironment, "id" | "accountId" | "signingVersion">,
+	): Promise<void> {
+		const live = await liveFrom(environment);
+		const bumped = (
+			await Promise.all(
+				live.map(async (sandbox) => {
+					const currentVersion = signingVersionOf(await environmentsOf(sandbox), sandbox.signingFloor) ?? 0;
+					const floor = nextSecretsVersion(Math.max(currentVersion, environment.signingVersion ?? 0), now());
+					return patchSandbox(sandbox.id, (current) => ({
+						...current,
+						signingFloor: Math.max(floor, current.signingFloor ?? 0),
+						egressRevision: later(current.egressRevision),
+					}));
+				}),
+			)
+		).filter((sandbox): sandbox is StoredSandbox => sandbox !== undefined);
+		pushSigning(bumped.filter((sandbox) => sandbox.state === "running"));
+	}
+
 	/**
 	 * Refuses a change that needs its sandboxes' hosts to enforce egress grants or protected variables when one of them
 	 * says it doesn't: it would drop them and carry on, and the change would show as applied. A sandbox on no host yet
@@ -4809,6 +4913,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 	}
 
+	async function requireSigningCapable(sandboxes: readonly StoredSandbox[]): Promise<void> {
+		const placed = sandboxes.filter(
+			(sandbox) =>
+				sandbox.type === "microvm" &&
+				sandbox.hostId !== undefined &&
+				(sandbox.state === "running" || sandbox.state === "starting"),
+		);
+		if (placed.length === 0) return;
+		const { hosts } = await backend.capabilities();
+		for (const sandbox of placed) {
+			const host = hosts.find((each) => each.id === sandbox.hostId);
+			// A backend that names no features (the stub) accepts signing without host-feature checks.
+			if (host?.features === undefined || host.features.includes(GIT_SIGNING_FEATURE)) continue;
+			throw new KantelError(
+				"not_supported",
+				`The sandbox ${sandbox.name}'s host (${host.name}) doesn't support host-side Git signing; upgrade its kantel-host first`,
+			);
+		}
+	}
+
 	const variableView = (variable: StoredEnvironmentVariable): computeSchema.EnvironmentVariable => ({
 		name: variable.name,
 		protected: variable.protected,
@@ -4823,6 +4947,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		mode: file.mode,
 		sizeBytes: file.sizeBytes,
 		updatedAt: file.updatedAt,
+	});
+
+	const gitSigningView = (signing: StoredEnvironmentGitSigning): computeSchema.EnvironmentGitSigning => ({
+		format: signing.format,
+		keyId: signing.keyId,
+		fingerprint: signing.fingerprint,
+		publicKey: signing.publicKey,
+		allowedEmails: [...signing.allowedEmails],
+		updatedAt: signing.updatedAt,
 	});
 
 	/** An environment as the API answers it; `account`, its account's sandboxes as `undeleted` read them, if read already. */
@@ -4840,6 +4973,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			files: environment.files.map(fileView),
 			repos: environment.repos.map(copyRepo),
 			grants: environment.grants.map(copyGrant),
+			...(environment.gitSigning === undefined ? {} : { gitSigning: gitSigningView(environment.gitSigning) }),
 			sandboxCount: made.length,
 			createdAt: environment.createdAt,
 			updatedAt: environment.updatedAt,
@@ -4980,6 +5114,17 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				shadowed: shadowedOf(environment, resolution, own, clonePath),
 				pending: pending.has(environment.id),
 			})),
+			...(resolution.gitSigning === undefined
+				? {}
+				: {
+						gitSigning: {
+							environmentId: resolution.gitSigning.environment.id,
+							format: resolution.gitSigning.item.format,
+							keyId: resolution.gitSigning.item.keyId,
+							fingerprint: resolution.gitSigning.item.fingerprint,
+							allowedEmails: [...resolution.gitSigning.item.allowedEmails],
+						},
+					}),
 		};
 	}
 
@@ -5006,7 +5151,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// The version its host was last given: the new floor goes past it, so no fetch answers below what it holds.
 		const had = await environmentsOf(sandbox);
 		const given = secretsVersionOf(had, sandbox.secretsFloor) ?? 0;
+		const hadSigning = signingVersionOf(had, sandbox.signingFloor);
 		const resolution = resolved(environments);
+		const signingTouched =
+			hadSigning !== undefined ||
+			had.some((environment) => environment.gitSigning !== undefined) ||
+			resolution.gitSigning !== undefined;
 		const attached = "attached" in how ? how.attached : undefined;
 		const moved = attached !== undefined && before.includes(attached.id);
 		// The set-up it needs, recorded with the change: a newly attached environment's files and repositories, and the
@@ -5025,6 +5175,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			refuseProtectedClashes(envLayersOf(sandbox).own, resolution, environments.length);
 			const enforced = attached.grants.length > 0 || attached.variables.some((variable) => variable.protected);
 			if (enforced) await requireEnforcing([sandbox]);
+			if (attached.gitSigning !== undefined) await requireSigningCapable([sandbox]);
 		}
 		let changed = await patchSandbox(sandbox.id, (current) => {
 			if (!sameIds(environmentIdsOf(current), before)) {
@@ -5046,6 +5197,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				placeholders,
 				// Past any version its host was given: it drops what it held, and fetches them again as they are now.
 				secretsFloor: nextSecretsVersion(Math.max(given, current.secretsFloor ?? 0), now()),
+				...(signingTouched
+					? { signingFloor: nextSecretsVersion(Math.max(hadSigning ?? 0, current.signingFloor ?? 0), now()) }
+					: {}),
 				egressRevision: later(current.egressRevision),
 			};
 		});
@@ -5061,6 +5215,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...environmentFields(environmentIdsOf(current).filter((id) => id !== attached.id)),
 				...pendingWithout(current, attached.id),
 				secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+				...(signingTouched
+					? {
+							signingFloor: nextSecretsVersion(
+								Math.max(hadSigning ?? 0, attached.signingVersion ?? 0, current.signingFloor ?? 0),
+								now(),
+							),
+						}
+					: {}),
 				egressRevision: later(current.egressRevision),
 			}));
 			if (changed === undefined) throw notFound("sandbox");
@@ -5079,6 +5241,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			if (updateSecrets !== undefined && done.secretsFloor !== undefined) {
 				keepGoing(updateSecrets(done.id, done.secretsFloor));
 			}
+			if (signingTouched) pushSigning([done]);
 			keepGoing(deliverEnv(done));
 			if (!gone && work.length > 0) {
 				// Its repositories as this call read them, which the caller (who may run commands) authorised.
@@ -7298,6 +7461,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				try {
 					await deliverEgress(lost);
+					await deliverSigning(lost).catch(() => undefined);
 					applied = lost.egressRevision;
 				} catch (error) {
 					// Refused for the egress it has still: stopped. One changed since is sent next round.
@@ -11288,6 +11452,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...environmentFields(environmentIdsOf(current)),
 						...(current.envLayers === undefined ? {} : { envLayers: current.envLayers }),
 						...(current.secretsFloor === undefined ? {} : { secretsFloor: current.secretsFloor }),
+						...(current.signingFloor === undefined ? {} : { signingFloor: current.signingFloor }),
 						...(current.pendingProvision === undefined ? {} : { pendingProvision: [...current.pendingProvision] }),
 						grants: (current.grants ?? []).map(copyGrant),
 						placeholders,
@@ -12748,15 +12913,22 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// then its sandboxes looked for: one attached meanwhile is either found here or sees it gone after its own write.
 			await store.environments.delete(environment.id);
 			const holding = await sandboxesWith(environment);
+			const hadSigning = environment.gitSigning !== undefined || environment.signingVersion !== undefined;
 			const detached = await Promise.all(
 				holding.map(async (sandbox) => {
 					// Past the version its host was last given, from all its environments (this one included).
-					const given = secretsVersionOf(await environmentsOf(sandbox), sandbox.secretsFloor) ?? 0;
+					const envList = await environmentsOf(sandbox);
+					const given = secretsVersionOf(envList, sandbox.secretsFloor) ?? 0;
 					const floor = nextSecretsVersion(Math.max(given, environment.secretsVersion), now());
+					const signingGiven = signingVersionOf(envList, sandbox.signingFloor) ?? 0;
+					const signingFloor = hadSigning
+						? nextSecretsVersion(Math.max(signingGiven, environment.signingVersion ?? 0), now())
+						: undefined;
 					return patchSandbox(sandbox.id, (current) => ({
 						...current,
 						...environmentFields(environmentIdsOf(current).filter((id) => id !== environment.id)),
 						secretsFloor: Math.max(floor, current.secretsFloor ?? 0),
+						...(signingFloor === undefined ? {} : { signingFloor: Math.max(signingFloor, current.signingFloor ?? 0) }),
 						...pendingWithout(current, environment.id),
 						egressRevision: later(current.egressRevision),
 					}));
@@ -12769,6 +12941,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					if (sandbox.secretsFloor !== undefined) keepGoing(updateSecrets(sandbox.id, sandbox.secretsFloor));
 				}
 			}
+			if (hadSigning) pushSigning(running);
 			pushEgress(running);
 			return undefined;
 		},
@@ -12955,6 +13128,136 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return { ...current, grants, updatedAt: later(current.updatedAt) };
 			});
 			await pushEnvironment(changed, undefined);
+			return environmentView(changed);
+		},
+
+		setEnvironmentGitSigning: async (principal, { params, body }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			await requireSigningCapable(await liveFrom(environment));
+			const sealer = requireSealer();
+			const at = now();
+			if (body.privateKey !== undefined) {
+				const parsed = await parseGitSigningKey(body.privateKey, body.format);
+				if (parsed.encrypted && (body.passphrase === undefined || body.passphrase === "")) {
+					throw new KantelError("invalid", "This private key is passphrase-protected; supply its passphrase");
+				}
+				const emails =
+					body.allowedEmails !== undefined
+						? normaliseAllowedEmails(body.allowedEmails)
+						: parsed.format === "gpg" && parsed.userIdEmails.length > 0
+							? normaliseAllowedEmails(parsed.userIdEmails)
+							: (() => {
+									throw new KantelError("invalid", "allowedEmails is required for this signing key");
+								})();
+				const sealedKey = await sealer.seal(body.privateKey, gitSigningAad(environment.id, "privateKey"));
+				const sealedPassphrase =
+					body.passphrase !== undefined && body.passphrase !== ""
+						? await sealer.seal(body.passphrase, gitSigningAad(environment.id, "passphrase"))
+						: undefined;
+				const changed = await changeEnvironment(environment.id, (current) => {
+					const version = nextSecretsVersion(current.signingVersion ?? current.gitSigning?.version ?? 0, at);
+					return {
+						...current,
+						gitSigning: {
+							format: parsed.format,
+							keyId: parsed.keyId,
+							fingerprint: parsed.fingerprint,
+							publicKey: parsed.publicKey,
+							allowedEmails: emails,
+							sealedKey,
+							...(sealedPassphrase === undefined ? {} : { sealedPassphrase }),
+							version,
+							updatedAt: at,
+						},
+						signingVersion: version,
+						updatedAt: later(current.updatedAt),
+					};
+				});
+				await pushEnvironmentSigning(changed);
+				return environmentView(changed);
+			}
+			if (environment.gitSigning === undefined) {
+				throw new KantelError("invalid", "privateKey is required when setting a new Git signing key");
+			}
+			if (body.format !== undefined && body.format !== environment.gitSigning.format) {
+				throw new KantelError(
+					"invalid",
+					`Cannot change format from ${environment.gitSigning.format} to ${body.format} without supplying a new privateKey`,
+				);
+			}
+			if (body.allowedEmails === undefined && body.passphrase === undefined) {
+				throw new KantelError("invalid", "Supply privateKey, allowedEmails or passphrase to update Git signing");
+			}
+			const nextEmails = body.allowedEmails === undefined ? undefined : normaliseAllowedEmails(body.allowedEmails);
+			const nextSealedPassphrase =
+				body.passphrase !== undefined && body.passphrase !== ""
+					? await sealer.seal(body.passphrase, gitSigningAad(environment.id, "passphrase"))
+					: undefined;
+			const clearPassphrase = body.passphrase === "";
+			if (clearPassphrase) {
+				const openedKey = await sealer.openText(
+					environment.gitSigning.sealedKey,
+					gitSigningAad(environment.id, "privateKey"),
+				);
+				const parsed = await parseGitSigningKey(openedKey, environment.gitSigning.format);
+				if (parsed.encrypted) {
+					throw new KantelError("invalid", "Cannot clear the passphrase of a passphrase-protected private key");
+				}
+			}
+			const changed = await changeEnvironment(environment.id, (current) => {
+				const existing = current.gitSigning;
+				if (existing === undefined) {
+					throw new KantelError("invalid", "privateKey is required when setting a new Git signing key");
+				}
+				if (body.format !== undefined && body.format !== existing.format) {
+					throw new KantelError(
+						"invalid",
+						`Cannot change format from ${existing.format} to ${body.format} without supplying a new privateKey`,
+					);
+				}
+				const version = nextSecretsVersion(current.signingVersion ?? existing.version, at);
+				const passphraseField = clearPassphrase
+					? {}
+					: nextSealedPassphrase !== undefined
+						? { sealedPassphrase: nextSealedPassphrase }
+						: existing.sealedPassphrase === undefined
+							? {}
+							: { sealedPassphrase: existing.sealedPassphrase };
+				return {
+					...current,
+					gitSigning: {
+						format: existing.format,
+						keyId: existing.keyId,
+						fingerprint: existing.fingerprint,
+						publicKey: existing.publicKey,
+						allowedEmails: nextEmails ?? existing.allowedEmails,
+						sealedKey: existing.sealedKey,
+						...passphraseField,
+						version,
+						updatedAt: at,
+					},
+					signingVersion: version,
+					updatedAt: later(current.updatedAt),
+				};
+			});
+			await pushEnvironmentSigning(changed);
+			return environmentView(changed);
+		},
+
+		deleteEnvironmentGitSigning: async (principal, { params }) => {
+			const environment = await environmentFor(principal, params.environmentId, "account:admin");
+			if (environment.gitSigning === undefined) throw notFound("git signing key");
+			const at = now();
+			const changed = await changeEnvironment(environment.id, (current) => {
+				const { gitSigning: _removed, ...rest } = current;
+				const version = nextSecretsVersion(current.signingVersion ?? current.gitSigning?.version ?? 0, at);
+				return {
+					...rest,
+					signingVersion: version,
+					updatedAt: later(current.updatedAt),
+				};
+			});
+			await pushEnvironmentSigning(changed);
 			return environmentView(changed);
 		},
 
@@ -14252,6 +14555,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				} else {
 					try {
 						await deliverEgress(lost);
+						await deliverSigning(lost).catch(() => undefined);
 						applied = lost.egressRevision ?? applied;
 						sent = true;
 					} catch (error) {
@@ -14713,11 +15017,13 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		requireSetupScope(principal, role, current);
 		const hosts = await moveHostsOf(principal, current);
 		const own = current.hostId;
+		const { gitSigning } = await egressFor(current.accountId, current);
 		const options = await backend.planMove?.(current.id, {
 			accountId: current.accountId,
 			eligibleHosts: hosts.filter((hostId) => hostId !== own),
 			...pooled(current.poolId),
 			...(current.state === "running" ? { running: true } : {}),
+			...(gitSigning === undefined ? {} : { gitSigning }),
 		});
 		// A backend that can't say answers none: the caller lists hosts as it would without a dry run.
 		if (options === undefined) return {};
@@ -16173,6 +16479,37 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			return { version: secretsVersionOf(environments, sandbox.secretsFloor) ?? now(), entries };
 		},
 
+		async signingKey(hostId, sandboxId) {
+			const sandbox = await store.sandboxes.get(sandboxId);
+			if (sandbox === undefined || sandbox.state === "deleted") return undefined;
+			let allowedHost = sandbox.hostId === hostId;
+			if (!allowedHost && sandbox.state === "starting" && backend.placedOn !== undefined) {
+				allowedHost = (await backend.placedOn(sandbox.id).catch(() => undefined)) === hostId;
+			}
+			if (!allowedHost) return undefined;
+			const environments = await environmentsOf(sandbox);
+			const version = signingVersionOf(environments, sandbox.signingFloor) ?? now();
+			const winner = resolved(environments).gitSigning;
+			if (winner === undefined) return { version, enabled: false };
+			const signing = winner.item;
+			const sealer = requireSealer();
+			const privateKey = await sealer.openText(signing.sealedKey, gitSigningAad(winner.environment.id, "privateKey"));
+			const passphrase =
+				signing.sealedPassphrase === undefined
+					? undefined
+					: await sealer.openText(signing.sealedPassphrase, gitSigningAad(winner.environment.id, "passphrase"));
+			return {
+				version,
+				enabled: true,
+				format: signing.format,
+				keyId: signing.keyId,
+				fingerprint: signing.fingerprint,
+				allowedEmails: [...signing.allowedEmails],
+				privateKey,
+				...(passphrase === undefined ? {} : { passphrase }),
+			};
+		},
+
 		async recordBases(hostId, reports) {
 			const valid = (base: unknown): base is string => typeof base === "string" && REPORTED_BASE.test(base);
 			// A report replaces what the record has when the record has no base, or when the host says it put the sandbox on
@@ -16285,6 +16622,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				}
 				const log = await egressLog(sandboxId);
 				for (const stale of log.slice(MAX_EGRESS_ENTRIES)) await store.egress.delete(stale.id);
+			}
+		},
+
+		async recordSigning(hostId, records) {
+			const batch = records.slice(-100);
+			for (const record of batch) {
+				if (typeof record?.sandboxId !== "string" || record.sandboxId === "") continue;
+				const sandbox = await store.sandboxes.get(record.sandboxId);
+				if (sandbox === undefined || sandbox.state === "deleted" || sandbox.hostId !== hostId) continue;
+				if (!(await accountOpen(sandbox.accountId))) continue;
+				const type: EventType = record.allowed ? "sandbox.git_signed" : "sandbox.git_sign_refused";
+				const format = record.format === "gpg" || record.format === "ssh" ? record.format : undefined;
+				const objectType =
+					record.objectType === "commit" || record.objectType === "tag" || record.objectType === "unknown"
+						? record.objectType
+						: undefined;
+				await emit(type, sandbox.accountId, {
+					sandbox,
+					data: {
+						...(format === undefined ? {} : { format }),
+						...(typeof record.keyId === "string" && record.keyId !== "" ? { keyId: clip(record.keyId, 64) } : {}),
+						...(typeof record.fingerprint === "string" && record.fingerprint !== ""
+							? { fingerprint: clip(record.fingerprint, 128) }
+							: {}),
+						...(objectType === undefined ? {} : { objectType }),
+						...(typeof record.committer === "string" && record.committer !== ""
+							? { committer: clip(record.committer, 320) }
+							: {}),
+						...(typeof record.object === "string" && record.object !== "" ? { object: clip(record.object, 128) } : {}),
+						...(typeof record.reason === "string" && record.reason !== "" ? { reason: clip(record.reason, 500) } : {}),
+					},
+				}).catch(() => undefined);
 			}
 		},
 

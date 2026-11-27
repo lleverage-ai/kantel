@@ -592,3 +592,75 @@ func TestSandboxGrantsAndEgress(t *testing.T) {
 		eq(t, "rest kept", shown.SandboxID, "sbx_test1")
 	})
 }
+
+func TestEnvGitSigning(t *testing.T) {
+	signedEnv := func(format string, emails []string) map[string]any {
+		return with(workEnvironment(), "gitSigning", map[string]any{
+			"format":        format,
+			"keyId":         "FD86B81C2E05E2A5",
+			"fingerprint":   "111122223333444455556666FD86B81C2E05E2A5",
+			"publicKey":     "-----BEGIN PGP PUBLIC KEY BLOCK-----\n...\n-----END PGP PUBLIC KEY BLOCK-----\n",
+			"allowedEmails": emails,
+			"updatedAt":     envNow,
+		})
+	}
+
+	t.Run("sets a Git signing key from --from or stdin, updates emails with --keep-key, shows it, and removes it", func(t *testing.T) {
+		dir := t.TempDir()
+		keyFile := filepath.Join(dir, "key.asc")
+		passFile := filepath.Join(dir, "pass.txt")
+		if err := os.WriteFile(keyFile, []byte("-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake\n-----END PGP PRIVATE KEY BLOCK-----\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(passFile, []byte("hunter2\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		r := envRoutes(routes{
+			"PUT /v1/environments/env_work1/git-signing": func(call) any {
+				return signedEnv("gpg", []string{"jeff@lleverage.ai"})
+			},
+			"DELETE /v1/environments/env_work1/git-signing": func(call) any {
+				return workEnvironment()
+			},
+		})
+		fromFile := run(t, []string{"env", "signing", "work", "--from", keyFile, "--format", "gpg", "--allow-email", "jeff@lleverage.ai", "--passphrase-file", passFile}, opts{routes: r})
+		eq(t, "from file exit", fromFile.Code, 0)
+		jsonEq(t, "from file body", last(fromFile).Body, `{"format":"gpg","privateKey":"-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake\n-----END PGP PRIVATE KEY BLOCK-----\n","passphrase":"hunter2","allowedEmails":["jeff@lleverage.ai"]}`)
+		contains(t, "from file out", fromFile.Stdout, "Saved gpg Git signing key FD86B81C2E05E2A5 in work (allowed: jeff@lleverage.ai).")
+
+		fromStdin := run(t, []string{"env", "signing", "work", "--allow-email", "jeff@lleverage.ai"}, opts{routes: r, stdin: "KEYDATA"})
+		eq(t, "stdin exit", fromStdin.Code, 0)
+		jsonEq(t, "stdin body", last(fromStdin).Body, `{"privateKey":"KEYDATA","allowedEmails":["jeff@lleverage.ai"]}`)
+
+		keepKey := run(t, []string{"env", "signing", "work", "--keep-key", "--allow-email", "jeff@lleverage.ai"}, opts{routes: r})
+		eq(t, "keep-key exit", keepKey.Code, 0)
+		jsonEq(t, "keep-key body", last(keepKey).Body, `{"allowedEmails":["jeff@lleverage.ai"]}`)
+
+		passStdin := run(t, []string{"env", "signing", "work", "--from", keyFile, "--passphrase-stdin"}, opts{routes: r, stdin: "secret-pass\n"})
+		eq(t, "passphrase-stdin exit", passStdin.Code, 0)
+		eq(t, "passphrase trimmed", last(passStdin).Body["passphrase"], "secret-pass")
+
+		conflictStdin := run(t, []string{"env", "signing", "work", "--passphrase-stdin"}, opts{routes: r, stdin: "both"})
+		eq(t, "conflict stdin exit", conflictStdin.Code, 2)
+		eq(t, "conflict stdin calls", len(conflictStdin.Calls), 0)
+
+		badFormat := run(t, []string{"env", "signing", "work", "--from", keyFile, "--format", "x509"}, opts{routes: r})
+		eq(t, "bad format exit", badFormat.Code, 2)
+
+		removed := run(t, []string{"env", "signing", "rm", "work"}, opts{routes: r})
+		eq(t, "rm exit", removed.Code, 0)
+		eq(t, "rm call", last(removed).Method+" "+last(removed).Path, "DELETE /v1/environments/env_work1/git-signing")
+		contains(t, "rm out", removed.Stdout, "Removed Git signing key from work.")
+
+		showRoutes := envRoutes(routes{
+			"GET /v1/environments/env_work1": func(call) any {
+				return signedEnv("gpg", []string{"jeff@lleverage.ai"})
+			},
+		})
+		shown := run(t, []string{"env", "show", "work"}, opts{routes: showRoutes})
+		eq(t, "show exit", shown.Code, 0)
+		contains(t, "show signing", shown.Stdout, "Git signing:")
+		contains(t, "show key id", shown.Stdout, "FD86B81C2E05E2A5")
+		contains(t, "show email", shown.Stdout, "jeff@lleverage.ai")
+	})
+}

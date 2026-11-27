@@ -44,6 +44,10 @@ func sandboxEnvironmentTable(c *cli.Context, list api.SandboxEnvironments) strin
 	if pending {
 		notes = append(notes, "Pending: its secret files and repos are set up when the sandbox next runs.")
 	}
+	if list.GitSigning != nil {
+		s := list.GitSigning
+		notes = append(notes, fmt.Sprintf("Git signing: %s %s (%s) from %s.", s.Format, s.KeyID, strings.Join(s.AllowedEmails, ", "), s.EnvironmentID))
+	}
 	if len(notes) > 0 {
 		out += "\n\n" + strings.Join(notes, "\n")
 	}
@@ -60,6 +64,9 @@ func shadowedText(s api.SandboxEnvironmentShadowed) string {
 		if len(p.items) > 0 {
 			parts = append(parts, p.what+" "+strings.Join(p.items, ", "))
 		}
+	}
+	if s.GitSigning != nil && *s.GitSigning {
+		parts = append(parts, "git-signing")
 	}
 	return strings.Join(parts, "; ")
 }

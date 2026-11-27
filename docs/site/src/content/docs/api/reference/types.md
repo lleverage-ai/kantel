@@ -755,7 +755,7 @@ An egress rule on top of the account's proxy settings: let a sandbox reach a hos
 
 ### Environment
 
-What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running ones at once.
+What a sandbox starts with: variables, secret files, repositories, egress grants and an optional host-side Git signing key. A change reaches sandboxes made after it, except a protected variable's value, bindings, grants and the Git signing key, which reach running ones at once.
 
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
@@ -767,6 +767,7 @@ What a sandbox starts with: variables, secret files, repositories and egress gra
 | `files` | [EnvironmentFile](/api/reference/types/#environmentfile)[] | yes |  |
 | `repos` | [EnvironmentRepo](/api/reference/types/#environmentrepo)[] | yes |  |
 | `grants` | [EgressGrant](/api/reference/types/#egressgrant)[] | yes |  |
+| `gitSigning` | [EnvironmentGitSigning](/api/reference/types/#environmentgitsigning) | no |  |
 | `sandboxCount` | integer | yes | How many sandboxes were made from it and still exist. |
 | `createdAt` | integer | yes | Epoch milliseconds, UTC. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
@@ -780,6 +781,19 @@ A secret file every new sandbox starts with. Its contents are write-only, and ke
 | `path` | string | yes | Absolute, such as `/home/user/.npmrc`. |
 | `mode` | integer | yes | Its permissions, such as 384 (0o600). |
 | `sizeBytes` | integer | yes |  |
+| `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
+
+### EnvironmentGitSigning
+
+Host-side Git commit and tag signing key attached to an environment. The private key stays sealed in Kantel and in host memory only; sandboxes never see it.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `format` | [GitSigningFormat](/api/reference/types/#gitsigningformat) | yes |  |
+| `keyId` | string | yes | Short identifier for the key: the 16-character OpenPGP key ID, or the SSH key's SHA-256 fingerprint prefix. |
+| `fingerprint` | string | yes | Full key fingerprint: 40-character uppercase OpenPGP fingerprint, or `SHA256:...` for SSH. |
+| `publicKey` | string | yes | Public key material: ASCII-armored OpenPGP public key, or OpenSSH `authorized_keys` line. |
+| `allowedEmails` | string[] | yes | Lower-case committer/tagger email addresses this key may sign for. |
 | `updatedAt` | integer | yes | Epoch milliseconds, UTC. |
 
 ### EnvironmentList
@@ -855,6 +869,12 @@ Something that happened in an account: what webhooks deliver and the history sho
 | `files` | integer | no | `sandbox.upgraded`: the files, links and directories moved. (minimum 0) |
 | `bytes` | integer | no | `sandbox.upgraded`: the files' bytes. (minimum 0) |
 | `durationMs` | integer | no | `sandbox.upgraded`: how long the upgrade took. (minimum 0) |
+| `format` | [GitSigningFormat](/api/reference/types/#gitsigningformat) | no |  |
+| `keyId` | string | no | `sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key ID. |
+| `fingerprint` | string | no | `sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key fingerprint. |
+| `objectType` | `"commit"` or `"tag"` or `"unknown"` | no | `sandbox.git_signed` / `sandbox.git_sign_refused`: the Git object kind. |
+| `committer` | string | no | `sandbox.git_signed` / `sandbox.git_sign_refused`: the committer or tagger email. |
+| `object` | string | no | `sandbox.git_signed` / `sandbox.git_sign_refused`: the commit tree or tag target object hash. |
 
 ### EventPage
 
@@ -865,9 +885,9 @@ Something that happened in an account: what webhooks deliver and the history sho
 
 ### EventType
 
-`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+`sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, `data.reason`). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 
-One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.oom_kill"` or `"sandbox.upgraded"` or `"sandbox.lost"` or `"sandbox.recreated"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
+One of: `"sandbox.created"` or `"sandbox.running"` or `"sandbox.stopped"` or `"sandbox.paused"` or `"sandbox.error"` or `"sandbox.degraded"` or `"sandbox.recovered"` or `"sandbox.environments_changed"` or `"sandbox.git_signed"` or `"sandbox.git_sign_refused"` or `"sandbox.oom_kill"` or `"sandbox.upgraded"` or `"sandbox.lost"` or `"sandbox.recreated"` or `"sandbox.deleted"` or `"snapshot.saved"` or `"snapshot.deleted"`.
 
 ### ExposedPort
 
@@ -1138,6 +1158,12 @@ When a runner's copy becomes the disk's next version: after a job that succeeded
 | --- | --- | --- | --- |
 | `githubRunners` | [GithubRunners](/api/reference/types/#githubrunners) | yes |  |
 | `webhookSecret` | string | yes | The secret to give the GitHub App's webhook. Shown once. |
+
+### GitSigningFormat
+
+OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace).
+
+One of: `"gpg"` or `"ssh"`.
 
 ### GrantKeys
 
@@ -1931,7 +1957,8 @@ A sandbox's environments, and what each gives it.
 | Field | Type | Required | Description |
 | --- | --- | --- | --- |
 | `sandboxId` | string | yes |  |
-| `environments` | [SandboxEnvironment](/api/reference/types/#sandboxenvironment)[] | yes | In order: where two set the same variable, file or repository path, the later one wins. |
+| `environments` | [SandboxEnvironment](/api/reference/types/#sandboxenvironment)[] | yes | In order: where two set the same variable, file, repository path or Git signing key, the later one wins. |
+| `gitSigning` | [SandboxGitSigning](/api/reference/types/#sandboxgitsigning) | no |  |
 
 ### SandboxEnvironmentShadowed
 
@@ -1942,6 +1969,19 @@ What of an environment a sandbox doesn't take from it.
 | `variables` | string[] | yes | Its variables a later environment, or the sandbox's own env, sets instead. |
 | `files` | string[] | yes | Its secret files' paths a later environment writes instead. |
 | `repos` | string[] | yes | Its repositories' paths a later environment clones into instead. |
+| `gitSigning` | boolean | no | True when a later environment's Git signing key shadows this one's. |
+
+### SandboxGitSigning
+
+The host-side Git signing key active on a sandbox.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `environmentId` | string | yes | The environment supplying the active signing key. |
+| `format` | [GitSigningFormat](/api/reference/types/#gitsigningformat) | yes |  |
+| `keyId` | string | yes |  |
+| `fingerprint` | string | yes |  |
+| `allowedEmails` | string[] | yes |  |
 
 ### SandboxHealth
 
@@ -2274,6 +2314,17 @@ One of: `"critical"` or `"high"` or `"medium"` or `"low"` or `"unknown"`.
 | `mode` | integer | no | Default 384 (0o600). (minimum 0, maximum 4095) |
 | `content` | string | no | At most 1 MiB, in `encoding`. Required for a new file; left out, the file keeps its contents. |
 | `encoding` | [FileEncoding](/api/reference/types/#fileencoding) | no |  |
+
+### SetEnvironmentGitSigningBody
+
+Sets or rotates an environment's host-side Git signing key, or updates its allowed emails.
+
+| Field | Type | Required | Description |
+| --- | --- | --- | --- |
+| `format` | [GitSigningFormat](/api/reference/types/#gitsigningformat) | no |  |
+| `privateKey` | string | no | ASCII-armored OpenPGP secret key or OpenSSH private key. Sealed at rest and never shown again. Leave out to update `allowedEmails` while keeping the stored key. (at most 262144 characters) |
+| `passphrase` | string | no | Passphrase to unlock the private key, if encrypted. Sealed at rest and never shown again. (at most 4096 characters) |
+| `allowedEmails` | string[] | no | Committer/tagger email addresses permitted to sign with this key. For GPG keys, defaults to the key's User ID email addresses if omitted. (at most 64 items) |
 
 ### SetEnvironmentVariableBody
 
