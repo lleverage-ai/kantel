@@ -676,6 +676,55 @@ const GuestFeatureFileParts = "file-parts"
 // while nothing writes to them. Reported by a host with the isolate tier.
 const FeatureIsolateFreeze = "isolate-freeze"
 
+// FeatureGitSigning (HOST_FEATURES.gitSigning): the host signs a microVM's Git commits and annotated tags with the
+// sandbox's signing key, which it fetches from Kantel (signing.fetch) and holds in memory only. It takes
+// sandbox.signing (SigningParams) and CreateParams', ResumeParams' and ForkParams' GitSigning, and reports its
+// decisions in "signing" events. Reported by a host with the microVM tier.
+const FeatureGitSigning = "git-signing"
+
+// GitSigning is the public metadata of a sandbox's host-side Git signing key.
+// Never holds private key material or passphrases.
+type GitSigning struct {
+	Format      string `json:"format"`
+	KeyID       string `json:"keyId"`
+	Fingerprint string `json:"fingerprint"`
+	PublicKey   string `json:"publicKey"`
+	Version     int64  `json:"version"`
+}
+
+// SigningParams is sandbox.signing (Kantel -> host, FeatureGitSigning): updates or clears a sandbox's Git signing config.
+type SigningParams struct {
+	SandboxID string      `json:"sandboxId"`
+	Signing   *GitSigning `json:"signing"`
+	Version   int64       `json:"version"`
+}
+
+// SigningKey is signing.fetch's answer (host -> Kantel, params SandboxRef): held in host memory only.
+type SigningKey struct {
+	Version       int64    `json:"version"`
+	Enabled       bool     `json:"enabled"`
+	Format        string   `json:"format,omitempty"`
+	KeyID         string   `json:"keyId,omitempty"`
+	Fingerprint   string   `json:"fingerprint,omitempty"`
+	AllowedEmails []string `json:"allowedEmails,omitempty"`
+	PrivateKey    string   `json:"privateKey,omitempty"`
+	Passphrase    string   `json:"passphrase,omitempty"`
+}
+
+// SigningRecord is one host-side Git signing decision, in a "signing" event. Never holds key material or commit bodies.
+type SigningRecord struct {
+	At          int64  `json:"at"`
+	SandboxID   string `json:"sandboxId"`
+	Allowed     bool   `json:"allowed"`
+	Format      string `json:"format,omitempty"`
+	KeyID       string `json:"keyId,omitempty"`
+	Fingerprint string `json:"fingerprint,omitempty"`
+	ObjectType  string `json:"objectType,omitempty"`
+	Committer   string `json:"committer,omitempty"`
+	Object      string `json:"object,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 // UpgradeParams is sandbox.upgrade's: the microVM's create params (Tier "microvm"), and Kantel's ID for the upgrade.
 // The host does one upgrade per OperationID: sent again (an answer lost), it answers the first's outcome.
 type UpgradeParams struct {
@@ -1345,6 +1394,11 @@ type CreateParams struct {
 	// runs and before anything is written into it: one that doesn't report each, as an agent too old to say any, has the
 	// create undone and refused as unsupported. An upgrade into a snapshot asks GuestFeatureRealTarget.
 	GuestFeatures []string `json:"guestFeatures,omitempty"`
+	// GitSigning is the public half of the sandbox's Git signing key (FeatureGitSigning, microVMs only): the guest is
+	// set up to sign with it through the host, which fetches the private key itself (signing.fetch). SigningVersion
+	// records the initial signing revision even when GitSigning is nil (such as a fork whose key was cleared).
+	GitSigning     *GitSigning `json:"gitSigning,omitempty"`
+	SigningVersion int64       `json:"signingVersion,omitempty"`
 }
 
 // StickyDisksMax is the most sticky disks a sandbox may have: the sticky drives every microVM has.
@@ -1654,6 +1708,11 @@ type ResumeParams struct {
 	// would, its disk kept, its memory lost) and booted cold from its disk, rather than answered as running. Without it,
 	// a host with FeatureGuestHealth does the same for a running sandbox whose guest agent doesn't answer.
 	Reset bool `json:"reset,omitempty"`
+	// GitSigning replaces the sandbox's Git signing key (FeatureGitSigning); ClearGitSigning removes it. Neither keeps
+	// the one it has. SigningVersion orders the change against concurrent sandbox.signing notifications.
+	GitSigning      *GitSigning `json:"gitSigning,omitempty"`
+	ClearGitSigning bool        `json:"clearGitSigning,omitempty"`
+	SigningVersion  int64       `json:"signingVersion,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its
@@ -1666,6 +1725,11 @@ type ForkParams struct {
 	SnapshotID string `json:"snapshotId,omitempty"`
 	// Env is the fork's own environment (its own protected placeholders); absent, it has its source's.
 	Env map[string]string `json:"env,omitempty"`
+	// GitSigning is the fork's own Git signing key (FeatureGitSigning); ClearGitSigning gives it none. Neither, it has
+	// its source's. SigningVersion orders the fork's initial signing state against concurrent updates.
+	GitSigning      *GitSigning `json:"gitSigning,omitempty"`
+	ClearGitSigning bool        `json:"clearGitSigning,omitempty"`
+	SigningVersion  int64       `json:"signingVersion,omitempty"`
 }
 
 // ExecParams is sandbox.exec. With Stream, output comes as events on the call before its result.
@@ -1956,6 +2020,8 @@ type Event struct {
 	At     int64  `json:"at"`
 	// Egress, for "egress" events: the proxy's decisions, at most 100 to an event.
 	Egress []EgressRecord `json:"egress,omitempty"`
+	// Signing, for "signing" events: the host's Git signing decisions (FeatureGitSigning), at most 100 to an event.
+	Signing []SigningRecord `json:"signing,omitempty"`
 }
 
 // UsageSample is a "usage" message's (host → Kantel, once welcomed, every UsageIntervalSeconds; FeatureUsage): the
@@ -2091,6 +2157,11 @@ const (
 	// sandbox.env is applied from it, not from its own params, so however late a notification lands, the env applied
 	// is the newest. A Kantel from before answers ErrUnsupported, and the params' env is applied.
 	MethodEnvFetch = "env.fetch"
+	// MethodSigning (Kantel -> host, SigningParams; FeatureGitSigning) updates or clears a sandbox's Git signing key;
+	// the result is {"ok": true}.
+	MethodSigning = "sandbox.signing"
+	// MethodSigningFetch (host -> Kantel, SandboxRef; FeatureGitSigning) answers a SigningKey.
+	MethodSigningFetch = "signing.fetch"
 	// MethodFileOpen (Kantel → host, FileOpenParams) streams a file's bytes on a port stream (FeatureFileStreams).
 	MethodFileOpen = "sandbox.files.open"
 	// MethodFileExtract (Kantel → host, FileExtractParams) extracts a tar in a sandbox into a directory with the host's

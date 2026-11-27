@@ -25,6 +25,9 @@ Ubuntu 26.04 LTS (pinned by digest, packages from `snapshot.ubuntu.com` at `UBUN
   `/etc/ssh/ssh_config.d/kantel.conf` uses for `github.com` (to `ssh.github.com:443`), with GitHub's published host
   keys in `/etc/ssh/ssh_known_hosts`: a sandbox has no DNS and no route out but the proxy, which ssh doesn't read
   (docs: Egress proxy, "Git over SSH"). Update the keys if GitHub changes them; the build checks they parse
+- `kantel-sign` (the guest agent), Git's signing program for a sandbox with a signing key: it sends each commit or tag
+  to the host over vsock port 1028, which signs it with a key the sandbox never holds. `/etc/gitconfig` includes
+  `/etc/kantel/gitconfig`, which the agent writes (with `/etc/kantel/signing.pub`) only while the sandbox has a key
 
 `/etc/kantel/image.json` records every version that went in (`kantel-image-info` writes it at build time), and
 `/usr/share/kantel/packages.tsv` every package with its source package. What the image bundles, under which licences,

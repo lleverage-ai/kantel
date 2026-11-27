@@ -409,6 +409,23 @@ export type StoredSandbox = Omit<
 	 */
 	readonly secretsFloor?: number;
 	/**
+	 * The least version its Git signing key is answered at (`signingKey`), moved on when an environment is attached,
+	 * detached or deleted, or its signing key changed, so its host drops any older key. Absent: none.
+	 */
+	readonly signingFloor?: number;
+	/**
+	 * The latest Git signing version its backend has taken (at its boot, or acknowledging `updateSigning`). Behind
+	 * `signingFloor`, a signing update or revocation didn't get through (its host away, say), and the sweep sends the
+	 * signing configuration as it is now.
+	 */
+	readonly signingApplied?: number;
+	/**
+	 * Canonical token of the committed signing inputs (attached environments' signing versions plus `signingFloor`)
+	 * last acknowledged by its backend. Differs from the current token whenever an environment signing change or
+	 * deletion committed even if the gateway stopped before updating `signingFloor`.
+	 */
+	readonly signingAppliedState?: string;
+	/**
 	 * Environment set-up it still has to do, recorded when the change that needs it is (a create, an attach, a move), and
 	 * taken off by its ID once a set-up has done it: never before, so a stopped set-up leaves it for the next, and never
 	 * an item another change added. Absent: none.
@@ -483,6 +500,7 @@ export type StoredSandbox = Omit<
 		/** The snapshot its microVM starts from (`upgradeSandbox`'s `from`), which it depends on while it is under way. */
 		readonly snapshotId?: string;
 		readonly egressRevision?: number;
+		readonly signingVersion?: number;
 	};
 	/**
 	 * A move to another host under way (it is `starting`, or `running` while a running sandbox's first copy is made; the
@@ -508,6 +526,7 @@ export type StoredSandbox = Omit<
 			readonly mountsAt?: number;
 		};
 		readonly egressRevision?: number;
+		readonly signingVersion?: number;
 		/**
 		 * Whether its memory goes with it, once its new host is chosen (said before anything is copied), and why not where
 		 * it was asked to and might have: the API's `move.keepMemory` and `restartReason`. Absent before then, and on a move
@@ -656,6 +675,21 @@ export interface StoredEnvironmentFile {
 	readonly updatedAt: number;
 }
 
+/** An environment's host-side Git signing key; its private key and optional passphrase stay sealed at rest. */
+export interface StoredEnvironmentGitSigning {
+	readonly format: computeSchema.GitSigningFormat;
+	readonly keyId: string;
+	readonly fingerprint: string;
+	readonly publicKey: string;
+	readonly allowedEmails: readonly string[];
+	/** Sealed with `gitSigningAad(envId, "privateKey")`. Never answered. */
+	readonly sealedKey: SealedValue;
+	/** Sealed with `gitSigningAad(envId, "passphrase")`. Never answered. */
+	readonly sealedPassphrase?: SealedValue;
+	readonly version: number;
+	readonly updatedAt: number;
+}
+
 export interface StoredEnvironment {
 	readonly id: string;
 	readonly accountId: string;
@@ -665,8 +699,11 @@ export interface StoredEnvironment {
 	readonly files: readonly StoredEnvironmentFile[];
 	readonly repos: readonly computeSchema.EnvironmentRepo[];
 	readonly grants: readonly computeSchema.EgressGrant[];
+	readonly gitSigning?: StoredEnvironmentGitSigning;
 	/** Moves on with every change to its protected variables, so a host knows its copy of them is stale. */
 	readonly secretsVersion: number;
+	/** Moves on with every change to its Git signing key (set, rotate, update or remove). */
+	readonly signingVersion?: number;
 	readonly createdAt: number;
 	readonly updatedAt: number;
 }

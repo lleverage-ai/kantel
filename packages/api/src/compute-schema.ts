@@ -3060,6 +3060,37 @@ export const EnvironmentRepo = Type.Object(
 	},
 );
 
+export const GitSigningFormat = Type.Union([Type.Literal("gpg"), Type.Literal("ssh")], {
+	title: "GitSigningFormat",
+	description: "OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace).",
+});
+
+export const EnvironmentGitSigning = Type.Object(
+	{
+		format: GitSigningFormat,
+		keyId: Type.String({
+			description:
+				"Short identifier for the key: the 16-character OpenPGP key ID, or the SSH key's SHA-256 fingerprint prefix.",
+		}),
+		fingerprint: Type.String({
+			description: "Full key fingerprint: 40-character uppercase OpenPGP fingerprint, or `SHA256:...` for SSH.",
+		}),
+		publicKey: Type.String({
+			description: "Public key material: ASCII-armored OpenPGP public key, or OpenSSH `authorized_keys` line.",
+		}),
+		allowedEmails: Type.Array(Type.String(), {
+			description: "Lower-case committer/tagger email addresses this key may sign for.",
+		}),
+		updatedAt: Timestamp,
+	},
+	{
+		title: "EnvironmentGitSigning",
+		description:
+			"Host-side Git commit and tag signing key attached to an environment. The private key stays sealed in Kantel " +
+			"and in host memory only; sandboxes never see it.",
+	},
+);
+
 export const Environment = Type.Object(
 	{
 		id: id("The environment's ID, such as `env_4kq9x2mt`."),
@@ -3070,6 +3101,7 @@ export const Environment = Type.Object(
 		files: Type.Array(EnvironmentFile),
 		repos: Type.Array(EnvironmentRepo),
 		grants: Type.Array(EgressGrant),
+		gitSigning: Type.Optional(EnvironmentGitSigning),
 		sandboxCount: Type.Integer({ description: "How many sandboxes were made from it and still exist." }),
 		createdAt: Timestamp,
 		updatedAt: Timestamp,
@@ -3077,9 +3109,9 @@ export const Environment = Type.Object(
 	{
 		title: "Environment",
 		description:
-			"What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches " +
-			"sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running " +
-			"ones at once.",
+			"What a sandbox starts with: variables, secret files, repositories, egress grants and an optional host-side " +
+			"Git signing key. A change reaches sandboxes made after it, except a protected variable's value, bindings, " +
+			"grants and the Git signing key, which reach running ones at once.",
 	},
 );
 
@@ -3134,6 +3166,40 @@ export const SetEnvironmentVariableBody = Type.Object(
 		),
 	},
 	{ title: "SetEnvironmentVariableBody" },
+);
+
+export const SetEnvironmentGitSigningBody = Type.Object(
+	{
+		format: Type.Optional(GitSigningFormat),
+		privateKey: Type.Optional(
+			Type.String({
+				minLength: 1,
+				maxLength: 262_144,
+				description:
+					"ASCII-armored OpenPGP secret key or OpenSSH private key. Sealed at rest and never shown again. " +
+					"Leave out to update `allowedEmails` while keeping the stored key.",
+			}),
+		),
+		passphrase: Type.Optional(
+			Type.String({
+				maxLength: 4096,
+				description: "Passphrase to unlock the private key, if encrypted. Sealed at rest and never shown again.",
+			}),
+		),
+		allowedEmails: Type.Optional(
+			Type.Array(Type.String({ minLength: 1, maxLength: 320 }), {
+				minItems: 1,
+				maxItems: 64,
+				description:
+					"Committer/tagger email addresses permitted to sign with this key. For GPG keys, defaults to the " +
+					"key's User ID email addresses if omitted.",
+			}),
+		),
+	},
+	{
+		title: "SetEnvironmentGitSigningBody",
+		description: "Sets or rotates an environment's host-side Git signing key, or updates its allowed emails.",
+	},
 );
 
 export const SetEnvironmentFileBody = Type.Object(
@@ -3282,8 +3348,22 @@ export const SandboxEnvironmentShadowed = Type.Object(
 		repos: Type.Array(Type.String(), {
 			description: "Its repositories' paths a later environment clones into instead.",
 		}),
+		gitSigning: Type.Optional(
+			Type.Boolean({ description: "True when a later environment's Git signing key shadows this one's." }),
+		),
 	},
 	{ title: "SandboxEnvironmentShadowed", description: "What of an environment a sandbox doesn't take from it." },
+);
+
+export const SandboxGitSigning = Type.Object(
+	{
+		environmentId: Type.String({ description: "The environment supplying the active signing key." }),
+		format: GitSigningFormat,
+		keyId: Type.String(),
+		fingerprint: Type.String(),
+		allowedEmails: Type.Array(Type.String()),
+	},
+	{ title: "SandboxGitSigning", description: "The host-side Git signing key active on a sandbox." },
 );
 
 export const SandboxEnvironment = Type.Object(
@@ -3302,8 +3382,10 @@ export const SandboxEnvironments = Type.Object(
 	{
 		sandboxId: Type.String(),
 		environments: Type.Array(SandboxEnvironment, {
-			description: "In order: where two set the same variable, file or repository path, the later one wins.",
+			description:
+				"In order: where two set the same variable, file, repository path or Git signing key, the later one wins.",
 		}),
+		gitSigning: Type.Optional(SandboxGitSigning),
 	},
 	{ title: "SandboxEnvironments", description: "A sandbox's environments, and what each gives it." },
 );
@@ -3711,6 +3793,8 @@ export const EventType = Type.Union(
 		Type.Literal("sandbox.degraded"),
 		Type.Literal("sandbox.recovered"),
 		Type.Literal("sandbox.environments_changed"),
+		Type.Literal("sandbox.git_signed"),
+		Type.Literal("sandbox.git_sign_refused"),
 		Type.Literal("sandbox.oom_kill"),
 		Type.Literal("sandbox.upgraded"),
 		Type.Literal("sandbox.lost"),
@@ -3730,6 +3814,9 @@ export const EventType = Type.Union(
 			"`unresponsive`), with `sandbox.recovered` once it answers again. " +
 			"`sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or " +
 			"`data.detached`, and `data.environmentIds`, in order). " +
+			"`sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the " +
+			"sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, " +
+			"`data.reason`). " +
 			"`sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since " +
 			"its last reading); it keeps running. " +
 			"`sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): " +
@@ -3794,6 +3881,31 @@ export const Event = Type.Object(
 				bytes: Type.Optional(Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: the files' bytes." })),
 				durationMs: Type.Optional(
 					Type.Integer({ minimum: 0, description: "`sandbox.upgraded`: how long the upgrade took." }),
+				),
+				format: Type.Optional(GitSigningFormat),
+				keyId: Type.Optional(
+					Type.String({ description: "`sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key ID." }),
+				),
+				fingerprint: Type.Optional(
+					Type.String({
+						description: "`sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key fingerprint.",
+					}),
+				),
+				objectType: Type.Optional(
+					Type.Union([Type.Literal("commit"), Type.Literal("tag"), Type.Literal("unknown")], {
+						description: "`sandbox.git_signed` / `sandbox.git_sign_refused`: the Git object kind.",
+					}),
+				),
+				committer: Type.Optional(
+					Type.String({
+						description: "`sandbox.git_signed` / `sandbox.git_sign_refused`: the committer or tagger email.",
+					}),
+				),
+				object: Type.Optional(
+					Type.String({
+						description:
+							"`sandbox.git_signed` / `sandbox.git_sign_refused`: the commit tree or tag target object hash.",
+					}),
 				),
 			},
 			{ title: "EventData" },
@@ -5152,6 +5264,10 @@ export type EgressGrantInput = Static<typeof EgressGrantInput>;
 export type EnvironmentVariable = Static<typeof EnvironmentVariable>;
 export type EnvironmentFile = Static<typeof EnvironmentFile>;
 export type EnvironmentRepo = Static<typeof EnvironmentRepo>;
+export type GitSigningFormat = Static<typeof GitSigningFormat>;
+export type EnvironmentGitSigning = Static<typeof EnvironmentGitSigning>;
+export type SetEnvironmentGitSigningBody = Static<typeof SetEnvironmentGitSigningBody>;
+export type SandboxGitSigning = Static<typeof SandboxGitSigning>;
 export type Environment = Static<typeof Environment>;
 export type EgressEntry = Static<typeof EgressEntry>;
 export type SandboxProtectedVariable = Static<typeof SandboxProtectedVariable>;
@@ -5276,6 +5392,8 @@ export const EVENT_TYPES: readonly EventType[] = [
 	"sandbox.degraded",
 	"sandbox.recovered",
 	"sandbox.environments_changed",
+	"sandbox.git_signed",
+	"sandbox.git_sign_refused",
 	"sandbox.oom_kill",
 	"sandbox.upgraded",
 	"sandbox.lost",

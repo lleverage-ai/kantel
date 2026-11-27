@@ -213,6 +213,7 @@ func (h *Host) upgrade(ctx context.Context, p proto.UpgradeParams) (proto.Sandbo
 		}
 	}
 	h.requireProtected(p.SandboxID, p.Egress)
+	h.requireSigning(p.SandboxID, p.GitSigning)
 	e, fresh, err := h.prepareEgress(microvm.Tier, p.SandboxID, p.Egress)
 	if err != nil {
 		thaw()

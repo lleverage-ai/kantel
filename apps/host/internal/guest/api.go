@@ -30,6 +30,61 @@ type Identity struct {
 	SSHAuthorizedKeys []string `json:"sshAuthorizedKeys,omitempty"`
 	// Env is extra environment for every command run through the agent (the sandbox's own variables).
 	Env map[string]string `json:"env,omitempty"`
+	// GitSigning is the sandbox's Git signing key's public half: the agent writes GitConfigFile and SigningPubFile
+	// for it, so Git signs through kantel-sign and the host. Nil removes them. (An agent from before it ignores it.)
+	GitSigning *GitSigningConfig `json:"gitSigning,omitempty"`
+}
+
+// GitSigningConfig is the public half of a sandbox's Git signing key (POST /signing, and Identity.GitSigning). The
+// private key stays on the host, which signs over SignPort.
+type GitSigningConfig struct {
+	// Format is "gpg" or "ssh".
+	Format      string `json:"format"`
+	KeyID       string `json:"keyId"`
+	Fingerprint string `json:"fingerprint"`
+	PublicKey   string `json:"publicKey"`
+}
+
+// GitConfigFile is the Git configuration the agent writes for a sandbox with a signing key, which the system's
+// /etc/gitconfig includes; SigningPubFile is the key's public half beside it.
+const (
+	GitConfigFile  = "/etc/kantel/gitconfig"
+	SigningPubFile = "/etc/kantel/signing.pub"
+)
+
+// SignPort is the host's vsock port for a sandbox's Git signing (kantel-sign), handed by Firecracker to the Unix
+// socket <uds>_1028 in the VM's directory, so the host knows which sandbox asks (HTTP/1.1):
+//
+//	GET /status  the sandbox's signing key's public metadata, or enabled false
+//	POST /sign {"format": "gpg"|"ssh", "payload": base64}  a signature of a Git commit or annotated tag
+const SignPort = 1028
+
+// SignStatus is GET /status's answer on SignPort: what the sandbox's key is, never the key.
+type SignStatus struct {
+	Enabled       bool     `json:"enabled"`
+	Format        string   `json:"format,omitempty"`
+	KeyID         string   `json:"keyId,omitempty"`
+	Fingerprint   string   `json:"fingerprint,omitempty"`
+	AllowedEmails []string `json:"allowedEmails,omitempty"`
+}
+
+// SignRequest is POST /sign's body on SignPort.
+type SignRequest struct {
+	// Format, when set, is the format the caller signs in (Git's gpg.format): one the key isn't is refused.
+	Format string `json:"format,omitempty"`
+	// Payload is the object to sign, base64.
+	Payload string `json:"payload"`
+}
+
+// SignAnswer is POST /sign's answer on SignPort: the signature, and what Git's gpg.program reports of it.
+type SignAnswer struct {
+	Signature   string `json:"signature"`
+	Format      string `json:"format"`
+	KeyID       string `json:"keyId"`
+	Fingerprint string `json:"fingerprint"`
+	PKAlgo      uint8  `json:"pkAlgo"`
+	HashAlgo    uint8  `json:"hashAlgo"`
+	Timestamp   int64  `json:"timestamp"`
 }
 
 // ExecRequest runs one command. Either Command (run by `bash -lc`) or Argv.
@@ -118,7 +173,7 @@ type Health struct {
 const ReadyFile = "/etc/kantel/ready"
 
 // InjectedBin is where kantel-guest init puts the agent in an image it boots (a tmpfs, so the image's own files and
-// the sandbox's disk are untouched): kantel-guest, and kantel-doctor and kantel-connect beside it.
+// the sandbox's disk are untouched): kantel-guest, and kantel-doctor, kantel-connect and kantel-sign beside it.
 const InjectedBin = "/.kantel/bin"
 
 // HostKeyPath is the sandbox's SSH host key, which a fresh identity makes (sshd's, or the injected agent's server).

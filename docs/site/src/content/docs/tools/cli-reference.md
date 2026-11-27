@@ -16,7 +16,7 @@ Every command of `kantel` as `kantel help <command>` shows it. [Command line](/t
 - **Commands and files:** [`exec`](#kantel-exec), [`attach`](#kantel-attach), [`ps`](#kantel-ps), [`kill`](#kantel-kill), [`files ls`](#kantel-files-ls), [`files cat`](#kantel-files-cat), [`files put`](#kantel-files-put), [`files get`](#kantel-files-get), [`files rm`](#kantel-files-rm), [`scp`](#kantel-scp), [`push`](#kantel-push), [`sync`](#kantel-sync)
 - **Ports, SSH, desktop and browser:** [`host`](#kantel-host), [`port list`](#kantel-port-list), [`port hide`](#kantel-port-hide), [`ssh`](#kantel-ssh), [`desktop`](#kantel-desktop), [`browser`](#kantel-browser)
 - **Snapshots:** [`snapshot list`](#kantel-snapshot-list), [`snapshot info`](#kantel-snapshot-info), [`snapshot take`](#kantel-snapshot-take), [`snapshot save`](#kantel-snapshot-save), [`snapshot files`](#kantel-snapshot-files), [`snapshot rm`](#kantel-snapshot-rm)
-- **Environments and egress:** [`env list`](#kantel-env-list), [`env create`](#kantel-env-create), [`env show`](#kantel-env-show), [`env delete`](#kantel-env-delete), [`env attach`](#kantel-env-attach), [`env detach`](#kantel-env-detach), [`env set`](#kantel-env-set), [`env unset`](#kantel-env-unset), [`env file`](#kantel-env-file), [`env file rm`](#kantel-env-file-rm), [`env repo add`](#kantel-env-repo-add), [`env repo rm`](#kantel-env-repo-rm), [`env grant`](#kantel-env-grant), [`env grant rm`](#kantel-env-grant-rm), [`egress`](#kantel-egress), [`grant`](#kantel-grant), [`grant rm`](#kantel-grant-rm)
+- **Environments and egress:** [`env list`](#kantel-env-list), [`env create`](#kantel-env-create), [`env show`](#kantel-env-show), [`env delete`](#kantel-env-delete), [`env attach`](#kantel-env-attach), [`env detach`](#kantel-env-detach), [`env set`](#kantel-env-set), [`env unset`](#kantel-env-unset), [`env file`](#kantel-env-file), [`env file rm`](#kantel-env-file-rm), [`env signing`](#kantel-env-signing), [`env signing rm`](#kantel-env-signing-rm), [`env repo add`](#kantel-env-repo-add), [`env repo rm`](#kantel-env-repo-rm), [`env grant`](#kantel-env-grant), [`env grant rm`](#kantel-env-grant-rm), [`egress`](#kantel-egress), [`grant`](#kantel-grant), [`grant rm`](#kantel-grant-rm)
 - **API keys and personal tokens:** [`key list`](#kantel-key-list), [`key create`](#kantel-key-create), [`key rotate`](#kantel-key-rotate), [`key revoke`](#kantel-key-revoke), [`token list`](#kantel-token-list), [`token create`](#kantel-token-create), [`token revoke`](#kantel-token-revoke)
 - **Accounts and organisations:** [`org list`](#kantel-org-list), [`org use`](#kantel-org-use), [`org show`](#kantel-org-show), [`org create`](#kantel-org-create), [`org join`](#kantel-org-join), [`org set`](#kantel-org-set), [`org usage`](#kantel-org-usage), [`org leave`](#kantel-org-leave), [`org delete`](#kantel-org-delete), [`member list`](#kantel-member-list), [`member role`](#kantel-member-role), [`member rm`](#kantel-member-rm), [`invite list`](#kantel-invite-list), [`invite create`](#kantel-invite-create), [`invite revoke`](#kantel-invite-revoke)
 - **Webhooks, events and telemetry:** [`webhook list`](#kantel-webhook-list), [`webhook create`](#kantel-webhook-create), [`webhook rm`](#kantel-webhook-rm), [`webhook test`](#kantel-webhook-test), [`events`](#kantel-events), [`telemetry get`](#kantel-telemetry-get), [`telemetry set`](#kantel-telemetry-set), [`telemetry rm`](#kantel-telemetry-rm)
@@ -967,6 +967,40 @@ Remove a secret file from an environment.
 
 ```sh
 kantel env file rm <env> <path> [flags]
+```
+
+### kantel env signing
+
+Set or rotate a host-side Git signing key (OpenPGP or OpenSSH) for commits and tags.
+
+```sh
+kantel env signing <env> [flags]
+```
+
+Private signing keys are sealed at rest, held in kantel-host memory only, and never written into sandboxes, snapshots or forks. Only validated Git commits and annotated tags whose committer or tagger email is in --allow-email are signed.
+
+```sh
+gpg --armor --export-secret-keys KEYID | kantel env signing work --allow-email dev@example.com
+kantel env signing work --from ~/.ssh/id_ed25519 --allow-email dev@example.com
+```
+
+kantel env signing rm &lt;env&gt; removes it.
+
+| Flag | What it does |
+| --- | --- |
+| `--from <file>` | Read the private key from this local file; default stdin |
+| `--format <gpg\|ssh>` | Key format (gpg or ssh); auto-detected from the key if omitted |
+| `--allow-email <email>` | Committer/tagger email allowed to sign with this key; repeat for multiple |
+| `--passphrase-file <file>` | Read the key's passphrase from this local file |
+| `--passphrase-stdin` | Read the key's passphrase from stdin (use with --from or --keep-key) |
+| `--keep-key` | Keep the stored private key and update --allow-email or passphrase only |
+
+### kantel env signing rm
+
+Remove an environment's host-side Git signing key.
+
+```sh
+kantel env signing rm <env> [flags]
 ```
 
 ### kantel env repo add

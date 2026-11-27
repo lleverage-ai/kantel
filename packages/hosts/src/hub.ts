@@ -49,6 +49,8 @@ import {
 	HostMethods,
 	type HostMountStatus,
 	type HostSecrets,
+	type HostSigningKey,
+	type HostSigningRecord,
 	type HostWelcome,
 	parseHostMessage,
 } from "./protocol.ts";
@@ -205,8 +207,15 @@ export interface HostHubOptions {
 	 * (answered `not_found`). Absent, every fetch is answered `unsupported`, and the host applies the env it was sent.
 	 */
 	env?(hostId: string, sandboxId: string): Promise<HostEnvAnswer | undefined>;
+	/**
+	 * A host's `signing.fetch`: the sandbox's Git signing key (for host memory only), or `undefined` unless the sandbox
+	 * is on `hostId` (answered `not_found`). Absent, every fetch is answered `unavailable`.
+	 */
+	signing?(hostId: string, sandboxId: string): Promise<HostSigningKey | undefined>;
 	/** A batch of what a host's egress proxy handled (an `egress` event). */
 	onEgress?(hostId: string, records: readonly HostEgressRecord[]): void | Promise<void>;
+	/** A batch of host-side Git signing decisions (a `signing` event). */
+	onSigning?(hostId: string, records: readonly HostSigningRecord[]): void | Promise<void>;
 	/**
 	 * A host's `bucket.fetch`: the bucket source with its credentials, or `undefined` unless the sandbox is on `hostId`
 	 * and mounts it (answered `not_found`). Absent, every fetch is answered `unavailable`.
@@ -664,7 +673,34 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 	};
 
-	/** Answers a host's call (`secrets.fetch`, `env.fetch`, `bucket.fetch` or `disk.locate`) for the host its connection was checked against. */
+	/** Answers a host's `signing.fetch`, for the host the connection was checked against. */
+	const answerSigning = async (
+		connection: Connection,
+		params: unknown,
+		reply: (body: { readonly result: unknown } | { readonly error: HostError }) => void,
+	) => {
+		const sandboxId = (params as { readonly sandboxId?: unknown } | null | undefined)?.sandboxId;
+		if (typeof sandboxId !== "string" || sandboxId === "") {
+			reply({ error: { code: "not_found", message: "signing.fetch names no sandbox" } });
+			return;
+		}
+		if (!connection.welcomed || options.signing === undefined) {
+			reply({ error: { code: "unavailable", message: "Kantel has no Git signing key to give now" } });
+			return;
+		}
+		try {
+			const key = await options.signing(connection.hostId, sandboxId);
+			if (key === undefined) {
+				reply({ error: { code: "not_found", message: `No sandbox ${sandboxId} on this host` } });
+			} else {
+				reply({ result: key });
+			}
+		} catch {
+			reply({ error: { code: "unavailable", message: "The sandbox's Git signing key is unavailable now" } });
+		}
+	};
+
+	/** Answers a host's call (`secrets.fetch`, `env.fetch`, `signing.fetch`, `bucket.fetch` or `disk.locate`) for the host its connection was checked against. */
 	const answer = async (connection: Connection, message: HostMessage) => {
 		const id = message.id;
 		if (typeof id !== "string" || id === "") return;
@@ -676,6 +712,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 		}
 		if (message.method === HostMethods.envFetch) {
 			await answerEnv(connection, message.params, reply);
+			return;
+		}
+		if (message.method === HostMethods.signingFetch) {
+			await answerSigning(connection, message.params, reply);
 			return;
 		}
 		if (message.method === HostMethods.diskLocate) {
@@ -714,6 +754,15 @@ export function createHostHub(options: HostHubOptions): HostHub {
 			if (kept instanceof Promise) kept.catch(() => undefined);
 		} catch {
 			// A log that fails to keep is no reason to drop the host.
+		}
+	};
+
+	const signing = (hostId: string, records: readonly HostSigningRecord[]) => {
+		try {
+			const kept = options.onSigning?.(hostId, records);
+			if (kept instanceof Promise) kept.catch(() => undefined);
+		} catch {
+			// An audit report that fails to keep is no reason to drop the host.
 		}
 	};
 
@@ -899,6 +948,10 @@ export function createHostHub(options: HostHubOptions): HostHub {
 						}
 						if (message.event.kind === "egress") {
 							if (connection.welcomed && Array.isArray(message.event.egress)) egress(hostId, message.event.egress);
+							return;
+						}
+						if (message.event.kind === "signing") {
+							if (connection.welcomed && Array.isArray(message.event.signing)) signing(hostId, message.event.signing);
 							return;
 						}
 						if (message.event.kind === HOST_EVENT_MOUNTS) {

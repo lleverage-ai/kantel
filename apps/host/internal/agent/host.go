@@ -32,6 +32,7 @@ import (
 	"github.com/lleverage-ai/kantel/apps/host/internal/microvm"
 	"github.com/lleverage-ai/kantel/apps/host/internal/network"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
+	"github.com/lleverage-ai/kantel/apps/host/internal/signing"
 )
 
 // Tier is what each sandbox tier offers the host.
@@ -87,6 +88,10 @@ type Host struct {
 	cas *egress.CAStore
 	// egressLog batches the proxy's records to Kantel.
 	egressLog *egressBatcher
+	// signing signs microVMs' Git commits and tags with keys fetched from Kantel (signing.fetch) and held in memory
+	// only; signingLog batches its decisions to Kantel.
+	signing    *signing.Manager
+	signingLog *signingBatcher
 	// lifecycle is one CA-changing lifecycle call at a time per sandbox.
 	lifecycle sandboxLocks
 	// runs are the commands with a control plane's ID running, and the detached ones the host ran (commands.go).
@@ -154,6 +159,9 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 	h.proxy.CAs = h.cas
 	h.egressLog = newEgressBatcher(h.sendEgress, h.connected)
 	h.proxy.OnRecord = h.egressLog.add
+	h.signingLog = newSigningBatcher(h.sendSigning, h.connected)
+	h.signing = signing.NewManager(signing.NewStore(h.fetchSigning))
+	h.signing.OnRecord = h.signingLog.add
 	dest, err := destinations(cfg)
 	if err != nil {
 		return nil, err
@@ -209,6 +217,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		}
 		mv, err := microvm.New(microvm.Config{
 			SpoolDir: spoolDir, SpoolMaxMiB: spoolMax, Initrd: initrd, TemplateRegistry: cfg.TemplateRegistry, Mounts: mnt,
+			Signing:         h.signing,
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
 			FetchSticky: h.fetchStickyLater, FetchRootfs: h.fetchRootfs, FetchTemplate: h.fetchTemplate,
@@ -289,6 +298,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 		mv.PrepareTemplates()
 	}
 	go h.egressLog.run()
+	go h.signingLog.run()
 	return h, nil
 }
 
@@ -387,6 +397,9 @@ func (h *Host) makeFacts() proto.Facts {
 	}
 	if _, ok := h.tiers[microvm.Tier].(StickyDisks); ok {
 		features = append(features, proto.FeatureStickyDisks)
+	}
+	if _, ok := h.tiers[microvm.Tier].(signingSetter); ok && h.signing != nil {
+		features = append(features, proto.FeatureGitSigning)
 	}
 	if h.mesh != nil {
 		features = append(features, proto.FeatureMesh)
@@ -587,6 +600,12 @@ func (h *Host) Close() {
 	if h.egressLog != nil {
 		h.egressLog.close()
 	}
+	if h.signing != nil {
+		h.signing.CloseAll()
+	}
+	if h.signingLog != nil {
+		h.signingLog.close()
+	}
 }
 
 func (h *Host) sandboxEvent(info proto.SandboxInfo) {
@@ -777,6 +796,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 		}
 		h.requireProtected(p.SandboxID, p.Egress)
+		h.requireSigningVersion(p.SandboxID, p.GitSigning, p.SigningVersion)
 		e, fresh, err := h.prepareEgress(h.tierName(p.Tier), p.SandboxID, p.Egress)
 		if err != nil {
 			return nil, err
@@ -840,8 +860,9 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 		}
 		snap, err := t.Stop(ctx, p)
 		if err == nil {
-			// Its values aren't needed until it runs again; its CA is, as the guest trusts that one.
+			// Its values and signing key aren't needed until it runs again; its CA is, as the guest trusts that one.
 			h.forgetSecrets(p.SandboxID)
+			h.forgetSigning(p.SandboxID)
 		}
 		return snap, err
 	case proto.MethodEgress:
@@ -884,6 +905,21 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			h.secrets.Require(p.SandboxID, p.Version)
 		}
 		return struct{}{}, nil
+	case proto.MethodSigning:
+		p, err := decode[proto.SigningParams](params)
+		if err != nil {
+			return nil, err
+		}
+		if p.SandboxID == "" {
+			return nil, invalid("sandbox.signing needs sandboxId")
+		}
+		// With the lifecycle calls, so a boot's identity and this change to the guest's Git configuration can't cross.
+		defer h.lifecycle.lock(p.SandboxID)()
+		t, name, err := h.tierOfNamed(p.SandboxID)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]bool{"ok": true}, h.setSigning(ctx, t, name, p)
 	case proto.MethodResume, proto.MethodStart:
 		p, err := decode[proto.ResumeParams](params)
 		if err != nil {
@@ -936,6 +972,19 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				return nil, err
 			}
 		}
+		if p.ClearGitSigning || p.GitSigning != nil {
+			ver := signingVersionOf(p.GitSigning, p.SigningVersion)
+			if ver > 0 && ver < h.acceptedSigningVersion(t, p.SandboxID) {
+				p.GitSigning = nil
+				p.ClearGitSigning = false
+				p.SigningVersion = 0
+			} else {
+				if p.ClearGitSigning && h.signing != nil {
+					h.signing.Store().Invalidate(p.SandboxID)
+				}
+				h.requireSigningVersion(p.SandboxID, p.GitSigning, ver)
+			}
+		}
 		return t.Resume(ctx, p, method == proto.MethodStart)
 	case proto.MethodFork:
 		p, err := decode[proto.ForkParams](params)
@@ -963,6 +1012,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 		}
 		h.requireProtected(p.NewID, p.Egress)
+		h.requireSigningVersion(p.NewID, p.GitSigning, p.SigningVersion)
 		// The fork gets its own CA: its parent's would let one sandbox's key be used for another's traffic.
 		e, fresh, err := h.prepareEgress(name, p.NewID, p.Egress)
 		if err != nil {
@@ -1284,10 +1334,11 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 	return nil, &proto.Error{Code: proto.ErrUnsupported, Message: "unknown method " + method}
 }
 
-// forgetSandbox lets go of what the host keeps of a sandbox it has deleted: its protected values, its egress CA, its
-// egress revision floor and its commands.
+// forgetSandbox lets go of what the host keeps of a sandbox it has deleted: its protected values, its signing key, its
+// egress CA, its egress revision floor and its commands.
 func (h *Host) forgetSandbox(id string) {
 	h.forgetSecrets(id)
+	h.forgetSigning(id)
 	if h.cas != nil {
 		_ = h.cas.Forget(id)
 	}

@@ -366,7 +366,7 @@ type ListEventsQuery struct {
 	// The account to act in: the caller's personal account (the default for a person) or an organisation they belong to. An API key always acts in its own account, and naming another is `forbidden`.
 	Account   *string
 	SandboxID *string
-	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+	// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, `data.reason`). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 	Type  *EventType
 	Since *int64
 	// At most this many; default 50.
@@ -1203,6 +1203,24 @@ func (c *Client) DeleteEnvironmentFile(ctx context.Context, environmentID string
 func (c *Client) SetEnvironmentFile(ctx context.Context, environmentID string, body SetEnvironmentFileBody, opts ...CallOption) (*Environment, error) {
 	var out Environment
 	if err := c.Do(ctx, Call{Method: "PUT", Path: fmt.Sprintf("/environments/%s/files", url.PathEscape(environmentID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// DeleteEnvironmentGitSigning DELETE /environments/{environmentId}/git-signing: Remove an environment's host-side Git signing key. Removes the environment's Git signing key and clears it from running sandboxes immediately. A key needs `account:admin`.
+func (c *Client) DeleteEnvironmentGitSigning(ctx context.Context, environmentID string, opts ...CallOption) (*Environment, error) {
+	var out Environment
+	if err := c.Do(ctx, Call{Method: "DELETE", Path: fmt.Sprintf("/environments/%s/git-signing", url.PathEscape(environmentID)), Query: nil, Out: &out}, opts...); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+// SetEnvironmentGitSigning PUT /environments/{environmentId}/git-signing: Set an environment's host-side Git signing key. Sets or rotates an OpenPGP or OpenSSH private key used to sign Git commits and annotated tags on the host. The private key and optional passphrase are sealed at rest, held in host memory only, and never exposed to sandboxes, snapshots or forks. Leave `privateKey` out to update `allowedEmails` while keeping the stored key. Needs the deployment's secrets key (`not_supported` without one). Running sandboxes made from it pick the change up at once. A key needs `account:admin`.
+func (c *Client) SetEnvironmentGitSigning(ctx context.Context, environmentID string, body SetEnvironmentGitSigningBody, opts ...CallOption) (*Environment, error) {
+	var out Environment
+	if err := c.Do(ctx, Call{Method: "PUT", Path: fmt.Sprintf("/environments/%s/git-signing", url.PathEscape(environmentID)), Query: nil, Body: body, Out: &out}, opts...); err != nil {
 		return nil, err
 	}
 	return &out, nil

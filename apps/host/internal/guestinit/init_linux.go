@@ -135,7 +135,7 @@ func inject(root string) error {
 	if err := dst.Close(); err != nil {
 		return err
 	}
-	for _, name := range []string{"kantel-doctor", "kantel-connect"} {
+	for _, name := range []string{"kantel-doctor", "kantel-connect", "kantel-sign"} {
 		if err := os.Symlink("kantel-guest", filepath.Join(bin, name)); err != nil {
 			return err
 		}

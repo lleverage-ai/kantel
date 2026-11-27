@@ -713,7 +713,9 @@ export async function gatewayCompute(options: {
 	hosts?.service.useCompute({
 		secrets: (hostId, sandboxId) => api.service.protectedTable(hostId, sandboxId),
 		env: (hostId, sandboxId) => api.service.sandboxEnv(hostId, sandboxId),
+		signing: (hostId, sandboxId) => api.service.signingKey(hostId, sandboxId),
 		recordEgress: (hostId, records) => api.service.recordEgress(hostId, records),
+		recordSigning: (hostId, records) => api.service.recordSigning(hostId, records),
 		recordUsage: (hostId, usage, how) => api.service.recordUsage(hostId, usage, how),
 		// Snapshot sizes always; the images and bases only with image patching on.
 		...hostSnapshotLinks(api.service, baseImages),

@@ -951,14 +951,15 @@ const (
 	EmbedBrowserBodyModeReplay EmbedBrowserBodyMode = "replay"
 )
 
-// What a sandbox starts with: variables, secret files, repositories and egress grants. A change reaches sandboxes made after it, except a protected variable's value, bindings and the grants, which reach running ones at once.
+// What a sandbox starts with: variables, secret files, repositories, egress grants and an optional host-side Git signing key. A change reaches sandboxes made after it, except a protected variable's value, bindings, grants and the Git signing key, which reach running ones at once.
 type Environment struct {
 	AccountID string `json:"accountId"`
 	// Epoch milliseconds, UTC.
-	CreatedAt   int64             `json:"createdAt"`
-	Description *string           `json:"description,omitempty"`
-	Files       []EnvironmentFile `json:"files"`
-	Grants      []EgressGrant     `json:"grants"`
+	CreatedAt   int64                  `json:"createdAt"`
+	Description *string                `json:"description,omitempty"`
+	Files       []EnvironmentFile      `json:"files"`
+	GitSigning  *EnvironmentGitSigning `json:"gitSigning,omitempty"`
+	Grants      []EgressGrant          `json:"grants"`
 	// The environment's ID, such as `env_4kq9x2mt`.
 	ID    string            `json:"id"`
 	Name  string            `json:"name"`
@@ -977,6 +978,21 @@ type EnvironmentFile struct {
 	// Absolute, such as `/home/user/.npmrc`.
 	Path      string `json:"path"`
 	SizeBytes int64  `json:"sizeBytes"`
+	// Epoch milliseconds, UTC.
+	UpdatedAt int64 `json:"updatedAt"`
+}
+
+// Host-side Git commit and tag signing key attached to an environment. The private key stays sealed in Kantel and in host memory only; sandboxes never see it.
+type EnvironmentGitSigning struct {
+	// Lower-case committer/tagger email addresses this key may sign for.
+	AllowedEmails []string `json:"allowedEmails"`
+	// Full key fingerprint: 40-character uppercase OpenPGP fingerprint, or `SHA256:...` for SSH.
+	Fingerprint string           `json:"fingerprint"`
+	Format      GitSigningFormat `json:"format"`
+	// Short identifier for the key: the 16-character OpenPGP key ID, or the SSH key's SHA-256 fingerprint prefix.
+	KeyID string `json:"keyId"`
+	// Public key material: ASCII-armored OpenPGP public key, or OpenSSH `authorized_keys` line.
+	PublicKey string `json:"publicKey"`
 	// Epoch milliseconds, UTC.
 	UpdatedAt int64 `json:"updatedAt"`
 }
@@ -1059,6 +1075,8 @@ type EventData struct {
 	Attached *string `json:"attached,omitempty"`
 	// `sandbox.upgraded`: the files' bytes.
 	Bytes *int64 `json:"bytes,omitempty"`
+	// `sandbox.git_signed` / `sandbox.git_sign_refused`: the committer or tagger email.
+	Committer *string `json:"committer,omitempty"`
 	// `sandbox.environments_changed`: the environment detached.
 	Detached *string `json:"detached,omitempty"`
 	// `sandbox.upgraded`: how long the upgrade took.
@@ -1066,9 +1084,18 @@ type EventData struct {
 	// `sandbox.environments_changed`: the sandbox's environments now, in order.
 	EnvironmentIds []string `json:"environmentIds,omitzero"`
 	// `sandbox.upgraded`: the files, links and directories moved.
-	Files *int64       `json:"files,omitempty"`
-	From  *SandboxType `json:"from,omitempty"`
-	Name  *string      `json:"name,omitempty"`
+	Files *int64 `json:"files,omitempty"`
+	// `sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key fingerprint.
+	Fingerprint *string           `json:"fingerprint,omitempty"`
+	Format      *GitSigningFormat `json:"format,omitempty"`
+	From        *SandboxType      `json:"from,omitempty"`
+	// `sandbox.git_signed` / `sandbox.git_sign_refused`: the signing key ID.
+	KeyID *string `json:"keyId,omitempty"`
+	Name  *string `json:"name,omitempty"`
+	// `sandbox.git_signed` / `sandbox.git_sign_refused`: the commit tree or tag target object hash.
+	Object *string `json:"object,omitempty"`
+	// `sandbox.git_signed` / `sandbox.git_sign_refused`: the Git object kind.
+	ObjectType *EventDataObjectType `json:"objectType,omitempty"`
 	// `sandbox.oom_kill`: how many processes its kernel killed for memory since its last reading.
 	OOMKills *int64 `json:"oomKills,omitempty"`
 	// `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them.
@@ -1080,6 +1107,15 @@ type EventData struct {
 	State           *SandboxState    `json:"state,omitempty"`
 	To              *SandboxType     `json:"to,omitempty"`
 }
+
+// `sandbox.git_signed` / `sandbox.git_sign_refused`: the Git object kind.
+type EventDataObjectType string
+
+const (
+	EventDataObjectTypeCommit  EventDataObjectType = "commit"
+	EventDataObjectTypeTag     EventDataObjectType = "tag"
+	EventDataObjectTypeUnknown EventDataObjectType = "unknown"
+)
 
 // `sandbox.upgraded`: `host` when the isolate's own host made the microVM and moved its files, `control-plane` when the microVM went on another host and Kantel moved them.
 type EventDataPath string
@@ -1095,7 +1131,7 @@ type EventPage struct {
 	NextCursor *string `json:"nextCursor,omitempty"`
 }
 
-// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
+// `sandbox.created`: made, before it runs. `sandbox.running`: it runs commands now, after a create, resume, fork or recovery. `sandbox.stopped`, `sandbox.paused`: it stopped (by a call, its auto-stop or its idle stop), or paused. `sandbox.error`: it entered `error`. `sandbox.degraded`, `sandbox.recovered`: its host lost and regained it; `sandbox.degraded` also when its environment's secret file or repository couldn't be set up (its reason says which), which leaves it running, and when its guest agent stops answering (its `health` `unresponsive`), with `sandbox.recovered` once it answers again. `sandbox.environments_changed`: an environment was attached to it or detached from it (`data.attached` or `data.detached`, and `data.environmentIds`, in order). `sandbox.git_signed`, `sandbox.git_sign_refused`: the host signed or refused a Git commit/tag object for the sandbox (`data.format`, `data.keyId`, `data.fingerprint`, `data.objectType`, `data.committer`, `data.object`, `data.reason`). `sandbox.oom_kill`: a microVM ran out of memory and its kernel killed processes (`data.oomKills` of them since its last reading); it keeps running. `sandbox.upgraded`: an isolate became a microVM with the same ID (`upgradeSandbox`, or its `autoUpgrade`): `data.from` and `data.to` the types, `data.previousState`, `data.path` (`host` when its own host made the microVM, `control-plane` when its files were moved to another host), `data.files`, `data.bytes` and `data.durationMs`. `sandbox.lost`: its host stayed disconnected past the deployment's deadline, so it moved to `lost` (`data.previousState`, and `data.reason`); it can only be deleted now. `sandbox.recreated`: its host was lost, and it was made again on another host in its pool (its `onHostLost` `recreate`), from the saved snapshot `snapshotId` names (`data.previousState`, the state it was lost in). `sandbox.deleted`: erased. `snapshot.saved`, `snapshot.deleted`: a saved snapshot was made or deleted.
 type EventType string
 
 const (
@@ -1107,6 +1143,8 @@ const (
 	EventTypeSandboxDegraded            EventType = "sandbox.degraded"
 	EventTypeSandboxRecovered           EventType = "sandbox.recovered"
 	EventTypeSandboxEnvironmentsChanged EventType = "sandbox.environments_changed"
+	EventTypeSandboxGitSigned           EventType = "sandbox.git_signed"
+	EventTypeSandboxGitSignRefused      EventType = "sandbox.git_sign_refused"
 	EventTypeSandboxOOMKill             EventType = "sandbox.oom_kill"
 	EventTypeSandboxUpgraded            EventType = "sandbox.upgraded"
 	EventTypeSandboxLost                EventType = "sandbox.lost"
@@ -1255,6 +1293,14 @@ type ForkSandboxBody struct {
 type ForkedSandboxes struct {
 	Items []Sandbox `json:"items"`
 }
+
+// OpenPGP (`gpg`) or OpenSSH (`ssh`, SSHSIG with the `git` namespace).
+type GitSigningFormat string
+
+const (
+	GitSigningFormatGpg GitSigningFormat = "gpg"
+	GitSigningFormatSSH GitSigningFormat = "ssh"
+)
 
 type GithubRunnerJob struct {
 	// Epoch milliseconds, UTC.
@@ -2507,6 +2553,8 @@ type SandboxEnvironment struct {
 type SandboxEnvironmentShadowed struct {
 	// Its secret files' paths a later environment writes instead.
 	Files []string `json:"files"`
+	// True when a later environment's Git signing key shadows this one's.
+	GitSigning *bool `json:"gitSigning,omitempty"`
 	// Its repositories' paths a later environment clones into instead.
 	Repos []string `json:"repos"`
 	// Its variables a later environment, or the sandbox's own env, sets instead.
@@ -2515,9 +2563,20 @@ type SandboxEnvironmentShadowed struct {
 
 // A sandbox's environments, and what each gives it.
 type SandboxEnvironments struct {
-	// In order: where two set the same variable, file or repository path, the later one wins.
+	// In order: where two set the same variable, file, repository path or Git signing key, the later one wins.
 	Environments []SandboxEnvironment `json:"environments"`
+	GitSigning   *SandboxGitSigning   `json:"gitSigning,omitempty"`
 	SandboxID    string               `json:"sandboxId"`
+}
+
+// The host-side Git signing key active on a sandbox.
+type SandboxGitSigning struct {
+	AllowedEmails []string `json:"allowedEmails"`
+	// The environment supplying the active signing key.
+	EnvironmentID string           `json:"environmentId"`
+	Fingerprint   string           `json:"fingerprint"`
+	Format        GitSigningFormat `json:"format"`
+	KeyID         string           `json:"keyId"`
 }
 
 // `degraded`: the machine is up but its host can't fully reach it; it keeps running. `unresponsive`: it is running, but its guest agent has stopped answering its host (out of memory, say; its `reason` says why), so its commands and files are refused at once (`sandbox_unresponsive`) rather than left to hang. Recover it (a restart that keeps its disk), or stop and start it; it is `ok` again by itself should its agent answer first.
@@ -2940,6 +2999,17 @@ type SetEnvironmentFileBody struct {
 	Mode *int64 `json:"mode,omitempty"`
 	// Absolute, or relative to `/home/user`.
 	Path string `json:"path"`
+}
+
+// Sets or rotates an environment's host-side Git signing key, or updates its allowed emails.
+type SetEnvironmentGitSigningBody struct {
+	// Committer/tagger email addresses permitted to sign with this key. For GPG keys, defaults to the key's User ID email addresses if omitted.
+	AllowedEmails []string          `json:"allowedEmails,omitzero"`
+	Format        *GitSigningFormat `json:"format,omitempty"`
+	// Passphrase to unlock the private key, if encrypted. Sealed at rest and never shown again.
+	Passphrase *string `json:"passphrase,omitempty"`
+	// ASCII-armored OpenPGP secret key or OpenSSH private key. Sealed at rest and never shown again. Leave out to update `allowedEmails` while keeping the stored key.
+	PrivateKey *string `json:"privateKey,omitempty"`
 }
 
 type SetEnvironmentVariableBody struct {

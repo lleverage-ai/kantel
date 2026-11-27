@@ -439,6 +439,18 @@ export function createRoutedBackend(options: RoutedBackendOptions): SandboxBacke
 						await (await on(id)).updateSecrets?.(id, version);
 					},
 				}),
+		// On the backend holding it, which updates or clears the sandbox's host-side Git signing config.
+		...(primary.updateSigning === undefined && fallback.updateSigning === undefined
+			? {}
+			: {
+					async updateSigning(
+						id: string,
+						signing: Parameters<NonNullable<SandboxBackend["updateSigning"]>>[1],
+						version: number,
+					) {
+						await (await on(id)).updateSigning?.(id, signing, version);
+					},
+				}),
 		async revokeHost(hostId) {
 			await primary.revokeHost?.(hostId);
 		},

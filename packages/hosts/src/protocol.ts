@@ -507,6 +507,11 @@ export const HOST_FEATURES = {
 	 * and its failed start is taken to have kept it. The microVM tier.
 	 */
 	startMemoryDropped: "start-memory-dropped",
+	/**
+	 * Host-side Git commit and tag signing (`sandbox.signing`, `signing.fetch`, `signing` audit events): private keys
+	 * stay in host memory only and sign validated Git commit/tag payloads over a per-VM vsock endpoint.
+	 */
+	gitSigning: "git-signing",
 } as const;
 
 /** A moved sandbox's parts (`HOST_FEATURES.sandboxMove`), in its manifest's order: its disk and its two sticky drives. */
@@ -1403,6 +1408,49 @@ export interface HostSecretEntry {
 	readonly bindings: readonly HostSecretBinding[];
 }
 
+/** Public metadata of a sandbox's host-side Git signing key. Never holds private key material or passphrases. */
+export interface HostGitSigning {
+	readonly format: "gpg" | "ssh";
+	readonly keyId: string;
+	readonly fingerprint: string;
+	readonly publicKey: string;
+	readonly version: number;
+}
+
+/** `sandbox.signing`'s params (Kantel -> host, `HOST_FEATURES.gitSigning`): updates or clears a sandbox's signing key. */
+export interface HostSigningParams {
+	readonly sandboxId: string;
+	readonly signing: HostGitSigning | null;
+	readonly version: number;
+}
+
+/** The result of a host's `signing.fetch` `{ sandboxId }`: held in host memory only, never persisted or shown to guests. */
+export interface HostSigningKey {
+	readonly version: number;
+	readonly enabled: boolean;
+	readonly format?: "gpg" | "ssh";
+	readonly keyId?: string;
+	readonly fingerprint?: string;
+	readonly allowedEmails?: readonly string[];
+	readonly privateKey?: string;
+	readonly passphrase?: string;
+}
+
+/** One host-side Git signing decision, in a `signing` event. Never holds key material or commit bodies. */
+export interface HostSigningRecord {
+	/** Milliseconds since the epoch. */
+	readonly at: number;
+	readonly sandboxId: string;
+	readonly allowed: boolean;
+	readonly format?: string;
+	readonly keyId?: string;
+	readonly fingerprint?: string;
+	readonly objectType?: string;
+	readonly committer?: string;
+	readonly object?: string;
+	readonly reason?: string;
+}
+
 /** The result of a host's `secrets.fetch` `{ sandboxId }`: the sandbox's protected values, in host memory only. */
 export interface HostSecrets {
 	readonly version: number;
@@ -1594,6 +1642,12 @@ export interface HostGrantKey {
  */
 export interface HostResumeParams {
 	readonly egress?: HostEgress;
+	/** Public metadata of the sandbox's host-side Git signing key. */
+	readonly gitSigning?: HostGitSigning;
+	/** Explicitly clears any prior Git signing config on the sandbox when none applies. */
+	readonly clearGitSigning?: boolean;
+	/** Orders the boot's signing change (including clears) against newer sandbox.signing notifications. */
+	readonly signingVersion?: number;
 	/** Orders the boot's egress (its `egressRevision`); with one, no `egress` is the host's default, a clear. */
 	readonly revision?: number;
 	/**
@@ -1612,6 +1666,8 @@ export interface HostEvent {
 	readonly at: number;
 	/** For `egress`: a batch, at most 100 records or 2 seconds' worth. */
 	readonly egress?: readonly HostEgressRecord[];
+	/** For `signing`: a batch of host-side Git signing audit records. */
+	readonly signing?: readonly HostSigningRecord[];
 	/** For `sandbox.mounts` (`HOST_EVENT_MOUNTS`): the sandbox, and its mounts' statuses now. */
 	readonly sandboxId?: string;
 	readonly mounts?: readonly HostMountStatus[];
@@ -1721,6 +1777,8 @@ export const HostMethods = {
 	secrets: "sandbox.secrets",
 	/** Kantel to host (`HOST_FEATURES.sandboxEnv`): a sandbox's env replaced, `HostEnvParams`. Result `{ ok: true }`. */
 	env: "sandbox.env",
+	/** Kantel to host (`HOST_FEATURES.gitSigning`): a sandbox's Git signing config changed, `HostSigningParams`. Result `{}`. */
+	signing: "sandbox.signing",
 	/** Host to Kantel: `{ sandboxId }`, answered with `HostSecrets`, or `not_found` for a sandbox not on that host. */
 	secretsFetch: "secrets.fetch",
 	/**
@@ -1729,6 +1787,11 @@ export const HostMethods = {
 	 * an older env back.
 	 */
 	envFetch: "env.fetch",
+	/**
+	 * Host to Kantel (`HOST_FEATURES.gitSigning`): `{ sandboxId }`, answered with `HostSigningKey`, or `not_found` for a
+	 * sandbox not on that host. Held in host memory only.
+	 */
+	signingFetch: "signing.fetch",
 	/** A file's bytes on a port stream, `HostFileOpen`; answered `{ size? }` once it is open. */
 	fileOpen: "sandbox.files.open",
 	/**

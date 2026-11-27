@@ -227,6 +227,44 @@ Replaces them. Running sandboxes made from it pick the change up at once. A key 
 
 **Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict. Each is an [ErrorBody](/api/reference/types/#errorbody).
 
+## Set an environment's host-side Git signing key
+
+`PUT /v1/environments/{environmentId}/git-signing` (SDK method `setEnvironmentGitSigning`)
+
+Sets or rotates an OpenPGP or OpenSSH private key used to sign Git commits and annotated tags on the host. The private key and optional passphrase are sealed at rest, held in host memory only, and never exposed to sandboxes, snapshots or forks. Leave `privateKey` out to update `allowedEmails` while keeping the stored key. Needs the deployment's secrets key (`not_supported` without one). Running sandboxes made from it pick the change up at once. A key needs `account:admin`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `environmentId` | string | yes | The environment's ID. |
+
+**Body**: [SetEnvironmentGitSigningBody](/api/reference/types/#setenvironmentgitsigningbody)
+
+**Answers**
+
+- `200`: [Environment](/api/reference/types/#environment) (`application/json`). The environment.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found, `409` conflict, `501` not_supported. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
+## Remove an environment's host-side Git signing key
+
+`DELETE /v1/environments/{environmentId}/git-signing` (SDK method `deleteEnvironmentGitSigning`)
+
+Removes the environment's Git signing key and clears it from running sandboxes immediately. A key needs `account:admin`.
+
+**Path parameters**
+
+| Name | Type | Required | Description |
+| --- | --- | --- | --- |
+| `environmentId` | string | yes | The environment's ID. |
+
+**Answers**
+
+- `200`: [Environment](/api/reference/types/#environment) (`application/json`). The environment.
+
+**Errors**: `400` invalid, `401` unauthenticated, `403` forbidden, `404` not_found. Each is an [ErrorBody](/api/reference/types/#errorbody).
+
 ## Get a sandbox's egress
 
 `GET /v1/sandboxes/{sandboxId}/egress` (SDK method `getSandboxEgress`)

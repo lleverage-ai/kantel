@@ -21,6 +21,7 @@ import {
 	type BackendDiskUsage,
 	type BackendEgress,
 	type BackendFileEntry,
+	type BackendGitSigning,
 	type BackendHost,
 	type BackendMount,
 	type BackendMountRefresh,
@@ -82,6 +83,7 @@ import {
 	type HostExecResult,
 	type HostExecStatus,
 	type HostFilePart,
+	type HostGitSigning,
 	type HostGuest,
 	type HostIsolateRuntime,
 	HostMethods,
@@ -91,6 +93,7 @@ import {
 	type HostProcessList,
 	type HostSandbox,
 	type HostSandboxMemory,
+	type HostSigningParams,
 	type HostSnapshotKeep,
 	type HostStickyCommitResult,
 	type HostStickyDiskStatus,
@@ -931,7 +934,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		how: BootOptions,
 		reset = false,
 	): Promise<Placement> {
-		const { hostId } = await tierOf(sandboxId);
+		const { hostId, tier } = await tierOf(sandboxId);
 		mayUse(hostId, how.eligibleHosts);
 		// Its ports' exposures outlast its stop, so a request to one is told it is stopped (`PortRouter.fetch`), and end as
 		// it boots again: the compute API cleared its recorded ports at the stop, and a URL the API no longer lists, and
@@ -947,6 +950,13 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 		try {
 			sandbox = await call<HostSandbox>(sandboxId, method, {
 				...egressOf(how.egress),
+				...(tier !== "microvm"
+					? {}
+					: {
+							...(how.gitSigning === undefined ? {} : { gitSigning: { ...how.gitSigning } }),
+							...(how.clearGitSigning === true ? { clearGitSigning: true } : {}),
+							...(how.signingVersion === undefined ? {} : { signingVersion: how.signingVersion }),
+						}),
 				...(revision === undefined ? {} : { revision }),
 				// Only a cold boot rebases; a host without image patching ignores the fields. With `rebaseTo` the host refuses
 				// to land anywhere else.
@@ -1070,6 +1080,12 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			...(from === undefined ? {} : { from: from.snapshotId }),
 			...(spec.template === undefined ? {} : { template: hostTemplateBoot(spec.template, templateSnapshot) }),
 			...egressOf(spec.egress),
+			...(spec.type !== "microvm"
+				? {}
+				: {
+						...(spec.gitSigning === undefined ? {} : { gitSigning: { ...spec.gitSigning } }),
+						...(spec.signingVersion === undefined ? {} : { signingVersion: spec.signingVersion }),
+					}),
 			...(mounts === undefined ? {} : { mounts }),
 			...(spec.stickyDisks === undefined || spec.stickyDisks.length === 0
 				? {}
@@ -1495,6 +1511,20 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 			const params: HostEnvParams = { sandboxId, env: { ...env } };
 			await call(sandboxId, HostMethods.env, params);
 		},
+		async updateSigning(sandboxId, signing: BackendGitSigning | null, version: number) {
+			const { hostId, tier } = await tierOf(sandboxId);
+			if (tier !== "microvm") return;
+			if (!(await featuresOf(hostId)).includes(HOST_FEATURES.gitSigning)) {
+				if (signing === null) return;
+				throw new KantelError(
+					"not_supported",
+					"This sandbox's host doesn't support host-side Git signing; upgrade its kantel-host first",
+				);
+			}
+			const hostSigning: HostGitSigning | null = signing === null ? null : { ...signing };
+			const params: HostSigningParams = { sandboxId, signing: hostSigning, version };
+			await call(sandboxId, HostMethods.signing, params);
+		},
 		async stop(sandboxId, { keepMemory, waitForHost }): Promise<TakenSnapshot> {
 			const { tier, hostId } = await tierOf(sandboxId);
 			if (keepMemory && tier !== "microvm") throw new KantelError("not_supported", "An isolate can't pause");
@@ -1521,13 +1551,21 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				return out;
 			}
 			// A live fork pauses the source for its snapshot only; forks stay on the source's host.
-			const { hostId: sourceHost } = await tierOf(source.sandboxId);
+			const { hostId: sourceHost, tier: sourceTier } = await tierOf(source.sandboxId);
 			for (const target of targets) mayUse(sourceHost, target.eligibleHosts);
 			for (const target of targets) {
 				const mounts = mountsOf(target.mounts);
+				const microvmFork = sourceTier === "microvm" && target.type === "microvm";
 				const { sandbox, hostId, ...known } = await hosts.sandboxes.fork(source.sandboxId, {
 					newId: target.sandboxId,
 					...egressOf(target.egress),
+					...(!microvmFork
+						? {}
+						: {
+								...(target.gitSigning === undefined ? {} : { gitSigning: { ...target.gitSigning } }),
+								...(target.clearGitSigning === true ? { clearGitSigning: true } : {}),
+								...(target.signingVersion === undefined ? {} : { signingVersion: target.signingVersion }),
+							}),
 					// Its own placeholders, not its source's: the host gives the guest this environment.
 					env: target.env,
 					...(mounts === undefined ? {} : { mounts }),
@@ -1562,6 +1600,8 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(from === undefined ? {} : { from: from.snapshotId }),
 				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...egressOf(spec.egress),
+				...(spec.gitSigning === undefined ? {} : { gitSigning: { ...spec.gitSigning } }),
+				...(spec.signingVersion === undefined ? {} : { signingVersion: spec.signingVersion }),
 				operationId,
 			});
 			return { ...(await placed(sandboxId, sandbox, hostId, known)), path, files, bytes };
@@ -1600,11 +1640,15 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				...(spec.onFinalCopy === undefined ? {} : { onFinalCopy: spec.onFinalCopy }),
 				...(spec.keepMemory === true ? { keepMemory: true } : {}),
 				...(spec.onPlanned === undefined ? {} : { onPlanned: spec.onPlanned }),
+				...(spec.gitSigning === undefined ? {} : { gitSigning: { ...spec.gitSigning } }),
 				start: (features) => {
 					const mounts = mountHandoff(wanted === undefined ? undefined : features, wanted);
 					return {
 						params: {
 							...egressOf(spec.egress),
+							...(spec.gitSigning === undefined ? {} : { gitSigning: { ...spec.gitSigning } }),
+							...(spec.clearGitSigning === true ? { clearGitSigning: true } : {}),
+							...(spec.signingVersion === undefined ? {} : { signingVersion: spec.signingVersion }),
 							...(revision === undefined ? {} : { revision }),
 							...(mounts.send.length === 0 ? {} : { mounts: mounts.send }),
 						},
@@ -1622,6 +1666,7 @@ export function createHostBackend(options: HostBackendOptions): SandboxBackend {
 				hostIds: spec.eligibleHosts,
 				...(spec.poolId === undefined ? {} : { poolId: spec.poolId }),
 				...(spec.running === true ? { running: true } : {}),
+				...(spec.gitSigning === undefined ? {} : { gitSigning: { ...spec.gitSigning } }),
 			});
 		},
 		async settleMove(sandboxId, operationId) {

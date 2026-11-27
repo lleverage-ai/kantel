@@ -40,6 +40,10 @@ const KEY_SHAPE = "KANTEL_SECRETS_KEY must be 32 bytes in base64, such as `opens
 export const sealedAt = (collection: string, recordId: string, field: string): string =>
 	`${collection}:${recordId}:${field}`;
 
+/** Whether two sealed values carry the same version, IV and ciphertext (by content, not object identity). */
+export const sameSealedValue = (left: SealedValue, right: SealedValue): boolean =>
+	left.v === right.v && left.iv === right.iv && left.ct === right.ct;
+
 /**
  * The key's bytes from `KANTEL_SECRETS_KEY`'s text. Throws an `Error` that names the setting, never its value, unless
  * it is 32 bytes of base64: a deployment should fail to start with a key it can't use, not later on a write.

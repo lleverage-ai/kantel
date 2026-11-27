@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log"
 	"net"
 	"net/http"
 	"net/url"
@@ -109,6 +110,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /sticky/freeze", s.freezeSticky)
 	mux.HandleFunc("POST /sticky/thaw", s.thawSticky)
 	mux.HandleFunc("POST /sticky/trim", s.trimSticky)
+	mux.HandleFunc("POST /signing", s.setSigning)
 	return mux
 }
 
@@ -381,6 +383,11 @@ func (s *Server) applyIdentity(id *Identity, steps map[string]float64) error {
 		}
 	}
 	writeEnv(EnvFile, id.Env)
+	// Every boot, resume and fork matches the sandbox's key as it is now, none included. A failure leaves Git
+	// unsigned rather than the sandbox unbooted (kantel-doctor reports it).
+	if err := s.applyGitSigning(id.GitSigning); err != nil {
+		log.Printf("git signing: %v", err)
+	}
 	// dockerd and Chromium use LocalProxyAddr, which follows the identity's proxy, so nothing restarts here: a restart
 	// would stop a resumed or forked sandbox's containers and close its tabs (and, as a restored sandbox's monotonic
 	// clock carries on from its template's, soon trips systemd's start limit).
