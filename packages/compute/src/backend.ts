@@ -414,6 +414,11 @@ export interface SnapshotCopies {
 	 * serves only hosts of its own). Absent: none said, any.
 	 */
 	readonly architectures?: readonly ("x86_64" | "aarch64")[];
+	/**
+	 * With `fetch`: the snapshot's portable runtime, which names the root image its disk is over: a host fetching it must
+	 * be one that can have that image (`rootImageOn`). Absent: not said, any.
+	 */
+	readonly runtime?: string;
 }
 
 /** What an upgrade makes (`SandboxBackend.upgrade`): a microVM create's spec, and what it starts from. */
@@ -662,6 +667,73 @@ export function memoryRestoresOn(
 	return (
 		cpuFingerprintText(made.cpu) === host.cpuFingerprint && (host.runtimeFingerprints ?? []).includes(made.runtime)
 	);
+}
+
+/**
+ * The host feature (`snapshot-image-digest`) of a host that finds the host image a saved snapshot's disk is over by the
+ * digest its runtime names, among every host image it has (its root filesystem and each version installed), whatever
+ * it is called there (`rootImageOn`).
+ */
+export const SNAPSHOT_IMAGE_DIGEST_FEATURE = "snapshot-image-digest";
+
+/** One field of a portable runtime (`firecracker=...;kernel=...;image=...;sticky=4`), such as its image: absent when it has none. */
+function runtimePart(runtime: string, name: string): string | undefined {
+	const prefix = `${name}=`;
+	return runtime
+		.split(";")
+		.find((part) => part.startsWith(prefix))
+		?.slice(prefix.length);
+}
+
+/** The digest a runtime's image names: `sha256:` and a prefix, from `<version>@sha256:...` or `sha256:...`. */
+function imageDigest(image: string): string | undefined {
+	const digest = image.includes("@") ? image.slice(image.indexOf("@") + 1) : image;
+	return digest.startsWith("sha256:") && digest.length > "sha256:".length ? digest : undefined;
+}
+
+/** The host feature (`image-patching`) of a host that keeps host images by version and installs one it lacks. */
+export const IMAGE_PATCHING_FEATURE = "image-patching";
+
+/**
+ * Whether a host can have the root image a saved snapshot's disk is over, as its details say (`features` and
+ * `runtimeFingerprints`), so it may be asked to fetch the snapshot (a copy, or a create's fetch): one that can't
+ * refuses every ask. A host image is the same image on two hosts only by the digest it was downloaded with, which the
+ * snapshot's runtime names (`image=<version>@sha256:...`). A host has it when one of its runtimes names that image
+ * exactly, or names its digest under any version where the host finds images by their digest
+ * (`SNAPSHOT_IMAGE_DIGEST_FEATURE`). Else a versioned image can still be downloaded from its release, by a host that
+ * keeps images by version (`IMAGE_PATCHING_FEATURE`) and hasn't that version installed already with other bytes (a
+ * runtime naming it with another digest: it keeps the one it has, and refuses the snapshot); a host image that isn't
+ * versioned (`image=sha256:...`, a host whose root filesystem is a plain file) can't be, by any host. Only a version
+ * in the host's image store has a version in its runtime, so a root filesystem of its own never counts as one. A snapshot whose runtime names no image (one over a
+ * template's root filesystem, or that doesn't say), or a host that doesn't say its runtimes or features (the stub), is
+ * left to the host, which refuses one it can't have.
+ */
+export function rootImageOn(
+	host: { readonly features?: readonly string[]; readonly runtimeFingerprints?: readonly string[] },
+	made: SnapshotMadeOn,
+): boolean {
+	const image = made.runtime === undefined ? undefined : runtimePart(made.runtime, "image");
+	if (image === undefined || host.runtimeFingerprints === undefined || host.features === undefined) return true;
+	const digest = imageDigest(image);
+	if (digest === undefined) return false;
+	const byDigest = host.features.includes(SNAPSHOT_IMAGE_DIGEST_FEATURE);
+	const has = host.runtimeFingerprints.some((runtime) => {
+		const own = runtimePart(runtime, "image");
+		return own !== undefined && (own === image || (byDigest && imageDigest(own) === digest));
+	});
+	if (has) return true;
+	const version = imageVersion(image);
+	if (version === undefined || !host.features.includes(IMAGE_PATCHING_FEATURE)) return false;
+	return !host.runtimeFingerprints.some((runtime) => {
+		const own = runtimePart(runtime, "image");
+		return own !== undefined && imageVersion(own) === version;
+	});
+}
+
+/** The host image version a runtime's image names (`<version>@sha256:...`): absent for one that isn't versioned. */
+function imageVersion(image: string): string | undefined {
+	const at = image.indexOf("@");
+	return at > 0 ? image.slice(0, at) : undefined;
 }
 
 /** A template snapshot built: its opaque reference, the host holding it, its size, and what it was made on. */

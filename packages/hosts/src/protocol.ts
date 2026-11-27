@@ -459,6 +459,13 @@ export const HOST_FEATURES = {
 	 */
 	snapshotSync: "snapshot-sync",
 	/**
+	 * A `disk.fetch` of a saved snapshot's disk finds the host image it is over by the digest its runtime names among
+	 * every host image the host has (its root filesystem and each version installed), whatever it is called there, and
+	 * downloads the snapshot's version only when none has it. So the host can take a snapshot whose image is any of those
+	 * its runtimes name by digest (`rootImageOn`). Reported with `snapshotSync`.
+	 */
+	snapshotImageDigest: "snapshot-image-digest",
+	/**
 	 * A stopped microVM sandbox moves to another host in its pool (docs/design/disk-store.md, "Moving a sandbox to another
 	 * host"). Its disk and sticky drives are a disk store object, kind `sandbox`, its ID the sandbox's, one version for
 	 * each export (the move's operation ID), whose parts are `SANDBOX_PARTS` and whose record goes whole:

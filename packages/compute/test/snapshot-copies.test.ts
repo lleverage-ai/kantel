@@ -144,4 +144,60 @@ describe("saved snapshot copies", () => {
 			copyTarget(snapshot, [holder("a")], hostsOf(host("a"), host("stub", { features: undefined })), "pool_a", AT),
 		).toBe("stub");
 	});
+
+	it("never picks a host that can't have the root image its disk is over", () => {
+		// As on 19 Nov 2026: a snapshot taken over a host image that isn't versioned, which a host can't download, offered
+		// to a host that doesn't have those bytes, which refused it every few minutes.
+		const plain = "firecracker=v1.17.0;kernel=6.1.155+0123456789ab;image=sha256:78ca3a4ec2d4301c;sticky=4";
+		const as = (image: string) => plain.replace("image=sha256:78ca3a4ec2d4301c", `image=${image}`);
+		const unversioned = { ...snapshot, runtime: plain };
+		const hosts = hostsOf(
+			host("a"),
+			host("elsewhere", { freeDiskGb: 900, runtimeFingerprints: [as("host-images-20261114@sha256:f13fd019fde6d11a")] }),
+		);
+		expect(copyTarget(unversioned, [holder("a")], hosts, "pool_a", AT)).toBe(undefined);
+		// One whose own root filesystem is that image, by its runtime, takes it whatever its version.
+		const same = host("same", { runtimeFingerprints: [plain] });
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), same), "pool_a", AT)).toBe("same");
+		// One that has those bytes as a version takes it only where it finds images by their digest.
+		const versioned = [as("host-images-20261114@sha256:78ca3a4ec2d4301c")];
+		const older = host("older", { runtimeFingerprints: versioned });
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), older), "pool_a", AT)).toBe(undefined);
+		const byDigest = host("by-digest", {
+			runtimeFingerprints: versioned,
+			features: ["disk-sync", "snapshot-sync", "snapshot-image-digest"],
+		});
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), byDigest), "pool_a", AT)).toBe(
+			"by-digest",
+		);
+		// A version can be downloaded from its release, by a host that keeps images by version.
+		const versionedSnapshot = { ...snapshot, runtime: as("old@sha256:0a0a0a0a0a0a0a0a") };
+		expect(copyTarget(versionedSnapshot, [holder("a")], hosts, "pool_a", AT)).toBe(undefined);
+		const patching = host("patching", {
+			runtimeFingerprints: versioned,
+			features: ["disk-sync", "snapshot-sync", "image-patching"],
+		});
+		expect(copyTarget(versionedSnapshot, [holder("a")], hostsOf(...hosts.values(), patching), "pool_a", AT)).toBe(
+			"patching",
+		);
+		// Never by one that has that version installed already with other bytes: it keeps the one it has, and refuses it.
+		const conflicting = host("conflicting", {
+			runtimeFingerprints: [as("old@sha256:0c0c0c0c0c0c0c0c")],
+			features: ["disk-sync", "snapshot-sync", "image-patching", "snapshot-image-digest"],
+		});
+		expect(copyTarget(versionedSnapshot, [holder("a")], hostsOf(...hosts.values(), conflicting), "pool_a", AT)).toBe(
+			undefined,
+		);
+		// Unless it has the bytes under another version, and finds images by their digest.
+		const aliased = host("aliased", {
+			runtimeFingerprints: [as("old@sha256:0c0c0c0c0c0c0c0c"), as("new@sha256:0a0a0a0a0a0a0a0a")],
+			features: ["disk-sync", "snapshot-sync", "image-patching", "snapshot-image-digest"],
+		});
+		expect(copyTarget(versionedSnapshot, [holder("a")], hostsOf(...hosts.values(), aliased), "pool_a", AT)).toBe(
+			"aliased",
+		);
+		// A host that doesn't say its runtimes is left to refuse it itself, as before.
+		const silent = host("silent", { freeDiskGb: 1000 });
+		expect(copyTarget(unversioned, [holder("a")], hostsOf(...hosts.values(), silent), "pool_a", AT)).toBe("silent");
+	});
 });

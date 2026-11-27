@@ -80,9 +80,11 @@ type sandboxRecord struct {
 	Meta         meta   `json:"meta"`
 	Rootfs       string `json:"rootfs"`
 	RootfsDigest string `json:"rootfsDigest,omitempty"`
-	Stage        bool   `json:"stage,omitempty"`
-	Base         string `json:"base,omitempty"`
-	Memory       bool   `json:"memory,omitempty"`
+	// RootfsImage is the host image Rootfs is, where it is a version's own file (snapshotMeta.RootfsImage).
+	RootfsImage string `json:"rootfsImage,omitempty"`
+	Stage       bool   `json:"stage,omitempty"`
+	Base        string `json:"base,omitempty"`
+	Memory      bool   `json:"memory,omitempty"`
 }
 
 // ImportOptions are how a version of a moved sandbox is imported (FeatureSandboxMoveRunning): Stage keeps it staged
@@ -249,7 +251,7 @@ func (m *Manager) cloneForExport(s *sandbox, dir string, p proto.SandboxExportPa
 	if rootfs == "" {
 		return fmt.Errorf("sandbox %s has no root filesystem", s.meta.ID)
 	}
-	rec := sandboxRecord{Meta: s.meta, Rootfs: rootfs}
+	rec := sandboxRecord{Meta: s.meta, Rootfs: rootfs, RootfsImage: m.rootfsImage(rootfs, s.meta.Runtime)}
 	// What its image has, as this host knows it: its template's report, or its image version's, which the target may
 	// not have (it hasn't booted that version), so it keeps it as the sandbox's own. Nil where none is known.
 	rec.Meta.Guest = m.sandboxGuest(s)
@@ -471,11 +473,16 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 	if rec.Meta.StickyDrives != 0 && rec.Meta.StickyDrives != StickyDrives {
 		return fmt.Errorf("the sandbox has %d sticky drives, and a microVM here has %d", rec.Meta.StickyDrives, StickyDrives)
 	}
-	over := snapshotMeta{Rootfs: rec.Rootfs, RootfsDigest: rec.RootfsDigest}
+	over := snapshotMeta{Rootfs: rec.Rootfs, RootfsDigest: rec.RootfsDigest, RootfsImage: rec.RootfsImage}
 	over.Runtime = rec.Meta.Runtime
 	rootfs, err := m.localRootfs(ctx, over)
 	if err != nil {
 		return err
+	}
+	if opts.Memory && !opts.Stage {
+		if rootfs, err = m.memoryRootfs(ctx, over, rec.Meta.StickyDrives, rootfs); err != nil {
+			return err
+		}
 	}
 	// Its root filesystem linked under the base lock, so a prune finds the reference in the import's VM directory from
 	// then on (BasesUnder); and under the moves lock, so a cancel while the image was had is seen.
@@ -521,6 +528,28 @@ func (m *Manager) PrepareSandboxImport(ctx context.Context, id, version string, 
 		return fail(err)
 	}
 	return nil
+}
+
+// memoryRootfs is the root filesystem a sandbox moved with its memory is linked over: rootfs, localRootfs's, where a
+// machine over it here has the runtime its memory was made on (over.Runtime, with its sticky drives); else its own
+// version's file, downloaded where it isn't here, where that has it. A file with its image's bytes under another
+// version (hostImageWithDigest) restores the memory, but a later cold start boots that version's kernel, not its own:
+// so the import is refused before it is staged, and the source keeps the sandbox. A template's root filesystem is no
+// part of the runtime (localRootfs checks its build), and a record with no runtime is as before.
+func (m *Manager) memoryRootfs(ctx context.Context, over snapshotMeta, sticky int, rootfs string) (string, error) {
+	if _, template := templateRootfsKey(rootfs); template || over.Runtime == "" || m.runtimeWith(rootfs, sticky) == over.Runtime {
+		return rootfs, nil
+	}
+	want, err := snapshotImage(over)
+	if err != nil {
+		return "", err
+	}
+	if version := imageVersion(want); version != "" && m.cfg.HostImage != nil {
+		if path, err := m.cfg.HostImage(ctx, version); err == nil && m.runtimeWith(path, sticky) == over.Runtime {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("%w: no file here with its image (%s) boots the runtime its memory was made on (%q)", ErrNoSnapshotImage, want, over.Runtime)
 }
 
 // importing says whether the host has version of a sandbox's import made ready: its record staged.

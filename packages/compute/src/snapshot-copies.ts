@@ -16,7 +16,7 @@
  * fetch, `ReserveSnapshotFetch`, rather than freeing one), and the control plane deletes a copy only with its snapshot,
  * or when a host reports one the catalogue has no record of (`DiskHolders.recordHoldings`).
  */
-import { memoryRestoresOn, type SnapshotMadeOn } from "./backend.ts";
+import { memoryRestoresOn, rootImageOn, type SnapshotMadeOn } from "./backend.ts";
 import type { StoredDiskHolder, StoredSnapshot } from "./store.ts";
 
 /** How many hosts of its pool keep each saved snapshot. */
@@ -105,7 +105,8 @@ export function keepingCopies(
  * mesh address), or no other host can take one. A host takes one when it is online and connected in the pool, takes
  * copies (`SNAPSHOT_COPY_FEATURES`, its mesh address), is of an architecture a serving holder is, may hold the account's
  * data, has the room the snapshot takes and `SNAPSHOT_FETCH_HEADROOM_BYTES` more where it says what it has free, has the
- * account's saved snapshot allowance for it where it has a limit (`savedBytesLeft`), and has no holder of it but a fetch older than
+ * account's saved snapshot allowance for it where it has a limit (`savedBytesLeft`), can have the root image its disk is
+ * over (`rootImageOn`: never a host that would refuse it on every ask), and has no holder of it but a fetch older than
  * `COPY_FETCH_MS` (nor was asked for one within `COPY_PASSED_OVER_MS` and didn't take it). Of those: one its memory restores on first (for a snapshot with
  * memory), then one on its runtime (the same host image, so it has its root image), then the most disk free.
  */
@@ -148,6 +149,7 @@ export function copyTarget(
 			!holding.has(host.id) &&
 			host.id !== passedOver &&
 			architectures.has(host.arch) &&
+			rootImageOn(host, snapshot) &&
 			(host.accountId === undefined || host.accountId === snapshot.accountId) &&
 			(host.features === undefined || SNAPSHOT_COPY_FEATURES.every((feature) => host.features?.includes(feature))) &&
 			(host.freeDiskGb === undefined || host.freeDiskGb * 1024 ** 3 >= bytes + SNAPSHOT_FETCH_HEADROOM_BYTES) &&

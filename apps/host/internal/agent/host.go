@@ -212,7 +212,7 @@ func New(cfg Config, version string, log *slog.Logger) (*Host, error) {
 			TemplateBuilder: templateBuilder(cfg.TemplateBuilder),
 			Bundles:         bundleCache, BundleDrives: bundleDrives, FetchBundle: h.fetchBundle, MountEvents: h.mountsEvent,
 			FetchSticky: h.fetchStickyLater, FetchRootfs: h.fetchRootfs, FetchTemplate: h.fetchTemplate,
-			Pool: h.pool, HostImage: h.hostImage,
+			Pool: h.pool, HostImage: h.hostImage, HostImages: h.sandboxImages,
 			Root: cfg.Root + "/microvm", Firecracker: cfg.Firecracker, Kernel: cfg.Kernel, Rootfs: cfg.SandboxImage,
 			Sizes: sizes, Network: netm, ProxyPort: cfg.ProxyPort, DNS: cfg.DNS, Log: log, KeepForkSnapshots: cfg.KeepForkSnapshots,
 			PinBase: cfg.ImagePatching, BackgroundTemplates: cfg.ImagePatching,
@@ -401,7 +401,7 @@ func (h *Host) makeFacts() proto.Facts {
 		features = append(features, proto.FeatureTemplateSync, proto.FeatureTemplateImageCopies)
 	}
 	if h.fetches(proto.DiskKindSnapshot) {
-		features = append(features, proto.FeatureSnapshotSync)
+		features = append(features, proto.FeatureSnapshotSync, proto.FeatureSnapshotImageDigest)
 	}
 	if h.movesSandboxes() {
 		features = append(features, proto.FeatureSandboxMove, proto.FeatureSandboxMoveRunning, proto.FeatureFetchBytes)

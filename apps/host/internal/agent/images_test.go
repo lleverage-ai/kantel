@@ -492,3 +492,22 @@ func TestTheIsolateTierKeepsAPinnedKernel(t *testing.T) {
 		t.Fatalf("default kernel %s; want b's, the root filesystem's", kernel)
 	}
 }
+
+// The versions installed are the host's whether image patching is on or off: turning it off stops downloads and
+// prunes, never the files a snapshot over one of them is over (microvm.Config.HostImages, and the runtimes reported).
+func TestSandboxImagesWithImagePatchingOff(t *testing.T) {
+	h := newLifecycleHost(t, newLifecycleTier())
+	h.cfg.ImagesDir = filepath.Join(h.cfg.Root, "images")
+	if got := h.sandboxImages(); len(got) != 0 {
+		t.Fatalf("a host with no versions has %v", got)
+	}
+	dir := filepath.Join(h.cfg.ImagesDir, "v", "old")
+	writeFile(t, filepath.Join(dir, "manifest.json"), "{}")
+	writeFile(t, filepath.Join(dir, "sandbox.ext4"), "old")
+	for _, patching := range []bool{false, true} {
+		h.cfg.ImagePatching = patching
+		if got := h.sandboxImages(); len(got) != 1 || filepath.Base(filepath.Dir(got[0])) != "old" {
+			t.Fatalf("patching %v: %v", patching, got)
+		}
+	}
+}
