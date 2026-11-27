@@ -10,7 +10,9 @@ import {
 	type Pool,
 	type Sandbox,
 	type SandboxState,
+	SHARED_CHECK_POLL_MS,
 	sandboxActions,
+	sandboxesListPollMs,
 	sandboxesPollMs,
 	sandboxMachineText,
 	stoppedByText,
@@ -210,6 +212,27 @@ describe("a sandbox whose host isn't connected", () => {
 		// A story's page, frozen at one time, isn't read again for its host.
 		expect(sandboxesPollMs([{ state: "running", hostUnreachable: true }], 1_000, true)).toBeUndefined();
 		expect(HOST_CHECK_POLL_MS).toBe(15_000);
+	});
+
+	it("keeps the list's backstop with the live feed while some are between states, which are read by ID instead", () => {
+		const moving = [{ state: "running" as const }, { state: "starting" as const }];
+		expect(sandboxesListPollMs(moving, 1_000, false, true)).toBe(HOST_CHECK_POLL_MS);
+		expect(sandboxesListPollMs([{ state: "starting" }], 1_000, false, true)).toBeUndefined();
+		expect(sandboxesListPollMs([{ state: "stopped", hostUnreachable: true }], 1_000, false, true)).toBe(
+			HOST_CHECK_POLL_MS,
+		);
+		// Without the live feed the list is all there is to read, at the pace of the quickest.
+		expect(sandboxesListPollMs(moving, 1_000, false, false)).toBe(1_000);
+		expect(sandboxesListPollMs([{ state: "running" }], 1_000, true, true)).toBeUndefined();
+		// An organisation's list is read every minute while nothing runs; a person's own isn't.
+		expect(sandboxesListPollMs([{ state: "stopped" }], 1_000, false, true, true)).toBe(SHARED_CHECK_POLL_MS);
+		expect(sandboxesListPollMs([{ state: "running" }], 1_000, false, true, true)).toBe(HOST_CHECK_POLL_MS);
+		expect(sandboxesListPollMs([{ state: "stopped" }], 1_000, false, true)).toBeUndefined();
+		expect(sandboxesListPollMs([{ state: "stopped" }], 1_000, true, true, true)).toBeUndefined();
+		// A host away still has the backstop while its sandbox is between states.
+		expect(sandboxesListPollMs([{ state: "starting", hostUnreachable: true }], 1_000, false, true)).toBe(
+			HOST_CHECK_POLL_MS,
+		);
 	});
 });
 
@@ -554,6 +577,15 @@ describe("New sandbox", () => {
 			// And its shapes say so: no microVMs in ci while its hosts are away.
 			expect((await source.sandboxes.shapes?.(LLEVERAGE.id, undefined, "pool_ci"))?.microvm.available).toBe(false);
 			expect((await source.sandboxes.shapes?.(LLEVERAGE.id))?.microvm.available).not.toBe(false);
+		});
+
+		it("is in its host's pool read by ID or changed, as in the list, so a row keeps its pool between list reads", async () => {
+			const { sandboxes: source } = createComputeFixtures();
+			const listed = (await source.list(LLEVERAGE.id)).find((box) => box.poolId !== undefined);
+			expect(listed).toBeDefined();
+			if (listed === undefined) return;
+			expect((await source.get(listed.id)).poolId).toBe(listed.poolId);
+			expect((await source.rename?.(listed.id, `${listed.name}-2`))?.poolId).toBe(listed.poolId);
 		});
 	});
 

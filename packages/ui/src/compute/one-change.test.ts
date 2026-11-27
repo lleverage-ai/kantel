@@ -2,21 +2,30 @@ import { describe, expect, it } from "vitest";
 import type { Sandbox, SandboxesSource } from "./compute-model.ts";
 import { autoStopChanges } from "./one-change.ts";
 import { setAutoStop } from "./sandbox-actions.tsx";
-import { ChangeCounter, changeTaken } from "./sandbox-selection.ts";
+import { isPlaceholder, type LocalChange, withRead } from "./sandbox-selection.ts";
 
-/** The list's change path: its counter, the rows it shows (null for a deleted one), and how often it reads again. */
+/**
+ * The list's change path: the number each call takes as it's made, the rows it shows (null for a deleted one), and how
+ * often it reads again.
+ */
 function list() {
-	const changes = new ChangeCounter();
+	let seq = 0;
+	let local: ReadonlyMap<string, LocalChange<Sandbox>> = new Map();
 	const rows = new Map<string, Sandbox | null>();
 	const read = { count: 0 };
 	return {
 		rows,
 		read,
-		asked: (id: string) => changes.ask(id),
+		asked: (_id: string) => {
+			seq += 1;
+			return seq;
+		},
 		onChange: (box: Sandbox | null, id: string, asked?: number) => {
-			const taken = changeTaken(changes, id, asked);
-			if (taken.show) rows.set(id, box);
-			if (taken.reload) read.count += 1;
+			if (asked === undefined) seq += 1;
+			local = withRead(local, id, box, asked ?? seq, 0);
+			rows.clear();
+			for (const [shownId, change] of local) rows.set(shownId, change.box);
+			if (!isPlaceholder(id)) read.count += 1;
 		},
 	};
 }

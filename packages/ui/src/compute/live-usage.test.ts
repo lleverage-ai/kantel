@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { UsageSeries } from "./compute-model.ts";
-import { gbText, lineOf, mergeSeries } from "./live-usage.ts";
+import { gbText, lineOf, mergeSeries, spreadWait } from "./live-usage.ts";
 import { linePoints, lineSegments } from "./parts.tsx";
 import { STUB_INTERVAL_MS, stubUsage } from "./usage-stub.ts";
 
@@ -129,5 +129,14 @@ describe("a graph's line", () => {
 		const [half, over] = linePoints([4, 12], { width: 10, height: 11, max: 8 });
 		expect(half?.[1]).toBeCloseTo(5.5);
 		expect(over?.[1]).toBe(1);
+	});
+});
+
+describe("a row's first read, spread", () => {
+	it("waits a random whole number of milliseconds under the spread, or none without one", () => {
+		expect(spreadWait(0)).toBe(0);
+		expect(spreadWait(5_000, () => 0)).toBe(0);
+		expect(spreadWait(5_000, () => 0.5)).toBe(2_500);
+		expect(spreadWait(5_000, () => 0.99999)).toBe(4_999);
 	});
 });

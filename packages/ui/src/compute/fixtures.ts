@@ -2319,9 +2319,14 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 		if (found === undefined) throw new Error(`No ${what} ${id}.`);
 		return found;
 	};
+	/** A sandbox as the API answers it, in its host's pool as the `pools` option puts the hosts. */
+	const pooled = (box: Sandbox): Sandbox => {
+		const poolId = box.hostId === undefined ? undefined : hosts.get(box.hostId)?.poolId;
+		return poolId === undefined || poolId === box.poolId ? box : { ...box, poolId };
+	};
 	const put = (box: Sandbox): Sandbox => {
 		sandboxes.set(box.id, box);
-		return box;
+		return pooled(box);
 	};
 	const putEnvironment = (env: Environment): Environment => {
 		const next = { ...env, updatedAt: now() };
@@ -2584,15 +2589,11 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 					if (poolKind === "fail") throw new Error("Kantel couldn't read the pools right now.");
 					return [...pools.values()].map(poolView);
 				}),
-			// Each in its host's pool as the `pools` option puts the hosts.
 			list: (accountId) =>
 				gate(() =>
 					[...sandboxes.values()]
 						.filter((box) => box.accountId === accountId)
-						.map((box) => {
-							const poolId = box.hostId === undefined ? undefined : hosts.get(box.hostId)?.poolId;
-							return poolId === undefined || poolId === box.poolId ? box : { ...box, poolId };
-						})
+						.map(pooled)
 						.sort((a, b) => b.createdAt - a.createdAt),
 				),
 			create: (input: CreateSandboxInput) =>
@@ -2676,11 +2677,10 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 									},
 								}),
 					};
-					put(box);
 					history.set(id, []);
 					// An isolate is up almost at once; a microVM from a snapshot in about a second.
 					settle(id, (current) => ({ ...current, state: "running", usage: usageSeries(id.length, 0.3) }));
-					return box;
+					return put(box);
 				}),
 			stop: (id) =>
 				gate(() => {
@@ -2722,10 +2722,9 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						forkedFrom: from.id,
 						...(hosting === "hosted" ? { costCents: 0 } : {}),
 					};
-					put(box);
 					history.set(forkId, []);
 					settle(forkId, (current) => ({ ...current, state: "running", usage: usageSeries(forkId.length, 0.3) }));
-					return box;
+					return put(box);
 				}),
 			// As Kantel does: the same sandbox, a microVM now, running once its files are in.
 			upgrade: (id) =>
@@ -2841,7 +2840,7 @@ export function createComputeFixtures(options: ComputeFixtureOptions = {}): Comp
 						? []
 						: COMMANDS.map((command) => moved(command, ["startedAt"]));
 				}),
-			get: (id) => gate(() => find(sandboxes, id, "sandbox")),
+			get: (id) => gate(() => pooled(find(sandboxes, id, "sandbox"))),
 			environments: {
 				list: (sandboxId) => gate(() => sandboxEnvironmentsOf(sandboxId)),
 				attach: (sandboxId, environmentId, position) =>

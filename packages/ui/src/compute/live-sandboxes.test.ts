@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { SandboxesSource } from "./compute-model.ts";
-import { followSandboxes, WATCH_SETTLE_MS } from "./live-sandboxes.ts";
+import { followSandboxes, type SandboxBurst, type Visibility, WATCH_SETTLE_MS } from "./live-sandboxes.ts";
 
 type Changed = (sandboxId?: string, deleted?: boolean) => void;
 
@@ -18,6 +18,26 @@ function source() {
 	};
 	return { watched, watchers, send };
 }
+
+/** A tab the test hides and shows. */
+function tab() {
+	let hidden = false;
+	const listeners = new Set<() => void>();
+	const visibility: Visibility = {
+		hidden: () => hidden,
+		listen(changed) {
+			listeners.add(changed);
+			return () => listeners.delete(changed);
+		},
+	};
+	const set = (to: boolean) => {
+		hidden = to;
+		for (const changed of [...listeners]) changed();
+	};
+	return { visibility, hide: () => set(true), show: () => set(false), listeners };
+}
+
+const ids = (...each: string[]): ReadonlySet<string> => new Set(each);
 
 beforeEach(() => {
 	vi.useFakeTimers();
@@ -103,5 +123,63 @@ describe("followSandboxes", () => {
 		vi.advanceTimersByTime(WATCH_SETTLE_MS);
 		stop();
 		expect(reload).not.toHaveBeenCalled();
+	});
+
+	it("says which sandboxes a burst changed and which it deleted, each once", () => {
+		const { watched, send } = source();
+		const bursts: SandboxBurst[] = [];
+		followSandboxes(watched, "acc_1", (burst) => bursts.push(burst));
+		send("sbx_1");
+		send("sbx_2");
+		send("sbx_1");
+		send("sbx_2", true);
+		send("sbx_3", true);
+		vi.advanceTimersByTime(WATCH_SETTLE_MS);
+		expect(bursts).toEqual([{ all: false, changed: ids("sbx_1"), deleted: ids("sbx_2", "sbx_3") }]);
+	});
+
+	it("says everything on a (re)connection, keeping the deletions it saw", () => {
+		const { watched, send } = source();
+		const bursts: SandboxBurst[] = [];
+		followSandboxes(watched, "acc_1", (burst) => bursts.push(burst));
+		send("sbx_1");
+		send("sbx_2", true);
+		send();
+		vi.advanceTimersByTime(WATCH_SETTLE_MS);
+		expect(bursts).toEqual([{ all: true, deleted: ids("sbx_2") }]);
+	});
+
+	it("hands nothing over while the tab is hidden, and what it missed once when it's shown", () => {
+		const { watched, send } = source();
+		const { visibility, hide, show, listeners } = tab();
+		const bursts: SandboxBurst[] = [];
+		const stop = followSandboxes(watched, "acc_1", (burst) => bursts.push(burst), { visibility });
+		hide();
+		send("sbx_1");
+		vi.advanceTimersByTime(WATCH_SETTLE_MS * 10);
+		send("sbx_2");
+		vi.advanceTimersByTime(WATCH_SETTLE_MS * 10);
+		expect(bursts).toEqual([]);
+
+		show();
+		expect(bursts).toEqual([{ all: false, changed: ids("sbx_1", "sbx_2"), deleted: ids() }]);
+		hide();
+		show();
+		expect(bursts).toHaveLength(1);
+
+		stop();
+		expect(listeners.size).toBe(0);
+	});
+
+	it("says everything on showing a tab that was hidden through a reconnection", () => {
+		const { watched, send } = source();
+		const { visibility, hide, show } = tab();
+		const bursts: SandboxBurst[] = [];
+		followSandboxes(watched, "acc_1", (burst) => bursts.push(burst), { visibility });
+		hide();
+		send();
+		vi.advanceTimersByTime(WATCH_SETTLE_MS);
+		show();
+		expect(bursts).toEqual([{ all: true, deleted: ids() }]);
 	});
 });

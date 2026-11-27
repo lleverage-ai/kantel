@@ -67,6 +67,7 @@ export type {
 	PoolsSource,
 	ProxySource,
 	PublicUrlSource,
+	ReadOptions,
 	SandboxBase,
 	SandboxCreator,
 	SandboxEgress,
