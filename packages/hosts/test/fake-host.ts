@@ -409,6 +409,8 @@ export class FakeHost {
 				return answer({ size: (message.params as { size?: number }).size ?? 0, mode: "644" });
 			case "sandbox.files.abort":
 				return answer({});
+			case "sandbox.files.write":
+				return answer({ ok: true });
 			case "sandbox.files.extract": {
 				const extract = message.params as { archive: string; target: string };
 				this.extracts.push({ archive: extract.archive, target: extract.target });
@@ -549,7 +551,11 @@ export class FakeHost {
 			case "port.open":
 			case "sandbox.egress":
 			case "sandbox.env":
+			case "sandbox.upgrade.freeze":
+			case "sandbox.upgrade.thaw":
 				return answer({ ok: true });
+			case "sandbox.files.list":
+				return answer({ entries: [] });
 			case "sandbox.secrets":
 			case "sandbox.signing":
 				return answer({});

@@ -680,7 +680,11 @@ func (m *Manager) PublishFetchedSandbox(id, version string, parts map[string]dis
 	if rec.Memory && !m.memoryFetched(id, version) {
 		return fmt.Errorf("sandbox %s's memory wasn't fetched with its disk", id)
 	}
-	s := &sandbox{dir: filepath.Join(m.cfg.Root, "sandboxes", id)}
+	sdir, err := m.sandboxDir(id)
+	if err != nil {
+		return err
+	}
+	s := &sandbox{dir: sdir}
 	s.meta = importedMeta(rec.Meta, version, m.pulledRootfs(rec.Rootfs), rec.Rootfs, rec.Memory)
 	s.healthAt = s.meta.HealthAt
 	for _, part := range SandboxParts {

@@ -6,9 +6,10 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { computeSchema } from "@kantel/api";
 import { createKantelClient, KantelApiError, type KantelClient } from "@kantel/api/sdk";
-import { afterEach, describe, expect, it } from "vitest";
+import { KantelError } from "@kantel/contracts";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonIdentity } from "../src/auth.ts";
-import type { BackendGitSigning, SandboxBackend, SandboxSpec } from "../src/backend.ts";
+import type { BackendGitSigning, BootOptions, SandboxBackend, SandboxSpec } from "../src/backend.ts";
 import { normaliseAllowedEmails, parseGitSigningKey } from "../src/git-signing.ts";
 import { type ComputeApi, createComputeApi } from "../src/http.ts";
 import { createStubBackend, STUB_HOST_ID } from "../src/stub-backend.ts";
@@ -162,6 +163,8 @@ function hasBinary(cmd: string): boolean {
 
 interface Recorded {
 	readonly specs: SandboxSpec[];
+	readonly starts: { readonly sandboxId: string; readonly options: BootOptions }[];
+	readonly resumes: { readonly sandboxId: string; readonly options: BootOptions }[];
 	readonly signing: {
 		readonly sandboxId: string;
 		readonly signing: BackendGitSigning | null;
@@ -169,9 +172,19 @@ interface Recorded {
 	}[];
 }
 
-function setup(options: { readonly secretsKey?: string; readonly hostFeatures?: readonly string[] } = {}) {
+function setup(
+	options: {
+		readonly secretsKey?: string;
+		readonly hostFeatures?: readonly string[];
+		readonly onUpdateSigning?: (
+			sandboxId: string,
+			signing: BackendGitSigning | null,
+			version: number,
+		) => Promise<void> | void;
+	} = {},
+) {
 	const stub = createStubBackend();
-	const recorded: Recorded = { specs: [], signing: [] };
+	const recorded: Recorded = { specs: [], starts: [], resumes: [], signing: [] };
 	let clock = 1_760_000_000_000;
 	const backend: SandboxBackend = {
 		...stub,
@@ -187,11 +200,20 @@ function setup(options: { readonly secretsKey?: string; readonly hostFeatures?: 
 			recorded.specs.push(spec);
 			return stub.create(spec);
 		},
+		start: async (sandboxId, bootOptions) => {
+			recorded.starts.push({ sandboxId, options: bootOptions });
+			return stub.start(sandboxId, bootOptions);
+		},
+		resume: async (sandboxId, bootOptions) => {
+			recorded.resumes.push({ sandboxId, options: bootOptions });
+			return stub.resume(sandboxId, bootOptions);
+		},
 		fork: async (source, targets) => {
 			recorded.specs.push(...targets);
 			return stub.fork(source, targets);
 		},
 		updateSigning: async (sandboxId, signing, version) => {
+			await options.onUpdateSigning?.(sandboxId, signing, version);
 			recorded.signing.push({ sandboxId, signing, version });
 		},
 	};
@@ -595,5 +617,228 @@ describe("environment host-side Git signing", () => {
 		);
 		expect(err.code).toBe("not_supported");
 		expect(err.message).toMatch(/doesn't support host-side Git signing/i);
+	});
+
+	it("retries lost signing revocations, email removals and fallback updates on sweep", async () => {
+		let failNext = 0;
+		const { api, tom, recorded } = setup({
+			onUpdateSigning: async () => {
+				if (failNext > 0) {
+					failNext--;
+					throw new KantelError("unavailable", "host disconnected");
+				}
+			},
+		});
+		const envA = await tom.createEnvironment({ name: "fallback-env" });
+		const envB = await tom.createEnvironment({ name: "primary-env" });
+		const keyA = buildPgpEd25519Key({ uid: "a@lleverage.ai", seedByte: 0x31 });
+		const keyB = buildSshEd25519Key({ seedByte: 0x32 });
+		const savedA = await tom.setEnvironmentGitSigning(envA.id, { privateKey: keyA });
+		await tom.setEnvironmentGitSigning(envB.id, {
+			privateKey: keyB,
+			allowedEmails: ["b@lleverage.ai", "extra@lleverage.ai"],
+		});
+
+		const sandbox = await tom.createSandbox({
+			name: "retry-vm",
+			type: "microvm",
+			environments: [envA.id, envB.id],
+			wait: true,
+		});
+
+		// 1. Allowed-email removal loses its initial delivery: sweep retries and converges.
+		failNext = 1;
+		await tom.setEnvironmentGitSigning(envB.id, { allowedEmails: ["b@lleverage.ai"] });
+		// Give the initial failed background push a moment to finish failing without advancing signingApplied.
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(recorded.signing).toHaveLength(0);
+		const storedAfterFail = await api.store.sandboxes.get(sandbox.id);
+		expect(storedAfterFail?.signingFloor).toBeDefined();
+		expect(storedAfterFail?.signingApplied ?? 0).toBeLessThan(storedAfterFail?.signingFloor ?? 0);
+
+		await api.service.sweep();
+		await expect.poll(() => recorded.signing.length).toBe(1);
+		const afterEmailSweep = await api.store.sandboxes.get(sandbox.id);
+		expect(afterEmailSweep?.signingApplied).toBeGreaterThanOrEqual(afterEmailSweep?.signingFloor ?? 0);
+		const fetchedAfterEmail = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
+		expect(fetchedAfterEmail?.allowedEmails).toEqual(["b@lleverage.ai"]);
+
+		// 2. Detaching envB (fallback to envA) loses initial delivery: sweep delivers envA's key.
+		failNext = 1;
+		await tom.detachSandboxEnvironment(sandbox.id, envB.id);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(recorded.signing).toHaveLength(1);
+		await api.service.sweep();
+		await expect.poll(() => recorded.signing.length).toBe(2);
+		expect(recorded.signing[1]?.signing?.keyId).toBe(savedA.gitSigning?.keyId);
+
+		// 3. Deleting envA's key loses initial delivery: sweep delivers null and signingKey answers disabled.
+		failNext = 1;
+		await tom.deleteEnvironmentGitSigning(envA.id);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		expect(recorded.signing).toHaveLength(2);
+		await api.service.sweep();
+		await expect.poll(() => recorded.signing.length).toBe(3);
+		expect(recorded.signing[2]?.signing).toBeNull();
+		const afterDelete = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
+		expect(afterDelete?.enabled).toBe(false);
+	});
+
+	it("clears inherited signing on start, resume and fork after a stopped key is removed", async () => {
+		const { tom, recorded } = setup();
+		const envA = await tom.createEnvironment({ name: "stopped-env" });
+		const envFallback = await tom.createEnvironment({ name: "backup-env" });
+		await tom.setEnvironmentGitSigning(envA.id, { privateKey: buildPgpEd25519Key({ uid: "stop@lleverage.ai" }) });
+
+		// Create microVM with envA (no signingFloor on sandbox), then stop it.
+		const vm = await tom.createSandbox({
+			name: "stopped-clear-vm",
+			type: "microvm",
+			environment: envA.id,
+			wait: true,
+		});
+		await tom.stopSandbox(vm.id);
+
+		// Remove the key while the VM is stopped (liveFrom doesn't touch stopped VMs).
+		await tom.deleteEnvironmentGitSigning(envA.id);
+
+		// Forking the stopped source must pass clearGitSigning: true rather than inheriting stale metadata.
+		const [forked] = (await tom.forkSandbox(vm.id, { name: "stopped-clear-fork", wait: true })).items;
+		const forkSpec = recorded.specs.find((spec) => spec.sandboxId === forked?.id);
+		expect(forkSpec?.gitSigning).toBeUndefined();
+		expect(forkSpec?.clearGitSigning).toBe(true);
+		expect(forkSpec?.signingVersion).toBeGreaterThan(0);
+
+		// Starting the stopped VM must pass clearGitSigning: true and no gitSigning.
+		await tom.startSandbox(vm.id, { wait: true });
+		const startCall = recorded.starts.find((entry) => entry.sandboxId === vm.id);
+		expect(startCall?.options.gitSigning).toBeUndefined();
+		expect(startCall?.options.clearGitSigning).toBe(true);
+		expect(startCall?.options.signingVersion).toBeGreaterThan(0);
+
+		// Paused VM with fallback environment: removing top key falls back to backup key instead of clearing.
+		const backupSaved = await tom.setEnvironmentGitSigning(envFallback.id, {
+			privateKey: buildSshEd25519Key({ seedByte: 0x44 }),
+			allowedEmails: ["backup@lleverage.ai"],
+		});
+		await tom.setEnvironmentGitSigning(envA.id, { privateKey: buildPgpEd25519Key({ uid: "top@lleverage.ai" }) });
+		const pausedVm = await tom.createSandbox({
+			name: "paused-fallback-vm",
+			type: "microvm",
+			environments: [envFallback.id, envA.id],
+			wait: true,
+		});
+		await tom.stopSandbox(pausedVm.id, { keepMemory: true });
+		await tom.deleteEnvironmentGitSigning(envA.id);
+		await tom.resumeSandbox(pausedVm.id, { wait: true });
+		const resumeCall = recorded.resumes.find((entry) => entry.sandboxId === pausedVm.id);
+		expect(resumeCall?.options.clearGitSigning).toBeUndefined();
+		expect(resumeCall?.options.gitSigning?.keyId).toBe(backupSaved.gitSigning?.keyId);
+
+		// Paused VM with single environment: removing key while paused sends clearGitSigning on resume.
+		await tom.stopSandbox(vm.id, { keepMemory: true });
+		await tom.setEnvironmentGitSigning(envA.id, { privateKey: buildPgpEd25519Key({ uid: "p@lleverage.ai" }) });
+		await tom.resumeSandbox(vm.id, { wait: true });
+		await tom.stopSandbox(vm.id, { keepMemory: true });
+		await tom.deleteEnvironmentGitSigning(envA.id);
+		await tom.resumeSandbox(vm.id, { wait: true });
+		const lastResume = recorded.resumes.filter((entry) => entry.sandboxId === vm.id).at(-1);
+		expect(lastResume?.options.gitSigning).toBeUndefined();
+		expect(lastResume?.options.clearGitSigning).toBe(true);
+	});
+
+	it("rejects stale passphrase-only clear or replacement when the key rotates concurrently", async () => {
+		const { api, tom } = setup();
+		const env = await tom.createEnvironment({ name: "race-env" });
+		const unencKey1 = buildSshEd25519Key({ seedByte: 0x51, encrypted: false });
+		const encKey2 = buildSshEd25519Key({ seedByte: 0x52, encrypted: true });
+		const encKey3 = buildSshEd25519Key({ seedByte: 0x53, encrypted: true });
+		await tom.setEnvironmentGitSigning(env.id, {
+			privateKey: unencKey1,
+			passphrase: "unused-initial-passphrase",
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		const sandbox = await tom.createSandbox({
+			name: "race-vm",
+			type: "microvm",
+			environment: env.id,
+			wait: true,
+		});
+
+		// Case 1: passphrase clear pauses inside sealer.openText (crypto.subtle.decrypt) while another request rotates to encKey2.
+		let releaseDecrypt!: () => void;
+		const decryptStarted = new Promise<void>((resolve) => {
+			const origDecrypt = crypto.subtle.decrypt.bind(crypto.subtle);
+			let gated = false;
+			vi.spyOn(crypto.subtle, "decrypt").mockImplementation(async (...args) => {
+				if (!gated) {
+					gated = true;
+					resolve();
+					await new Promise<void>((done) => {
+						releaseDecrypt = done;
+					});
+				}
+				return origDecrypt(...args);
+			});
+		});
+
+		const clearAttempt = tom.setEnvironmentGitSigning(env.id, { passphrase: "" });
+		await decryptStarted;
+		await tom.setEnvironmentGitSigning(env.id, {
+			privateKey: encKey2,
+			passphrase: "key2-passphrase",
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		releaseDecrypt();
+		const clearErr = await failure(clearAttempt);
+		expect(clearErr.code).toBe("conflict");
+		vi.restoreAllMocks();
+
+		// Replacement encrypted key must retain its passphrase untouched.
+		const afterClearRace = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
+		expect(afterClearRace?.privateKey).toBe(encKey2);
+		expect(afterClearRace?.passphrase).toBe("key2-passphrase");
+
+		// Case 2: passphrase-only replacement pauses inside sealer.seal (crypto.subtle.encrypt) while another request rotates to encKey3.
+		let releaseEncrypt!: () => void;
+		const encryptStarted = new Promise<void>((resolve) => {
+			const origEncrypt = crypto.subtle.encrypt.bind(crypto.subtle);
+			let gated = false;
+			vi.spyOn(crypto.subtle, "encrypt").mockImplementation(async (...args) => {
+				if (!gated) {
+					gated = true;
+					resolve();
+					await new Promise<void>((done) => {
+						releaseEncrypt = done;
+					});
+				}
+				return origEncrypt(...args);
+			});
+		});
+
+		const replaceAttempt = tom.setEnvironmentGitSigning(env.id, { passphrase: "stale-passphrase" });
+		await encryptStarted;
+		await tom.setEnvironmentGitSigning(env.id, {
+			privateKey: encKey3,
+			passphrase: "key3-passphrase",
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		releaseEncrypt();
+		const replaceErr = await failure(replaceAttempt);
+		expect(replaceErr.code).toBe("conflict");
+		vi.restoreAllMocks();
+
+		const afterReplaceRace = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
+		expect(afterReplaceRace?.privateKey).toBe(encKey3);
+		expect(afterReplaceRace?.passphrase).toBe("key3-passphrase");
+
+		// Case 3: allowed-email-only update merges independently without touching the key or passphrase.
+		const emailsOnly = await tom.setEnvironmentGitSigning(env.id, {
+			allowedEmails: ["jeff@lleverage.ai", "ci@lleverage.ai"],
+		});
+		expect(emailsOnly.gitSigning?.allowedEmails).toEqual(["jeff@lleverage.ai", "ci@lleverage.ai"]);
+		const afterEmails = await api.service.signingKey(STUB_HOST_ID, sandbox.id);
+		expect(afterEmails?.privateKey).toBe(encKey3);
+		expect(afterEmails?.passphrase).toBe("key3-passphrase");
 	});
 });

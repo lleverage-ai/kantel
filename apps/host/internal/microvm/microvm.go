@@ -293,10 +293,12 @@ type meta struct {
 	Env       map[string]string `json:"env,omitempty"`
 	SSHKeys   []string          `json:"sshKeys,omitempty"`
 	// GitSigning is the public half of the sandbox's Git signing key, which its identity carries. The private key is
-	// never here: the host fetches it from Kantel and holds it in memory only (package signing).
-	GitSigning *proto.GitSigning `json:"gitSigning,omitempty"`
-	Owner      string            `json:"owner,omitempty"`
-	Error      string            `json:"error,omitempty"`
+	// never here: the host fetches it from Kantel and holds it in memory only (package signing). SigningVersion tracks
+	// the newest accepted signing revision even across clears so older notifications can't roll metadata back.
+	GitSigning     *proto.GitSigning `json:"gitSigning,omitempty"`
+	SigningVersion int64             `json:"signingVersion,omitempty"`
+	Owner          string            `json:"owner,omitempty"`
+	Error          string            `json:"error,omitempty"`
 	// HealthAt is the sandbox's healthAt as last written (FeatureExitStamps): its last machine's last health stamp, so a
 	// stopped sandbox's exit keeps naming the machine that ended across restarts of the host, and the next machine's
 	// stamps start above it.
@@ -969,6 +971,17 @@ func guestSigning(g *proto.GitSigning) *guest.GitSigningConfig {
 	return &guest.GitSigningConfig{Format: g.Format, KeyID: g.KeyID, Fingerprint: g.Fingerprint, PublicKey: g.PublicKey}
 }
 
+func signingVersionOf(g *proto.GitSigning, version int64) int64 {
+	if g != nil && g.Version > version {
+		return g.Version
+	}
+	return version
+}
+
+func (s *sandbox) signingVersion() int64 {
+	return signingVersionOf(s.meta.GitSigning, s.meta.SigningVersion)
+}
+
 // RefreshMounts lists a running sandbox's bucket mounts again now (path: just that one) and shows the guest the new
 // manifests; a failed mount is tried again.
 func (m *Manager) RefreshMounts(ctx context.Context, p proto.MountsRefreshParams) ([]proto.MountStatus, error) {
@@ -1206,6 +1219,11 @@ func (m *Manager) adopt() error {
 				s.guest = guest.NewClient(filepath.Join(s.vmDir(), fc.VsockSocket))
 				m.attach(s, link.Slot)
 				m.watch(s, machine)
+				if m.cfg.Signing != nil {
+					if v := s.signingVersion(); v > 0 {
+						m.cfg.Signing.Store().Require(s.meta.ID, v)
+					}
+				}
 				m.listenSigning(s)
 				if mt := m.mountsOf(s); mt != nil {
 					// The guest's mounts are still up: serve them again (each lists its prefix when first asked). Their
@@ -2305,7 +2323,7 @@ func (m *Manager) unregister(id string) {
 }
 
 func validID(id string) bool {
-	if id == "" || len(id) > 100 {
+	if id == "" || len(id) > 100 || strings.Contains(id, "..") || strings.ContainsAny(id, `/\`) {
 		return false
 	}
 	for _, r := range id {
@@ -2314,6 +2332,20 @@ func validID(id string) bool {
 		}
 	}
 	return true
+}
+
+// sandboxDir returns the sandbox directory under Root/sandboxes, anchored to Root so path traversal is rejected.
+func (m *Manager) sandboxDir(id string) (string, error) {
+	if !validID(id) || strings.Contains(id, "..") || strings.Contains(id, "/") || strings.Contains(id, `\`) {
+		return "", &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
+	}
+	base := filepath.Clean(filepath.Join(m.cfg.Root, "sandboxes"))
+	dir := filepath.Clean(filepath.Join(base, id))
+	rel, err := filepath.Rel(base, dir)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || !strings.HasPrefix(dir, base+string(filepath.Separator)) {
+		return "", &proto.Error{Code: proto.ErrInvalid, Message: "bad sandbox ID"}
+	}
+	return dir, nil
 }
 
 // sandboxOrigin is where a new sandbox's machine comes from: the root filesystem it reads,
@@ -2463,8 +2495,11 @@ func (m *Manager) create(ctx context.Context, p proto.CreateParams, takeDisk boo
 	ph := &proto.StartPhases{}
 	start := time.Now()
 	began := start
-	dir := filepath.Join(m.cfg.Root, "sandboxes", p.SandboxID)
-	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Size: size.Name, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Egress: p.Egress, Env: p.Env, SSHKeys: p.SSHAuthorizedKeys, GitSigning: p.GitSigning, Owner: p.Owner, Mounts: p.Mounts}}
+	dir, err := m.sandboxDir(p.SandboxID)
+	if err != nil {
+		return proto.SandboxInfo{}, err
+	}
+	s := &sandbox{dir: dir, meta: meta{ID: p.SandboxID, Size: size.Name, State: proto.StateStarting, CreatedAt: time.Now().UnixMilli(), Egress: p.Egress, Env: p.Env, SSHKeys: p.SSHAuthorizedKeys, GitSigning: p.GitSigning, SigningVersion: signingVersionOf(p.GitSigning, p.SigningVersion), Owner: p.Owner, Mounts: p.Mounts}}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := m.register(s, size); err != nil {
@@ -3136,8 +3171,14 @@ func (m *Manager) Resume(ctx context.Context, p proto.ResumeParams, coldBoot boo
 		s.unsaved = true
 	}
 	if p.ClearGitSigning || p.GitSigning != nil {
-		s.meta.GitSigning = nextGitSigning(s.meta.GitSigning, p.GitSigning, p.ClearGitSigning)
-		s.unsaved = true
+		ver := signingVersionOf(p.GitSigning, p.SigningVersion)
+		if ver == 0 || ver >= s.signingVersion() {
+			s.meta.GitSigning = nextGitSigning(s.meta.GitSigning, p.GitSigning, p.ClearGitSigning)
+			if ver > s.meta.SigningVersion {
+				s.meta.SigningVersion = ver
+			}
+			s.unsaved = true
+		}
 	}
 	// Its memory as it was stopped: one this start lets go of, and then fails, is said gone, so Kantel ends the commands
 	// that ran in it rather than wait for them to come back.
@@ -3300,6 +3341,11 @@ func (m *Manager) Fork(ctx context.Context, p proto.ForkParams) (proto.SandboxIn
 		params.Egress = src.meta.Egress
 	}
 	params.GitSigning = nextGitSigning(src.meta.GitSigning, p.GitSigning, p.ClearGitSigning)
+	if p.ClearGitSigning || p.GitSigning != nil {
+		params.SigningVersion = signingVersionOf(params.GitSigning, p.SigningVersion)
+	} else {
+		params.SigningVersion = src.signingVersion()
+	}
 	src.mu.Unlock()
 	start = time.Now()
 	takeDisk := live && !m.cfg.KeepForkSnapshots
@@ -4838,16 +4884,36 @@ func (m *Manager) SetEnv(id string, env map[string]string) error {
 	return m.writeMeta(s)
 }
 
+// SigningVersion is the newest Git signing revision accepted for sandbox id (0 when none has been accepted).
+func (m *Manager) SigningVersion(id string) int64 {
+	s, err := m.get(id)
+	if err != nil {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.signingVersion()
+}
+
 // SetSigning replaces a sandbox's Git signing key (its public half: nil for none) in meta.json, and in its guest
-// when it runs. A guest agent from before POST /signing keeps its configuration until its next boot, resume or fork.
-func (m *Manager) SetSigning(ctx context.Context, id string, cfg *proto.GitSigning) error {
+// when it runs. Notifications older than the sandbox's accepted SigningVersion are ignored; equal-version retries are
+// applied so a partial guest update can finish. A guest agent from before POST /signing keeps its configuration until
+// its next boot, resume or fork.
+func (m *Manager) SetSigning(ctx context.Context, id string, cfg *proto.GitSigning, version int64) error {
 	s, err := m.get(id)
 	if err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	incoming := signingVersionOf(cfg, version)
+	if incoming > 0 && incoming < s.signingVersion() {
+		return nil
+	}
 	s.meta.GitSigning = cfg
+	if incoming > s.meta.SigningVersion {
+		s.meta.SigningVersion = incoming
+	}
 	if err := m.writeMeta(s); err != nil {
 		return err
 	}

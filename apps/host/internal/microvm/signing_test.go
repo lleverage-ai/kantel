@@ -73,11 +73,11 @@ func TestSetSigningOfAStoppedSandbox(t *testing.T) {
 	}
 	s := &sandbox{meta: meta{ID: "sbx_1", State: proto.StateStopped}, dir: dir}
 	m := &Manager{sandboxes: map[string]*sandbox{"sbx_1": s}}
-	if err := m.SetSigning(context.Background(), "sbx_1", testGitSigning); err != nil {
+	if err := m.SetSigning(context.Background(), "sbx_1", testGitSigning, testGitSigning.Version); err != nil {
 		t.Fatal(err)
 	}
 	got, raw := readMeta(t, dir)
-	if got.GitSigning == nil || *got.GitSigning != *testGitSigning {
+	if got.GitSigning == nil || *got.GitSigning != *testGitSigning || got.SigningVersion != 3 {
 		t.Fatalf("meta.json %s", raw)
 	}
 	for _, private := range []string{"privateKey", "passphrase", "PRIVATE KEY"} {
@@ -85,13 +85,28 @@ func TestSetSigningOfAStoppedSandbox(t *testing.T) {
 			t.Fatalf("meta.json holds %q: %s", private, raw)
 		}
 	}
-	if err := m.SetSigning(context.Background(), "sbx_1", nil); err != nil {
+	// Stale update (v2) is ignored and doesn't replace v3.
+	stale := &proto.GitSigning{Format: "ssh", KeyID: "old", Fingerprint: "OLD", PublicKey: "ssh-ed25519 AAAA", Version: 2}
+	if err := m.SetSigning(context.Background(), "sbx_1", stale, 2); err != nil {
 		t.Fatal(err)
 	}
-	if got, raw := readMeta(t, dir); got.GitSigning != nil || strings.Contains(raw, "gitSigning") {
-		t.Fatalf("a cleared key stayed: %s", raw)
+	if got, _ := readMeta(t, dir); got.GitSigning == nil || got.GitSigning.KeyID != "key_1" || got.SigningVersion != 3 {
+		t.Fatalf("stale update changed meta: %+v", got)
 	}
-	if err := m.SetSigning(context.Background(), "sbx_nope", nil); err == nil {
+	// Clear at v4 records SigningVersion=4 so a late v3 cannot restore the key.
+	if err := m.SetSigning(context.Background(), "sbx_1", nil, 4); err != nil {
+		t.Fatal(err)
+	}
+	if got, raw := readMeta(t, dir); got.GitSigning != nil || strings.Contains(raw, "gitSigning") || got.SigningVersion != 4 {
+		t.Fatalf("a cleared key stayed or lost version: %s", raw)
+	}
+	if err := m.SetSigning(context.Background(), "sbx_1", testGitSigning, 3); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := readMeta(t, dir); got.GitSigning != nil || got.SigningVersion != 4 {
+		t.Fatalf("stale enable after clear restored key: %+v", got)
+	}
+	if err := m.SetSigning(context.Background(), "sbx_nope", nil, 5); err == nil {
 		t.Fatal("an unknown sandbox's key was set")
 	}
 }
@@ -120,12 +135,30 @@ func TestSetSigningOfARunningSandbox(t *testing.T) {
 	t.Cleanup(mgr.CloseAll)
 	s := &sandbox{meta: meta{ID: "sbx_1", State: proto.StateRunning}, dir: dir, guest: guest.NewClient(handlerAgent(t, agent))}
 	m := &Manager{cfg: Config{Signing: mgr}, log: slog.New(slog.NewTextHandler(io.Discard, nil)), sandboxes: map[string]*sandbox{"sbx_1": s}}
-	if err := m.SetSigning(context.Background(), "sbx_1", testGitSigning); err != nil {
+	if err := m.SetSigning(context.Background(), "sbx_1", testGitSigning, testGitSigning.Version); err != nil {
 		t.Fatal(err)
 	}
 	mu.Lock()
 	if len(bodies) != 1 || !strings.Contains(bodies[0], `"gitSigning":{"format":"gpg","keyId":"key_1","fingerprint":"ABCD"`) || strings.Contains(bodies[0], "version") {
 		t.Fatalf("the guest got %v", bodies)
+	}
+	mu.Unlock()
+	// Equal-version retry still delivers to the guest.
+	if err := m.SetSigning(context.Background(), "sbx_1", testGitSigning, testGitSigning.Version); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(bodies) != 2 {
+		t.Fatalf("same-version retry didn't reach guest: %d", len(bodies))
+	}
+	mu.Unlock()
+	// Stale version doesn't touch the guest.
+	if err := m.SetSigning(context.Background(), "sbx_1", nil, 2); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	if len(bodies) != 2 {
+		t.Fatalf("stale clear reached guest: %d", len(bodies))
 	}
 	mu.Unlock()
 	// The signing socket answers, where Firecracker hands the guest's connections to SignPort.
@@ -142,10 +175,10 @@ func TestSetSigningOfARunningSandbox(t *testing.T) {
 
 	// An older agent.
 	s.guest = guest.NewClient(handlerAgent(t, http.NewServeMux()))
-	if err := m.SetSigning(context.Background(), "sbx_1", nil); err != nil {
+	if err := m.SetSigning(context.Background(), "sbx_1", nil, 4); err != nil {
 		t.Fatalf("an older agent: %v", err)
 	}
-	if got, _ := readMeta(t, dir); got.GitSigning != nil {
+	if got, _ := readMeta(t, dir); got.GitSigning != nil || got.SigningVersion != 4 {
 		t.Fatal("the record wasn't changed")
 	}
 }

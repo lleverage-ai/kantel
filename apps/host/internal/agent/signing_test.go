@@ -22,9 +22,12 @@ import (
 type signingTier struct {
 	Tier // unimplemented methods panic
 
-	name string
-	mu   sync.Mutex
-	set  map[string][]*proto.GitSigning
+	name     string
+	mu       sync.Mutex
+	set      map[string][]*proto.GitSigning
+	current  map[string]*proto.GitSigning
+	version  map[string]int64
+	failNext int
 }
 
 func (f *signingTier) Get(id string) (proto.SandboxInfo, error) {
@@ -34,13 +37,33 @@ func (f *signingTier) Get(id string) (proto.SandboxInfo, error) {
 	return proto.SandboxInfo{ID: id, Tier: f.name, State: proto.StateRunning}, nil
 }
 
-func (f *signingTier) SetSigning(_ context.Context, id string, cfg *proto.GitSigning) error {
+func (f *signingTier) SigningVersion(id string) int64 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.version[id]
+}
+
+func (f *signingTier) SetSigning(_ context.Context, id string, cfg *proto.GitSigning, version int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.set == nil {
 		f.set = map[string][]*proto.GitSigning{}
+		f.current = map[string]*proto.GitSigning{}
+		f.version = map[string]int64{}
 	}
+	v := signingVersionOf(cfg, version)
+	if v > 0 && v < f.version[id] {
+		return nil
+	}
+	if v > f.version[id] {
+		f.version[id] = v
+	}
+	f.current[id] = cfg
 	f.set[id] = append(f.set[id], cfg)
+	if f.failNext > 0 {
+		f.failNext--
+		return errors.New("guest busy")
+	}
 	return nil
 }
 
@@ -134,6 +157,96 @@ func TestSandboxSigningUpdatesTheKeyAndTheGuest(t *testing.T) {
 		if _, err := h.Call(context.Background(), proto.MethodSigning, params, nil); err == nil {
 			t.Fatalf("%+v answered", p)
 		}
+	}
+}
+
+func TestSandboxSigningRejectsStaleNotificationsAndAllowsRetries(t *testing.T) {
+	tier := &signingTier{name: microvm.Tier}
+	h, calls := newSigningHost(t, microvm.Tier, tier)
+	// Return the latest version so Store.Get caches cleanly.
+	var mu sync.Mutex
+	fetchVersion := int64(5)
+	h.callKantel = func(_ context.Context, method string, params any) (json.RawMessage, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		raw, _ := json.Marshal(params)
+		*calls = append(*calls, method+" "+string(raw))
+		return json.Marshal(proto.SigningKey{Version: fetchVersion})
+	}
+	store := h.signing.Store()
+
+	// Newer SSH rotation (v5) lands first.
+	sshKey := &proto.GitSigning{Format: "ssh", KeyID: "ssh_5", Fingerprint: "SHA256:new", PublicKey: "ssh-ed25519 AAAA", Version: 5}
+	p5, _ := json.Marshal(proto.SigningParams{SandboxID: "sbx_1", Signing: sshKey, Version: 5})
+	if _, err := h.Call(context.Background(), proto.MethodSigning, p5, nil); err != nil {
+		t.Fatal(err)
+	}
+	// Populate cache at v5.
+	if _, err := store.Get(context.Background(), "sbx_1"); err != nil {
+		t.Fatal(err)
+	}
+	fetchesBeforeStale := len(*calls)
+
+	// Older GPG notification (v3) arrives late: ignored without rolling back metadata or invalidating the v5 cache.
+	gpgKey := &proto.GitSigning{Format: "gpg", KeyID: "gpg_3", Fingerprint: "OLD", PublicKey: "pub", Version: 3}
+	p3, _ := json.Marshal(proto.SigningParams{SandboxID: "sbx_1", Signing: gpgKey, Version: 3})
+	if _, err := h.Call(context.Background(), proto.MethodSigning, p3, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := tier.current["sbx_1"]; got == nil || got.Format != "ssh" || got.KeyID != "ssh_5" {
+		t.Fatalf("stale GPG overwrote newer SSH: %+v", got)
+	}
+	if len(tier.set["sbx_1"]) != 1 {
+		t.Fatalf("stale update called SetSigning: %d", len(tier.set["sbx_1"]))
+	}
+	if _, err := store.Get(context.Background(), "sbx_1"); err != nil || len(*calls) != fetchesBeforeStale {
+		t.Fatalf("stale update invalidated cached v5 key: err=%v calls=%d", err, len(*calls))
+	}
+
+	// Older clear (v4) arrives late: ignored, SSH stays.
+	p4Clear, _ := json.Marshal(proto.SigningParams{SandboxID: "sbx_1", Signing: nil, Version: 4})
+	if _, err := h.Call(context.Background(), proto.MethodSigning, p4Clear, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := tier.current["sbx_1"]; got == nil || got.KeyID != "ssh_5" {
+		t.Fatalf("stale clear removed newer SSH: %+v", got)
+	}
+
+	// Same-version retry after a failed guest update (v6): first attempt fails, second at v6 succeeds.
+	tier.failNext = 1
+	p6Clear, _ := json.Marshal(proto.SigningParams{SandboxID: "sbx_1", Signing: nil, Version: 6})
+	if _, err := h.Call(context.Background(), proto.MethodSigning, p6Clear, nil); err == nil {
+		t.Fatal("expected first v6 clear to fail")
+	}
+	if _, err := h.Call(context.Background(), proto.MethodSigning, p6Clear, nil); err != nil {
+		t.Fatalf("same-version retry failed: %v", err)
+	}
+	if got := tier.current["sbx_1"]; got != nil || tier.SigningVersion("sbx_1") != 6 {
+		t.Fatalf("clear at v6 didn't stick: current=%+v version=%d", got, tier.SigningVersion("sbx_1"))
+	}
+
+	// Stale enable (v5) after clear at v6: ignored, signing stays cleared.
+	if _, err := h.Call(context.Background(), proto.MethodSigning, p5, nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := tier.current["sbx_1"]; got != nil {
+		t.Fatalf("stale enable after clear restored key: %+v", got)
+	}
+
+	// Reconnecting (applyWelcome) drops cached keys while keeping the monotonic version floor.
+	mu.Lock()
+	fetchVersion = 6
+	mu.Unlock()
+	if _, err := store.Get(context.Background(), "sbx_1"); err != nil {
+		t.Fatal(err)
+	}
+	fetchesBeforeWelcome := len(*calls)
+	h.applyWelcome(context.Background(), &proto.Welcome{HostID: "host_1"}, nil)
+	if store.MinVersion("sbx_1") != 6 {
+		t.Fatalf("welcome lost floor: %d", store.MinVersion("sbx_1"))
+	}
+	if _, err := store.Get(context.Background(), "sbx_1"); err != nil || len(*calls) != fetchesBeforeWelcome+1 {
+		t.Fatalf("welcome didn't drop cached signing key: err=%v calls=%d (before %d)", err, len(*calls), fetchesBeforeWelcome)
 	}
 }
 

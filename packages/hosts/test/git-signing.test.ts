@@ -230,5 +230,331 @@ describe("gitSigning placement and live updates", () => {
 				gitSigning: SIGNING_META,
 			}),
 		).rejects.toThrow(/supports host-side Git signing/i);
+
+		// A microVM placed on the old host without signing refuses a non-null updateSigning, while clears stay no-ops.
+		await backend.create({
+			sandboxId: "sbx_old_vm",
+			accountId: "acc_1",
+			type: "microvm",
+			subdomain: "oldvm",
+			size: "default",
+			env: {},
+			eligibleHosts: [old.hostId],
+		});
+		await expect(backend.updateSigning?.("sbx_old_vm", SIGNING_META, 100)).rejects.toThrow(
+			/doesn't support host-side Git signing/i,
+		);
+		await expect(backend.updateSigning?.("sbx_old_vm", null, 101)).resolves.toBeUndefined();
+	});
+
+	it("omits microVM signing from isolate create, start and live fork while enforcing it on upgrade", async () => {
+		const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
+		const backend = createHostBackend({
+			hosts: service,
+			publicUrl: "https://kantel.test",
+			tickets: createTunnelTickets(createMemoryRelayStore()),
+		});
+		const api = createComputeApi({
+			backend,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+		});
+		service.useJoinTokens(joinTokenSpender(api.store));
+		service.useCompute({
+			secrets: async () => undefined,
+			signing: async () => SIGNING_KEY,
+			recordEgress: async () => undefined,
+			recordSigning: async () => undefined,
+		});
+		closers.push(
+			() => service.close(),
+			() => api.close(),
+		);
+		const root = createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+
+		const addHost = async (name: string, features: readonly string[], tiers: readonly ("microvm" | "isolate")[]) => {
+			const token = await root.createHostJoinToken({ name });
+			const { hostId } = await service.register({ token: token.token });
+			const fake = new FakeHost(service, hostId, features);
+			fake.moreFacts = { tiers };
+			fake.connect();
+			await vi.waitFor(() => {
+				if (!fake.sent.some((message) => message.type === "welcome")) throw new Error("not welcomed");
+			});
+			return { hostId, fake };
+		};
+
+		// Isolate-only host has NO git-signing feature; microVM host has git-signing + filesExtract for cross-host upgrade.
+		const isoHost = await addHost("iso-only", [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze], ["isolate"]);
+		const vmHost = await addHost(
+			"vm-signer",
+			[HOST_FEATURES.egressPolicy, HOST_FEATURES.gitSigning, HOST_FEATURES.filesExtract],
+			["microvm"],
+		);
+
+		// Create an isolate with signing metadata: succeeds on iso-only and strips microVM signing fields.
+		const created = await backend.create({
+			sandboxId: "sbx_iso_1",
+			accountId: "acc_1",
+			type: "isolate",
+			subdomain: "iso1",
+			size: "default",
+			env: {},
+			eligibleHosts: [isoHost.hostId, vmHost.hostId],
+			gitSigning: SIGNING_META,
+			signingVersion: SIGNING_META.version,
+		});
+		expect(created.hostId).toBe(isoHost.hostId);
+		const createCall = isoHost.fake.calls.find((call) => call.method === "sandbox.create");
+		expect(createCall?.params.gitSigning).toBeUndefined();
+		expect(createCall?.params.clearGitSigning).toBeUndefined();
+		expect(createCall?.params.signingVersion).toBeUndefined();
+
+		// Stop and start the isolate with gitSigning present: succeeds and omits signing fields.
+		await backend.stop("sbx_iso_1", { keepMemory: false });
+		await backend.start("sbx_iso_1", {
+			env: {},
+			eligibleHosts: [isoHost.hostId],
+			gitSigning: SIGNING_META,
+			signingVersion: SIGNING_META.version,
+		});
+		const startCall = isoHost.fake.calls.find((call) => call.method === "sandbox.start");
+		expect(startCall?.params.gitSigning).toBeUndefined();
+		expect(startCall?.params.clearGitSigning).toBeUndefined();
+		expect(startCall?.params.signingVersion).toBeUndefined();
+
+		// Live-fork the isolate with gitSigning present: succeeds and omits signing fields.
+		await backend.fork({ sandboxId: "sbx_iso_1" }, [
+			{
+				sandboxId: "sbx_iso_fork",
+				accountId: "acc_1",
+				type: "isolate",
+				subdomain: "isofork",
+				size: "default",
+				env: {},
+				eligibleHosts: [isoHost.hostId],
+				gitSigning: SIGNING_META,
+				signingVersion: SIGNING_META.version,
+			},
+		]);
+		const forkCall = isoHost.fake.calls.find((call) => call.method === "sandbox.fork");
+		expect(forkCall?.params.gitSigning).toBeUndefined();
+		expect(forkCall?.params.clearGitSigning).toBeUndefined();
+		expect(forkCall?.params.signingVersion).toBeUndefined();
+
+		// updateSigning for an isolate is a harmless no-op.
+		await expect(backend.updateSigning?.("sbx_iso_1", SIGNING_META, 99)).resolves.toBeUndefined();
+		expect(isoHost.fake.calls.filter((call) => call.method === "sandbox.signing")).toHaveLength(0);
+
+		// Upgrading the isolate to a microVM forwards gitSigning and lands on the signing-capable microVM host.
+		const upgraded = await backend.upgrade?.(
+			"sbx_iso_1",
+			{
+				sandboxId: "sbx_iso_1",
+				accountId: "acc_1",
+				type: "microvm",
+				subdomain: "iso1",
+				size: "default",
+				env: {},
+				eligibleHosts: [isoHost.hostId, vmHost.hostId],
+				gitSigning: SIGNING_META,
+				signingVersion: SIGNING_META.version,
+			},
+			"upg_1",
+		);
+		expect(upgraded?.hostId).toBe(vmHost.hostId);
+		const vmCreate = vmHost.fake.calls.find((call) => call.method === "sandbox.create");
+		expect(vmCreate?.params.gitSigning).toEqual(SIGNING_META);
+	});
+
+	it("reconciles signing during isolate-to-microVM upgrade, stops VMs on incapable hosts, and retries revocations on reconnect", async () => {
+		const service = createHostsService({ store: createMemoryHostStore(), publicUrl: "https://kantel.test" });
+		const backend = createHostBackend({
+			hosts: service,
+			publicUrl: "https://kantel.test",
+			tickets: createTunnelTickets(createMemoryRelayStore()),
+		});
+		const api = createComputeApi({
+			backend,
+			authenticatePerson: async (request) =>
+				request.headers.get("authorization") === "Bearer root" ? ROOT : undefined,
+			fetch: async () => new Response(null, { status: 204 }),
+			publicUrl: "https://kantel.test",
+		});
+		service.useJoinTokens(joinTokenSpender(api.store));
+		service.useCompute({
+			secrets: async () => undefined,
+			signing: (hostId, sandboxId) => api.service.signingKey(hostId, sandboxId),
+			recordEgress: async () => undefined,
+			recordSigning: (hostId, records) => api.service.recordSigning(hostId, records),
+		});
+		closers.push(
+			() => service.close(),
+			() => api.close(),
+		);
+		const root = createKantelClient({
+			baseUrl: "https://kantel.test/v1",
+			token: "root",
+			fetch: (input, init) =>
+				api.fetch(new Request(input, init)).then((response) => response ?? new Response(null, { status: 404 })),
+		});
+
+		const addHost = async (
+			name: string,
+			features: readonly string[],
+			tiers: readonly ("microvm" | "isolate")[] = ["microvm", "isolate"],
+			labels: { [key: string]: string } = {},
+		) => {
+			const token = await root.createHostJoinToken({ name });
+			const { hostId } = await service.register({ token: token.token });
+			const fake = new FakeHost(service, hostId, features);
+			fake.moreFacts = { tiers, labels };
+			fake.connect();
+			await vi.waitFor(() => {
+				if (!fake.sent.some((message) => message.type === "welcome")) throw new Error("not welcomed");
+			});
+			return { hostId, fake };
+		};
+
+		const sshKey = [
+			"-----BEGIN " + "OPENSSH PRIVATE KEY-----",
+			Buffer.concat([
+				Buffer.from("openssh-key-v1\0"),
+				Buffer.from([0, 0, 0, 4]),
+				Buffer.from("none"),
+				Buffer.from([0, 0, 0, 4]),
+				Buffer.from("none"),
+				Buffer.from([0, 0, 0, 0]),
+				Buffer.from([0, 0, 0, 1]),
+				Buffer.from([0, 0, 0, 51]),
+				Buffer.from([0, 0, 0, 11]),
+				Buffer.from("ssh-ed25519"),
+				Buffer.from([0, 0, 0, 32]),
+				Buffer.alloc(32, 0x61),
+				Buffer.from([0, 0, 0, 136]),
+				Buffer.from([1, 2, 3, 4, 1, 2, 3, 4]),
+				Buffer.from([0, 0, 0, 11]),
+				Buffer.from("ssh-ed25519"),
+				Buffer.from([0, 0, 0, 32]),
+				Buffer.alloc(32, 0x61),
+				Buffer.from([0, 0, 0, 64]),
+				Buffer.alloc(64, 0x71),
+				Buffer.from([0, 0, 0, 4]),
+				Buffer.from("test"),
+				Buffer.from([1, 2, 3, 4]),
+			]).toString("base64"),
+			"-----END " + "OPENSSH PRIVATE KEY-----",
+			"",
+		].join("\n");
+
+		const oldHost = await addHost("old-vm", [HOST_FEATURES.egressPolicy], ["microvm"], { role: "old" });
+		const isoHost = await addHost("iso-host", [HOST_FEATURES.egressPolicy, HOST_FEATURES.isolateFreeze], ["isolate"], {
+			role: "iso",
+		});
+		const modernHost = await addHost(
+			"modern-vm",
+			[HOST_FEATURES.egressPolicy, HOST_FEATURES.gitSigning, HOST_FEATURES.filesExtract],
+			["microvm"],
+			{ role: "modern" },
+		);
+
+		// 1. Enabling signing while an isolate upgrades to a microVM reconciles against the resulting microVM type.
+		const upgEnv = await root.createEnvironment({ name: "upg-env" });
+		const iso = await root.createSandbox({
+			name: "iso-upgrade",
+			type: "isolate",
+			environment: upgEnv.id,
+			wait: true,
+		});
+		let releaseUpgradeCreate!: () => void;
+		const upgradeCreateStarted = new Promise<void>((resolve) => {
+			modernHost.fake.hold = (method) => {
+				if (method === "sandbox.create") {
+					resolve();
+					return new Promise<void>((done) => {
+						releaseUpgradeCreate = done;
+					});
+				}
+				return undefined;
+			};
+		});
+		const upgradePromise = root.upgradeSandbox(iso.id, { wait: true });
+		await upgradeCreateStarted;
+		await root.setEnvironmentGitSigning(upgEnv.id, {
+			privateKey: sshKey,
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		modernHost.fake.hold = undefined;
+		releaseUpgradeCreate();
+		const upgraded = await upgradePromise;
+		expect(upgraded.type).toBe("microvm");
+		expect(upgraded.state).toBe("running");
+		// Reconciliation delivered sandbox.signing to the upgraded microVM before publishing it running.
+		const upgradeSigningCall = modernHost.fake.calls.find(
+			(call) => call.method === "sandbox.signing" && call.params.sandboxId === iso.id,
+		);
+		expect(upgradeSigningCall?.params.signing).toMatchObject({ format: "ssh" });
+
+		// 2. Disconnect modernHost, revoke the key, reconnect and run sweep: revocation reaches the host.
+		modernHost.fake.connection.closed(1006, "network drop");
+		await root.deleteEnvironmentGitSigning(upgEnv.id);
+		await new Promise((resolve) => setTimeout(resolve, 25));
+		const clearsBeforeReconnect = modernHost.fake.calls.filter(
+			(call) => call.method === "sandbox.signing" && call.params.sandboxId === iso.id && call.params.signing === null,
+		);
+		expect(clearsBeforeReconnect).toHaveLength(0);
+		modernHost.fake.connect();
+		await vi.waitFor(() => {
+			if (!service.hub.connected(modernHost.hostId)) throw new Error("not reconnected");
+		});
+		await api.service.sweep();
+		await vi.waitFor(() => {
+			const clears = modernHost.fake.calls.filter(
+				(call) => call.method === "sandbox.signing" && call.params.sandboxId === iso.id && call.params.signing === null,
+			);
+			expect(clears).toHaveLength(1);
+		});
+
+		// 3. Enabling signing while a microVM is starting on an incapable host stops it instead of publishing running.
+		const oldEnv = await root.createEnvironment({ name: "old-race-env" });
+		let releaseOldCreate!: () => void;
+		const oldCreateStarted = new Promise<void>((resolve) => {
+			oldHost.fake.hold = (method) => {
+				if (method === "sandbox.create") {
+					resolve();
+					return new Promise<void>((done) => {
+						releaseOldCreate = done;
+					});
+				}
+				return undefined;
+			};
+		});
+		const oldVm = await root.createSandbox({
+			name: "old-race-vm",
+			type: "microvm",
+			environment: oldEnv.id,
+			hostLabels: { role: "old" },
+			wait: false,
+		});
+		await oldCreateStarted;
+		await root.setEnvironmentGitSigning(oldEnv.id, {
+			privateKey: sshKey,
+			allowedEmails: ["jeff@lleverage.ai"],
+		});
+		oldHost.fake.hold = undefined;
+		releaseOldCreate();
+		await vi.waitFor(async () => {
+			const current = await root.getSandbox(oldVm.id);
+			expect(current.state).toBe("stopped");
+		});
+		expect(oldHost.fake.calls.filter((call) => call.method === "sandbox.signing")).toHaveLength(0);
+		expect(isoHost.fake.calls.filter((call) => call.method === "sandbox.signing")).toHaveLength(0);
 	});
 });

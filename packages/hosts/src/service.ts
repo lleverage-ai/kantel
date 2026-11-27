@@ -289,6 +289,7 @@ export interface CreateSandboxInput {
 	readonly sshAuthorizedKeys?: readonly string[];
 	readonly egress?: HostEgress;
 	readonly gitSigning?: HostGitSigning;
+	readonly signingVersion?: number;
 	/** Only these hosts may take it (the control plane's eligible hosts: online, not draining, labelled). */
 	readonly hostIds?: readonly string[];
 	/**
@@ -1036,6 +1037,7 @@ export interface HostsService {
 				readonly egress?: HostEgress;
 				readonly gitSigning?: HostGitSigning;
 				readonly clearGitSigning?: boolean;
+				readonly signingVersion?: number;
 				/** The fork's own environment (its own protected placeholders); absent, its source's. */
 				readonly env?: { readonly [key: string]: string };
 				/** The fork's mounts, as for a create (`mountHandoff`, with its source's host). */
@@ -4026,6 +4028,9 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							...(input.sshAuthorizedKeys === undefined ? {} : { sshAuthorizedKeys: input.sshAuthorizedKeys }),
 							...(input.egress === undefined ? {} : { egress: input.egress }),
 							...(input.gitSigning === undefined || tier !== "microvm" ? {} : { gitSigning: input.gitSigning }),
+							...(input.signingVersion === undefined || tier !== "microvm"
+								? {}
+								: { signingVersion: input.signingVersion }),
 							...mountsParam(mounts),
 							...(sticky ? { stickyDisks: input.stickyDisks } : {}),
 						},
@@ -4090,8 +4095,13 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 							newId,
 							snapshotId: shortId("snap"),
 							...(input.egress === undefined ? {} : { egress: input.egress }),
-							...(input.gitSigning === undefined ? {} : { gitSigning: input.gitSigning }),
-							...(input.clearGitSigning === true ? { clearGitSigning: true } : {}),
+							...(source.tier !== "microvm"
+								? {}
+								: {
+										...(input.gitSigning === undefined ? {} : { gitSigning: input.gitSigning }),
+										...(input.clearGitSigning === true ? { clearGitSigning: true } : {}),
+										...(input.signingVersion === undefined ? {} : { signingVersion: input.signingVersion }),
+									}),
 							...(input.env === undefined ? {} : { env: input.env }),
 							...mountsParam(mounts),
 						},
@@ -4162,6 +4172,7 @@ export function createHostsService(options: HostsServiceOptions): HostsService {
 					...(input.env === undefined ? {} : { env: input.env }),
 					...(input.egress === undefined ? {} : { egress: input.egress }),
 					...(input.gitSigning === undefined ? {} : { gitSigning: input.gitSigning }),
+					...(input.signingVersion === undefined ? {} : { signingVersion: input.signingVersion }),
 				});
 				/**
 				 * The upgrade, kept on the isolate's placement before anything is sent: where its microVM may be, so one whose

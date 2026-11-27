@@ -1255,6 +1255,8 @@ const BOOT_RECONCILE_ROUNDS = 5;
 const STOP_LEASE_MS = 5 * 60_000;
 /** Why a sandbox whose host can't enforce its egress grants or protected variables is stopped. */
 const UNENFORCED = "Its host doesn't enforce egress grants or protected variables";
+/** Why a microVM whose host can't apply its host-side Git signing configuration is stopped. */
+const UNSUPPORTED_SIGNING = "Its host doesn't support host-side Git signing";
 /** What a host reports when it enforces egress grants and protected variables (`HOST_FEATURES` in @kantel/hosts). */
 const EGRESS_POLICY_FEATURE = "egress-policy";
 const GIT_SIGNING_FEATURE = "git-signing";
@@ -4577,6 +4579,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		egressRevision?: number;
 		gitSigning?: BackendGitSigning;
 		clearGitSigning?: boolean;
+		signingVersion?: number;
 	}> => {
 		// The revision goes with no egress too: a boot states its egress, none being the host's default, and an update
 		// read before it (an empty egress included) is then older and refused.
@@ -4587,20 +4590,26 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		]);
 		const resolution = resolved(environments);
 		const signingWinner = subject === undefined ? undefined : resolution.gitSigning;
+		const resolvedSigningVersion =
+			subject === undefined ? undefined : signingVersionOf(environments, subject.signingFloor);
 		const signing =
-			signingWinner !== undefined
-				? {
-						gitSigning: {
-							format: signingWinner.item.format,
-							keyId: signingWinner.item.keyId,
-							fingerprint: signingWinner.item.fingerprint,
-							publicKey: signingWinner.item.publicKey,
-							version: signingVersionOf(environments, subject?.signingFloor) ?? signingWinner.item.version,
-						},
-					}
-				: subject?.signingFloor !== undefined
-					? { clearGitSigning: true as const }
-					: {};
+			subject === undefined
+				? {}
+				: signingWinner !== undefined
+					? {
+							gitSigning: {
+								format: signingWinner.item.format,
+								keyId: signingWinner.item.keyId,
+								fingerprint: signingWinner.item.fingerprint,
+								publicKey: signingWinner.item.publicKey,
+								version: resolvedSigningVersion ?? signingWinner.item.version,
+							},
+							signingVersion: resolvedSigningVersion ?? signingWinner.item.version,
+						}
+					: {
+							clearGitSigning: true as const,
+							...(resolvedSigningVersion === undefined ? {} : { signingVersion: resolvedSigningVersion }),
+						};
 		const bound = subject === undefined ? [] : protectedWinners(subject, resolution).map(({ winner }) => winner.item);
 		const grants = [...resolution.grants, ...(subject?.grants ?? [])];
 		const on = proxy?.enabled;
@@ -4665,7 +4674,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		reason: string,
 		wait: boolean,
-		evaluated: Pick<StoredSandbox, "state" | "egressRevision">,
+		evaluated: Pick<StoredSandbox, "state" | "egressRevision" | "signingFloor">,
 		placement?: Placement,
 		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
 		/**
@@ -4681,6 +4690,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			fence(current) &&
 			current.state === evaluated.state &&
 			current.egressRevision === evaluated.egressRevision &&
+			current.signingFloor === evaluated.signingFloor &&
 			// Its host revoked under its boot (`strandOn`): its boot ends it `error`, not a stop its host can't take.
 			(placement === undefined || !(current.strandedOn ?? []).includes(placement.hostId))
 				? {
@@ -4834,15 +4844,29 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		pushEgress(running);
 	}
 
-	/** Sends a running sandbox its current host-side Git signing config (or null to clear). */
-	async function deliverSigning(sandbox: StoredSandbox): Promise<void> {
-		if (sandbox.type !== "microvm") return;
+	/** Records that a sandbox's backend took its signing config at `version`: `signingApplied` only moves on. */
+	const markSigningApplied = (sandboxId: string, version: number | undefined) =>
+		version === undefined
+			? Promise.resolve(undefined)
+			: patchSandbox(sandboxId, (current) =>
+					(current.signingApplied ?? Number.NEGATIVE_INFINITY) >= version
+						? undefined
+						: { ...current, signingApplied: version },
+				);
+
+	/**
+	 * Sends a running (or booting) microVM its current host-side Git signing config (or null to clear), and records
+	 * `signingApplied` only once the host acknowledges it. A failure leaves `signingApplied` behind `signingFloor` so
+	 * the sweep retries once the host is reachable again.
+	 */
+	async function deliverSigning(sandbox: StoredSandbox): Promise<number | undefined> {
+		if (sandbox.type !== "microvm") return undefined;
 		const update = backend.updateSigning?.bind(backend);
-		if (update === undefined) return;
+		if (update === undefined) return undefined;
 		const environments = await environmentsOf(sandbox);
 		const resolution = resolved(environments);
 		const winner = resolution.gitSigning;
-		if (winner === undefined && sandbox.signingFloor === undefined) return;
+		if (winner === undefined && sandbox.signingFloor === undefined) return undefined;
 		const version = signingVersionOf(environments, sandbox.signingFloor) ?? now();
 		const signing: BackendGitSigning | null =
 			winner === undefined
@@ -4855,17 +4879,35 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						version,
 					};
 		await update(sandbox.id, signing, version);
+		await markSigningApplied(sandbox.id, version);
+		return version;
 	}
+
+	/** How many sends of each sandbox's Git signing config are under way, by ID: the sweep leaves those sandboxes be. */
+	const deliveringSigning = new Map<string, number>();
 
 	const pushSigning = (sandboxes: readonly StoredSandbox[]) => {
 		if (backend.updateSigning === undefined) return;
 		for (const sandbox of sandboxes) {
-			keepGoing(
-				(async () => {
-					const current = await store.sandboxes.get(sandbox.id);
-					if (current === undefined || current.state !== "running") return;
+			if (sandbox.type !== "microvm") continue;
+			deliveringSigning.set(sandbox.id, (deliveringSigning.get(sandbox.id) ?? 0) + 1);
+			const work = (async () => {
+				const current = await store.sandboxes.get(sandbox.id);
+				if (current === undefined || current.state !== "running" || current.type !== "microvm") return;
+				try {
 					await deliverSigning(current);
-				})(),
+				} catch (error) {
+					if (!unenforceable(error)) throw error;
+					// Its host doesn't support host-side Git signing: don't leave it running pretending signing applied.
+					await enforceStop(current.id, UNSUPPORTED_SIGNING, true, current);
+				}
+			})();
+			keepGoing(
+				work.finally(() => {
+					const left = (deliveringSigning.get(sandbox.id) ?? 1) - 1;
+					if (left > 0) deliveringSigning.set(sandbox.id, left);
+					else deliveringSigning.delete(sandbox.id);
+				}),
 			);
 		}
 	};
@@ -6394,7 +6436,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		run: () => Promise<Placement>,
 		provisioning: Provisioning | undefined,
-		sent: { readonly egressRevision: number | undefined },
+		sent: { readonly egressRevision: number | undefined; readonly signingVersion?: number },
 	): Promise<StoredSandbox | undefined> {
 		const booted = await boot(sandboxId, run, undefined, sent);
 		if (booted?.state === "running" && provisioning !== undefined)
@@ -7309,8 +7351,8 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		run: () => Promise<Placement>,
 		written?: StoredSandbox,
-		/** The `egressRevision` of the egress `run` sent, read before it. */
-		sent?: { readonly egressRevision: number | undefined },
+		/** The `egressRevision` and `signingVersion` of what `run` sent, read before it. */
+		sent?: { readonly egressRevision: number | undefined; readonly signingVersion?: number },
 		/** What else changes as it is published (an upgrade's microVM: its type, size and image). */
 		publishing?: (sandbox: StoredSandbox) => Partial<StoredSandbox>,
 		/** Only while this holds is it published or its egress sent (a settlement's claim, `settleLostCreate`). */
@@ -7348,8 +7390,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			placement.startup === undefined
 				? undefined
 				: { ...placement.startup, totalMs: Math.max(placement.startup.hostMs, now() - calledAt) };
-		// The revision its backend has: what the boot sent, or what reconciling sent since.
+		// The revision and signing version its backend has: what the boot sent, or what reconciling sent since.
 		let applied = sent?.egressRevision;
+		let signingApplied = sent?.signingVersion;
 		// Made from a template snapshot whose host had no room, it booted the template fresh elsewhere: so its record says.
 		const bootedFresh = (template: computeSchema.SandboxTemplate): computeSchema.SandboxTemplate => {
 			const { snapshotId: _none, ...rest } = template;
@@ -7423,12 +7466,24 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				...(applied === undefined || (sandbox.egressApplied ?? Number.NEGATIVE_INFINITY) >= applied
 					? {}
 					: { egressApplied: applied }),
+				...(signingApplied === undefined || (sandbox.signingApplied ?? Number.NEGATIVE_INFINITY) >= signingApplied
+					? {}
+					: { signingApplied }),
 			});
 		};
 		const reconciles = sent !== undefined && backend.updateEgress !== undefined;
-		// Running only if its egress is what its backend has (what the boot sent, at first), on every move to running:
-		// the usual case, in one write.
-		const upToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
+		const targetType = (sandbox: StoredSandbox) =>
+			publishing === undefined ? sandbox.type : (publishing(sandbox).type ?? sandbox.type);
+		const signingPending = (sandbox: StoredSandbox) =>
+			sent !== undefined &&
+			backend.updateSigning !== undefined &&
+			targetType(sandbox) === "microvm" &&
+			sandbox.signingFloor !== undefined &&
+			(signingApplied ?? Number.NEGATIVE_INFINITY) < sandbox.signingFloor;
+		const egressUpToDate = (sandbox: StoredSandbox) => !reconciles || sandbox.egressRevision === applied;
+		// Running only if its egress and signing are what its backend has (what the boot sent, at first), on every move to
+		// running: the usual case, in one write.
+		const upToDate = (sandbox: StoredSandbox) => egressUpToDate(sandbox) && !signingPending(sandbox);
 		// Its host revoked while it booted, by a scan that found it placed there (`strandOn`): its own move from `starting`
 		// is its outcome, `error`, whenever it comes (now, or after its egress is reconciled), and its egress isn't waited
 		// for. A host another attempt was placed on, or this one before it moved, isn't its host and doesn't count.
@@ -7447,29 +7502,38 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		let result: Awaited<ReturnType<typeof transition>>;
 		try {
 			result = await transition(sandboxId, "starting", publish, ready, written);
-			// What its egress is made of changed while it started (a grant, its environment, the proxy settings): a change
-			// skips a starting sandbox, so it is sent now, before it is running, and again for each change made while that
-			// was sent. One whose egress can't be got there (its host can't enforce it, or it fails or keeps changing for
-			// every round) never runs: it is stopped, as `enforceStop` does, never given up on.
+			// What its egress or Git signing is made of changed while it started (a grant, its environment, the proxy
+			// settings, a signing key): a change skips a starting sandbox, so it is sent now, before it is running, and
+			// again for each change made while that was sent. One whose egress or signing can't be got there (its host can't
+			// enforce or sign, or it fails or keeps changing for every round) never runs: it is stopped, as `enforceStop`
+			// does, never given up on.
 			for (let round = 0; "lost" in result && result.lost.state === "starting" && fence(result.lost); round++) {
 				const lost = result.lost;
 				if (round >= BOOT_RECONCILE_ROUNDS) {
-					const reason = "Its egress couldn't be applied to it while it started";
+					const reason = signingPending(lost)
+						? "Its Git signing configuration couldn't be applied to it while it started"
+						: "Its egress couldn't be applied to it while it started";
 					if (await enforceStop(sandboxId, reason, false, lost, placement, published, fence)) return undefined;
 					result = await transition(sandboxId, "starting", publish, ready);
 					continue;
 				}
+				let reconcilingSigning = false;
 				try {
-					await deliverEgress(lost);
-					await deliverSigning(lost).catch(() => undefined);
-					applied = lost.egressRevision;
+					if (!egressUpToDate(lost)) {
+						await deliverEgress(lost);
+						applied = lost.egressRevision;
+					}
+					if (signingPending(lost)) {
+						reconcilingSigning = true;
+						const appliedSigning = await deliverSigning(published(lost));
+						signingApplied = appliedSigning ?? lost.signingFloor ?? signingApplied;
+						reconcilingSigning = false;
+					}
 				} catch (error) {
-					// Refused for the egress it has still: stopped. One changed since is sent next round.
-					if (
-						unenforceable(error) &&
-						(await enforceStop(sandboxId, UNENFORCED, false, lost, placement, published, fence))
-					) {
-						return undefined;
+					// Refused for the egress or signing it has still: stopped. One changed since is sent next round.
+					if (unenforceable(error)) {
+						const reason = reconcilingSigning ? UNSUPPORTED_SIGNING : UNENFORCED;
+						if (await enforceStop(sandboxId, reason, false, lost, placement, published, fence)) return undefined;
 					}
 					// A call that didn't get through: tried again, a moment on.
 					await new Promise((resolve) => setTimeout(resolve, 100 * 2 ** round));
@@ -7494,6 +7558,14 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		}
 		// Changed again while that was sent: now it runs, an ordinary update.
 		if (sent !== undefined && next.egressRevision !== applied) pushEgress([next]);
+		if (
+			sent !== undefined &&
+			next.type === "microvm" &&
+			next.signingFloor !== undefined &&
+			(next.signingApplied ?? Number.NEGATIVE_INFINITY) < next.signingFloor
+		) {
+			pushSigning([next]);
+		}
 		// Its memory let go as it was published: the commands it ran killed, saying why (and by any later read or sweep,
 		// if not now).
 		if (drops) await killDroppedOf(next).catch(() => undefined);
@@ -8052,9 +8124,11 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		try {
 			await track([starting.id], async () => {
 				let placement: Placement;
+				let egress: Awaited<ReturnType<typeof egressFor>>;
 				try {
 					const { snapshot, eligibleHosts, copies } = plan;
 					if (snapshot.ref === undefined) throw new KantelError("conflict", "The snapshot isn't ready");
+					egress = await egressFor(starting.accountId, starting);
 					placement = await backend.create({
 						sandboxId: starting.id,
 						attempt: lifecycle,
@@ -8068,7 +8142,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...pooled(starting.poolId),
 						fromSnapshot: snapshot.ref,
 						snapshotCopies: copies,
-						...(await egressFor(starting.accountId, starting)),
+						...egress,
 						...(starting.mounts === undefined ? {} : { mounts: backendMounts(starting.mounts) }),
 						...(await stickySpecOf(starting)),
 						replacesLost: { hostId: marker.hostId },
@@ -8084,7 +8158,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					starting.id,
 					async () => placement,
 					undefined,
-					{ egressRevision: starting.egressRevision },
+					{
+						egressRevision: starting.egressRevision,
+						...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+					},
 					undefined,
 					unlost,
 				);
@@ -11206,7 +11283,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(await stickySpecOf(sandbox)),
 							}),
 						sandbox,
-						{ egressRevision },
+						{
+							egressRevision,
+							...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+						},
 					);
 					// Queued with the boot, so a call after the create (an exec, a stop) finds the files and repositories there.
 					if (booted?.state === "running" && environments.length > 0) {
@@ -11530,7 +11610,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								return placement;
 							},
 							undefined,
-							{ egressRevision },
+							{
+								egressRevision,
+								...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+							},
 						);
 						// An environment attached to its source while stopped: its files and repositories, which the copied disk
 						// never had.
@@ -11636,7 +11719,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 										(options) => backend.recover(current.id, options),
 									),
 								provisioning,
-								{ egressRevision: starting.egressRevision },
+								{
+									egressRevision: starting.egressRevision,
+									...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+								},
 							),
 						),
 					),
@@ -11779,7 +11865,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 										(options) => backend.start(stopped.id, options),
 									),
 								provisioning,
-								{ egressRevision: starting.egressRevision },
+								{
+									egressRevision: starting.egressRevision,
+									...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+								},
 							),
 						),
 					),
@@ -13204,6 +13293,9 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError("invalid", "Cannot clear the passphrase of a passphrase-protected private key");
 				}
 			}
+			// A passphrase-only change (clear or replace) is validated against the private key read above; reject with
+			// conflict if the key rotated before the atomic update runs so the stale passphrase can't overwrite the new key's.
+			const expectedSealedKey = body.passphrase !== undefined ? environment.gitSigning.sealedKey : undefined;
 			const changed = await changeEnvironment(environment.id, (current) => {
 				const existing = current.gitSigning;
 				if (existing === undefined) {
@@ -13213,6 +13305,12 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					throw new KantelError(
 						"invalid",
 						`Cannot change format from ${existing.format} to ${body.format} without supplying a new privateKey`,
+					);
+				}
+				if (expectedSealedKey !== undefined && existing.sealedKey !== expectedSealedKey) {
+					throw new KantelError(
+						"conflict",
+						"The environment's Git signing key changed concurrently; retry the passphrase update",
 					);
 				}
 				const version = nextSecretsVersion(current.signingVersion ?? existing.version, at);
@@ -14394,6 +14492,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						...(image === undefined ? {} : { image }),
 						...(from === undefined ? {} : { snapshotId: from.id }),
 						egressRevision,
+						...(latest.signingFloor === undefined ? {} : { signingVersion: latest.signingFloor }),
 					},
 				};
 			},
@@ -14476,7 +14575,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					placement = outcome.placement;
 				}
 				return (
-					(await commitUpgrade(sandboxId, operationId, placement, { principal, role })) ??
+					(await commitUpgrade(sandboxId, operationId, placement, { principal, role }, egress.signingVersion)) ??
 					(await mustGetSandbox(sandboxId))
 				);
 			} finally {
@@ -14555,7 +14654,6 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				} else {
 					try {
 						await deliverEgress(lost);
-						await deliverSigning(lost).catch(() => undefined);
 						applied = lost.egressRevision ?? applied;
 						sent = true;
 					} catch (error) {
@@ -14582,6 +14680,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		operationId: string,
 		placement: UpgradedPlacement,
 		by?: { readonly principal: Principal; readonly role: MemberRole },
+		signingVersion?: number,
 	): Promise<StoredSandbox | undefined> {
 		const latest = await store.sandboxes.get(sandboxId);
 		const upgrading = latest?.upgrading;
@@ -14606,11 +14705,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 			// Its environments' files and repositories, where a microVM keeps them, once it runs.
 			...(work.length > 0 ? { pendingProvision: work } : {}),
 		});
+		const sentSigningVersion = signingVersion ?? upgrading.signingVersion;
 		const committed = await boot(
 			sandboxId,
 			async () => placement,
 			undefined,
-			{ egressRevision: upgrading.egressRevision },
+			{
+				egressRevision: upgrading.egressRevision,
+				...(sentSigningVersion === undefined ? {} : { signingVersion: sentSigningVersion }),
+			},
 			becomes,
 		);
 		// Its host revoked after it replaced the isolate but before the microVM was published: the revocation put the record
@@ -15137,6 +15240,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 								...(body.hostId === undefined ? {} : { to: body.hostId }),
 								before: {},
 								egressRevision,
+								...(latest.signingFloor === undefined ? {} : { signingVersion: latest.signingFloor }),
 								// A stop it owes already (its stop's `stopFor`, which the move's own stop clears): owed still once it ends.
 								...(latest.stopFor === undefined ? {} : { stopAfter: latest.stopFor }),
 							},
@@ -15174,6 +15278,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 									...(latest.mountsAt === undefined ? {} : { mountsAt: latest.mountsAt }),
 								},
 								egressRevision: later(latest.egressRevision),
+								...(latest.signingFloor === undefined ? {} : { signingVersion: latest.signingFloor }),
 							},
 						}),
 					(latest) =>
@@ -15307,7 +15412,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					}
 					placement = outcome.placement;
 				}
-				const committed = await commitMove(sandboxId, operationId, placement);
+				const committed = await commitMove(sandboxId, operationId, placement, egress.signingVersion);
 				if (committed?.state === "running" && provisioning !== undefined) {
 					await provision(committed.id, provisioning.environments).catch(() => undefined);
 				}
@@ -15965,6 +16070,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// Stopped keeping its memory for a move that kept it (its record says so before anything is sent: `onPlanned`
 		// must land): resumed from that memory, its programs carrying on. Otherwise started on its disk.
 		const resumes = again.moving?.keepMemory === true;
+		const egress = await egressFor(again.accountId, again);
 		await boot(
 			sandboxId,
 			async () => {
@@ -15973,7 +16079,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 					...sizingOf(again),
 					env: again.env,
 					eligibleHosts: [hostId],
-					...(await egressFor(again.accountId, again)),
+					...egress,
 					...(again.mounts === undefined ? {} : { mounts: backendMounts(again.mounts) }),
 				});
 				// Resumed from its memory: a kill made while it was stopped for the move reaches its command now.
@@ -15981,7 +16087,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				return placement;
 			},
 			undefined,
-			{ egressRevision: again.egressRevision },
+			{
+				egressRevision: again.egressRevision,
+				...(egress.signingVersion === undefined ? {} : { signingVersion: egress.signingVersion }),
+			},
 			(latest) => ({ moving: undefined, ...owedStop(latest) }),
 		).catch(() => undefined);
 		// A boot that failed leaves it `error` with its move, which is undone: cleared, as the error leaves it.
@@ -16001,6 +16110,7 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		sandboxId: string,
 		operationId: string,
 		placement: Placement,
+		signingVersion?: number,
 	): Promise<StoredSandbox | undefined> {
 		const latest = await store.sandboxes.get(sandboxId);
 		const moving = latest?.moving;
@@ -16015,11 +16125,15 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 		// runs on its new machine already, before it is published (whatever happens to its publishing).
 		if (moving.from !== "stopped" && moving.keepMemory === true)
 			await sendPendingKills(sandboxId).catch(() => undefined);
+		const sentSigningVersion = signingVersion ?? moving.signingVersion;
 		const committed = await boot(
 			sandboxId,
 			async () => placement,
 			undefined,
-			{ egressRevision: moving.egressRevision },
+			{
+				egressRevision: moving.egressRevision,
+				...(sentSigningVersion === undefined ? {} : { signingVersion: sentSigningVersion }),
+			},
 			(latest) => ({
 				moving: undefined,
 				latestSnapshotId: undefined,
@@ -16168,7 +16282,10 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 						return placement;
 					},
 					provisioning,
-					{ egressRevision: starting.egressRevision },
+					{
+						egressRevision: starting.egressRevision,
+						...(bootOptions.signingVersion === undefined ? {} : { signingVersion: bootOptions.signingVersion }),
+					},
 				);
 			}),
 		);
@@ -16373,6 +16490,18 @@ export function createComputeService(options: ComputeServiceOptions): ComputeSer
 				) {
 					connected ??= await connectedHosts();
 					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushEgress([sandbox]);
+				}
+				// A Git signing update or revocation that didn't get through (its host away, a call that failed) is sent
+				// again once its host is back, until the host acknowledges `signingFloor` or newer.
+				if (
+					backend.updateSigning !== undefined &&
+					sandbox.type === "microvm" &&
+					sandbox.signingFloor !== undefined &&
+					(sandbox.signingApplied ?? Number.NEGATIVE_INFINITY) < sandbox.signingFloor &&
+					!deliveringSigning.has(sandbox.id)
+				) {
+					connected ??= await connectedHosts();
+					if (sandbox.hostId !== undefined && connected.has(sandbox.hostId)) pushSigning([sandbox]);
 				}
 				// Due: past its time, owed a stop (`stopFor`) whatever its time says, or gone its idle stop's time unused. A use
 				// recorded before the stop moves it (`lastActiveAt`), or seen here and not yet stored, keeps it running:

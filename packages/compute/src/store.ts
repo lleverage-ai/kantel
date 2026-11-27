@@ -414,6 +414,12 @@ export type StoredSandbox = Omit<
 	 */
 	readonly signingFloor?: number;
 	/**
+	 * The latest Git signing version its backend has taken (at its boot, or acknowledging `updateSigning`). Behind
+	 * `signingFloor`, a signing update or revocation didn't get through (its host away, say), and the sweep sends the
+	 * signing configuration as it is now.
+	 */
+	readonly signingApplied?: number;
+	/**
 	 * Environment set-up it still has to do, recorded when the change that needs it is (a create, an attach, a move), and
 	 * taken off by its ID once a set-up has done it: never before, so a stopped set-up leaves it for the next, and never
 	 * an item another change added. Absent: none.
@@ -488,6 +494,7 @@ export type StoredSandbox = Omit<
 		/** The snapshot its microVM starts from (`upgradeSandbox`'s `from`), which it depends on while it is under way. */
 		readonly snapshotId?: string;
 		readonly egressRevision?: number;
+		readonly signingVersion?: number;
 	};
 	/**
 	 * A move to another host under way (it is `starting`, or `running` while a running sandbox's first copy is made; the
@@ -513,6 +520,7 @@ export type StoredSandbox = Omit<
 			readonly mountsAt?: number;
 		};
 		readonly egressRevision?: number;
+		readonly signingVersion?: number;
 		/**
 		 * Whether its memory goes with it, once its new host is chosen (said before anything is copied), and why not where
 		 * it was asked to and might have: the API's `move.keepMemory` and `restartReason`. Absent before then, and on a move

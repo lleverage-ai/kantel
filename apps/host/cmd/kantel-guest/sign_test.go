@@ -5,6 +5,8 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/pem"
 	"fmt"
 	"net"
@@ -162,7 +164,7 @@ func newGitRepo(t *testing.T, host *testSigningHost, pubFile string, config ...s
 	}
 	home := t.TempDir()
 	r := &gitRepo{t: t, dir: t.TempDir(), env: append(os.Environ(),
-		"HOME="+home, "XDG_CONFIG_HOME="+home, "GIT_CONFIG_NOSYSTEM=1", "GNUPGHOME="+shortDir(t, "kgh"),
+		"HOME="+home, "XDG_CONFIG_HOME="+home, "GIT_CONFIG_NOSYSTEM=1", "GNUPGHOME=",
 		envSignSocket+"="+host.socket, envSignPub+"="+pubFile, envVerifyHome+"="+filepath.Join(shortDir(t, "kvh"), "v"),
 	)}
 	r.git("init", "-q", "-b", "main")
@@ -459,5 +461,50 @@ func TestDoctorChecksGitSigning(t *testing.T) {
 	_ = os.Remove(signConfigFile)
 	if got := check(); got != "true git signing: none configured" {
 		t.Fatal(got)
+	}
+}
+
+func TestGPGVerifyHonoursGNUPGHOME(t *testing.T) {
+	dir := t.TempDir()
+	_, public, _ := newOpenPGPKey(t)
+	signPubFile = filepath.Join(dir, "signing.pub")
+	t.Cleanup(func() { signPubFile = guest.SigningPubFile })
+	if err := os.WriteFile(signPubFile, []byte(public), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	managedHome := filepath.Join(dir, "managed-verify-home")
+	if err := os.Mkdir(managedHome, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256([]byte(public))
+	if err := os.WriteFile(filepath.Join(managedHome, ".sha256"), []byte(hex.EncodeToString(sum[:])+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	origVerifyHome := verifyHome
+	verifyHome = func(int) string { return managedHome }
+	t.Cleanup(func() { verifyHome = origVerifyHome })
+
+	var gotArgs []string
+	execProgram = func(_ string, argv, _ []string) error {
+		gotArgs = argv
+		return fmt.Errorf("intercepted")
+	}
+	t.Cleanup(func() { execProgram = syscall.Exec })
+
+	// With GNUPGHOME set, kantel-sign must not prepend its own --homedir.
+	t.Setenv("GNUPGHOME", filepath.Join(dir, "custom-home"))
+	var stderr bytes.Buffer
+	gpgVerify([]string{"--verify", "sig.asc", "-"}, gpgArgs{verify: true, statusFD: -1}, &stderr)
+	if slices.Contains(gotArgs, "--homedir") {
+		t.Fatalf("prepended --homedir despite GNUPGHOME: %v", gotArgs)
+	}
+
+	// Without GNUPGHOME or --homedir, it prepends the managed verify keyring.
+	t.Setenv("GNUPGHOME", "")
+	gotArgs = nil
+	stderr.Reset()
+	gpgVerify([]string{"--verify", "sig.asc", "-"}, gpgArgs{verify: true, statusFD: -1}, &stderr)
+	if !slices.Contains(gotArgs, "--homedir") || !slices.Contains(gotArgs, managedHome) {
+		t.Fatalf("did not prepend managed --homedir when GNUPGHOME was empty: %v", gotArgs)
 	}
 }

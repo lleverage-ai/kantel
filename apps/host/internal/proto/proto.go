@@ -1395,8 +1395,10 @@ type CreateParams struct {
 	// create undone and refused as unsupported. An upgrade into a snapshot asks GuestFeatureRealTarget.
 	GuestFeatures []string `json:"guestFeatures,omitempty"`
 	// GitSigning is the public half of the sandbox's Git signing key (FeatureGitSigning, microVMs only): the guest is
-	// set up to sign with it through the host, which fetches the private key itself (signing.fetch).
-	GitSigning *GitSigning `json:"gitSigning,omitempty"`
+	// set up to sign with it through the host, which fetches the private key itself (signing.fetch). SigningVersion
+	// records the initial signing revision even when GitSigning is nil (such as a fork whose key was cleared).
+	GitSigning     *GitSigning `json:"gitSigning,omitempty"`
+	SigningVersion int64       `json:"signingVersion,omitempty"`
 }
 
 // StickyDisksMax is the most sticky disks a sandbox may have: the sticky drives every microVM has.
@@ -1707,9 +1709,10 @@ type ResumeParams struct {
 	// a host with FeatureGuestHealth does the same for a running sandbox whose guest agent doesn't answer.
 	Reset bool `json:"reset,omitempty"`
 	// GitSigning replaces the sandbox's Git signing key (FeatureGitSigning); ClearGitSigning removes it. Neither keeps
-	// the one it has.
+	// the one it has. SigningVersion orders the change against concurrent sandbox.signing notifications.
 	GitSigning      *GitSigning `json:"gitSigning,omitempty"`
 	ClearGitSigning bool        `json:"clearGitSigning,omitempty"`
+	SigningVersion  int64       `json:"signingVersion,omitempty"`
 }
 
 // ForkParams is sandbox.fork: a new sandbox from the source's current state (running: a live snapshot; stopped: its
@@ -1723,9 +1726,10 @@ type ForkParams struct {
 	// Env is the fork's own environment (its own protected placeholders); absent, it has its source's.
 	Env map[string]string `json:"env,omitempty"`
 	// GitSigning is the fork's own Git signing key (FeatureGitSigning); ClearGitSigning gives it none. Neither, it has
-	// its source's.
+	// its source's. SigningVersion orders the fork's initial signing state against concurrent updates.
 	GitSigning      *GitSigning `json:"gitSigning,omitempty"`
 	ClearGitSigning bool        `json:"clearGitSigning,omitempty"`
+	SigningVersion  int64       `json:"signingVersion,omitempty"`
 }
 
 // ExecParams is sandbox.exec. With Stream, output comes as events on the call before its result.

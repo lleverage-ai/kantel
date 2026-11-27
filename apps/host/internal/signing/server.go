@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"sync"
 	"time"
 
@@ -61,7 +62,22 @@ func SocketPath(vmDir, udsName string) string {
 // Listen serves sandboxID's guest its signing on SocketPath(vmDir, udsName). A listener already open on the same
 // socket path is kept (so live key updates leave no gap on disk); any other listener for the sandbox is closed first.
 func (m *Manager) Listen(sandboxID, vmDir, udsName string) error {
-	path := SocketPath(vmDir, udsName)
+	if udsName == "" || strings.Contains(udsName, "..") || strings.Contains(udsName, "/") || strings.Contains(udsName, `\`) {
+		return fmt.Errorf("signing socket: bad socket name")
+	}
+	cleanDir := filepath.Clean(vmDir)
+	path := filepath.Clean(SocketPath(cleanDir, udsName))
+	rel, err := filepath.Rel(cleanDir, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return fmt.Errorf("signing socket: bad socket path")
+	}
+	prefix := cleanDir
+	if !strings.HasSuffix(prefix, string(filepath.Separator)) {
+		prefix += string(filepath.Separator)
+	}
+	if !strings.HasPrefix(path, prefix) {
+		return fmt.Errorf("signing socket: bad socket path")
+	}
 	m.mu.Lock()
 	existing := m.listeners[sandboxID]
 	m.mu.Unlock()

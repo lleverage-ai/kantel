@@ -796,7 +796,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 		}
 		h.requireProtected(p.SandboxID, p.Egress)
-		h.requireSigning(p.SandboxID, p.GitSigning)
+		h.requireSigningVersion(p.SandboxID, p.GitSigning, p.SigningVersion)
 		e, fresh, err := h.prepareEgress(h.tierName(p.Tier), p.SandboxID, p.Egress)
 		if err != nil {
 			return nil, err
@@ -972,10 +972,19 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 				return nil, err
 			}
 		}
-		if p.ClearGitSigning && h.signing != nil {
-			h.signing.Store().Invalidate(p.SandboxID)
+		if p.ClearGitSigning || p.GitSigning != nil {
+			ver := signingVersionOf(p.GitSigning, p.SigningVersion)
+			if ver > 0 && ver < h.acceptedSigningVersion(t, p.SandboxID) {
+				p.GitSigning = nil
+				p.ClearGitSigning = false
+				p.SigningVersion = 0
+			} else {
+				if p.ClearGitSigning && h.signing != nil {
+					h.signing.Store().Invalidate(p.SandboxID)
+				}
+				h.requireSigningVersion(p.SandboxID, p.GitSigning, ver)
+			}
 		}
-		h.requireSigning(p.SandboxID, p.GitSigning)
 		return t.Resume(ctx, p, method == proto.MethodStart)
 	case proto.MethodFork:
 		p, err := decode[proto.ForkParams](params)
@@ -1003,7 +1012,7 @@ func (h *Host) Call(ctx context.Context, method string, params json.RawMessage, 
 			}
 		}
 		h.requireProtected(p.NewID, p.Egress)
-		h.requireSigning(p.NewID, p.GitSigning)
+		h.requireSigningVersion(p.NewID, p.GitSigning, p.SigningVersion)
 		// The fork gets its own CA: its parent's would let one sandbox's key be used for another's traffic.
 		e, fresh, err := h.prepareEgress(name, p.NewID, p.Egress)
 		if err != nil {

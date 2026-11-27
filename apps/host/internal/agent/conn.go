@@ -362,6 +362,9 @@ func (s *session) text(ctx context.Context, m proto.Message, update Updater) {
 }
 
 func (h *Host) applyWelcome(ctx context.Context, w *proto.Welcome, update Updater) {
+	if h.signing != nil {
+		h.signing.Store().InvalidateAll()
+	}
 	h.followImages(ctx, w.Images)
 	// The mesh and the peer sync server follow one welcome at a time: the server listens where the mesh is now.
 	h.welcomeMu.Lock()

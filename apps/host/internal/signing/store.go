@@ -90,6 +90,16 @@ func (s *Store) Invalidate(sandboxID string) {
 	delete(s.inflight, sandboxID)
 }
 
+// InvalidateAll drops every cached key and marks every in-flight fetch uncacheable while preserving each sandbox's
+// monotonic version floor. Called when the host reconnects to Kantel so a policy change missed while disconnected
+// can't linger in memory.
+func (s *Store) InvalidateAll() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	clear(s.entries)
+	clear(s.inflight)
+}
+
 // Forget drops everything held for a sandbox: stopped, deleted or moved away.
 func (s *Store) Forget(sandboxID string) {
 	s.mu.Lock()

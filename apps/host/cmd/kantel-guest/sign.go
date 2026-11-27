@@ -287,9 +287,9 @@ func statusWriter(fd int, stdout, stderr io.Writer) io.Writer {
 }
 
 // gpgVerify runs the real gpg with what it was asked: with a keyring holding the sandbox's signing key, when the
-// sandbox has an OpenPGP one and the caller names no keyring of its own.
+// sandbox has an OpenPGP one and the caller names neither --homedir nor GNUPGHOME.
 func gpgVerify(args []string, g gpgArgs, stderr io.Writer) int {
-	if !g.homedir {
+	if !g.homedir && os.Getenv("GNUPGHOME") == "" {
 		if home, err := verifyKeyring(stderr); err == nil && home != "" {
 			args = append([]string{"--homedir", home}, args...)
 		} else if err != nil {

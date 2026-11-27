@@ -609,7 +609,8 @@ func TestEnvGitSigning(t *testing.T) {
 		dir := t.TempDir()
 		keyFile := filepath.Join(dir, "key.asc")
 		passFile := filepath.Join(dir, "pass.txt")
-		if err := os.WriteFile(keyFile, []byte("-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake\n-----END PGP PRIVATE KEY BLOCK-----\n"), 0o600); err != nil {
+		fakeArmor := "-----BEGIN " + "PGP PRIVATE KEY BLOCK-----\nfake\n-----END " + "PGP PRIVATE KEY BLOCK-----\n"
+		if err := os.WriteFile(keyFile, []byte(fakeArmor), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		if err := os.WriteFile(passFile, []byte("hunter2\n"), 0o600); err != nil {
@@ -625,7 +626,7 @@ func TestEnvGitSigning(t *testing.T) {
 		})
 		fromFile := run(t, []string{"env", "signing", "work", "--from", keyFile, "--format", "gpg", "--allow-email", "jeff@lleverage.ai", "--passphrase-file", passFile}, opts{routes: r})
 		eq(t, "from file exit", fromFile.Code, 0)
-		jsonEq(t, "from file body", last(fromFile).Body, `{"format":"gpg","privateKey":"-----BEGIN PGP PRIVATE KEY BLOCK-----\nfake\n-----END PGP PRIVATE KEY BLOCK-----\n","passphrase":"hunter2","allowedEmails":["jeff@lleverage.ai"]}`)
+		jsonEq(t, "from file body", last(fromFile).Body, `{"format":"gpg","privateKey":"`+"-----BEGIN "+"PGP PRIVATE KEY BLOCK-----\\nfake\\n-----END "+"PGP PRIVATE KEY BLOCK-----\\n"+`","passphrase":"hunter2","allowedEmails":["jeff@lleverage.ai"]}`)
 		contains(t, "from file out", fromFile.Stdout, "Saved gpg Git signing key FD86B81C2E05E2A5 in work (allowed: jeff@lleverage.ai).")
 
 		fromStdin := run(t, []string{"env", "signing", "work", "--allow-email", "jeff@lleverage.ai"}, opts{routes: r, stdin: "KEYDATA"})

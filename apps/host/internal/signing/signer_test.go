@@ -2,16 +2,22 @@ package signing
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha512"
+	"encoding/base64"
+	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -20,6 +26,7 @@ import (
 	"github.com/ProtonMail/go-crypto/openpgp/packet"
 	"golang.org/x/crypto/ssh"
 
+	"github.com/lleverage-ai/kantel/apps/host/internal/guest"
 	"github.com/lleverage-ai/kantel/apps/host/internal/proto"
 )
 
@@ -224,7 +231,7 @@ func TestOpenPGPRefusesUnusableKeys(t *testing.T) {
 	k := newGPGKey(t, packet.PubKeyAlgoEdDSA, "", false)
 	cases := map[string]proto.SigningKey{
 		"public key only": {Format: FormatGPG, PrivateKey: k.public},
-		"not a key":       {Format: FormatGPG, PrivateKey: "-----BEGIN PGP PRIVATE KEY BLOCK-----\n\nnope\n-----END PGP PRIVATE KEY BLOCK-----\n"},
+		"not a key":       {Format: FormatGPG, PrivateKey: "-----BEGIN " + openpgp.PrivateKeyType + "-----\n\nnope\n-----END " + openpgp.PrivateKeyType + "-----\n"},
 		"no key":          {Format: FormatGPG},
 		"other format":    {Format: "x509", PrivateKey: k.private},
 	}
@@ -410,5 +417,128 @@ func TestSSHRefusesUnusableKeys(t *testing.T) {
 	plain := newSSHKey(t, "ed25519", "")
 	if _, err := ParseKey(proto.SigningKey{Format: FormatSSH, PrivateKey: plain.private, Passphrase: "unneeded"}, time.Now()); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestInvalidateAllReconcilesRevocationsAndKeepsFloor(t *testing.T) {
+	k1 := newSSHKey(t, "ed25519", "")
+	k2 := newSSHKey(t, "ed25519", "")
+	var mu sync.Mutex
+	current := proto.SigningKey{
+		Version:       10,
+		Enabled:       true,
+		Format:        FormatSSH,
+		KeyID:         "k1",
+		Fingerprint:   "fp1",
+		AllowedEmails: []string{testEmail, "extra@lleverage.ai"},
+		PrivateKey:    k1.private,
+	}
+	store := NewStore(func(_ context.Context, _ string) (proto.SigningKey, error) {
+		mu.Lock()
+		defer mu.Unlock()
+		return current, nil
+	})
+	mgr := NewManager(store)
+	handler := mgr.Handler("sbx_1")
+	sign := func(payload []byte) (string, error) {
+		body, err := json.Marshal(guest.SignRequest{
+			Format:  FormatSSH,
+			Payload: base64.StdEncoding.EncodeToString(payload),
+		})
+		if err != nil {
+			return "", err
+		}
+		req := httptest.NewRequest(http.MethodPost, "/sign", bytes.NewReader(body))
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			return "", fmt.Errorf("status %d: %s", rec.Code, strings.TrimSpace(rec.Body.String()))
+		}
+		var ans guest.SignAnswer
+		if err := json.Unmarshal(rec.Body.Bytes(), &ans); err != nil {
+			return "", err
+		}
+		return ans.Signature, nil
+	}
+	pub1, _, _, _, err := ssh.ParseAuthorizedKey([]byte(k1.public))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pub2, _, _, _, err := ssh.ParseAuthorizedKey([]byte(k2.public))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Warm the cache with v10 and verify signing works.
+	commit := testCommit()
+	sig1, err := sign(commit)
+	if err != nil {
+		t.Fatalf("initial sign failed: %v", err)
+	}
+	checkSSHSIG(t, pub1, commit, sig1)
+
+	// Upstream removes testEmail at v11 (delivery lost while disconnected); reconnect triggers InvalidateAll.
+	mu.Lock()
+	current.Version = 11
+	current.AllowedEmails = []string{"extra@lleverage.ai"}
+	mu.Unlock()
+	store.InvalidateAll()
+	if _, err := sign(commit); err == nil {
+		t.Fatal("removed email still signed after reconnect invalidation")
+	}
+
+	// Upstream rotates to k2 with testEmail allowed at v12.
+	mu.Lock()
+	current.Version = 12
+	current.KeyID = "k2"
+	current.Fingerprint = "fp2"
+	current.AllowedEmails = []string{testEmail}
+	current.PrivateKey = k2.private
+	mu.Unlock()
+	store.InvalidateAll()
+	sig2, err := sign(commit)
+	if err != nil {
+		t.Fatalf("rotated sign failed: %v", err)
+	}
+	checkSSHSIG(t, pub2, commit, sig2)
+
+	// Upstream deletes the key at v13; after reconnect invalidation signing must be refused.
+	mu.Lock()
+	current = proto.SigningKey{Version: 13, Enabled: false}
+	mu.Unlock()
+	store.InvalidateAll()
+	if _, err := sign(commit); err == nil {
+		t.Fatal("deleted key still signed after reconnect invalidation")
+	}
+
+	// Floor was preserved at v13: a stale fetch returning v12 must be rejected.
+	store.Require("sbx_1", 13)
+	mu.Lock()
+	current = proto.SigningKey{
+		Version:       12,
+		Enabled:       true,
+		Format:        FormatSSH,
+		KeyID:         "k2",
+		Fingerprint:   "fp2",
+		AllowedEmails: []string{testEmail},
+		PrivateKey:    k2.private,
+	}
+	mu.Unlock()
+	store.InvalidateAll()
+	if _, err := sign(commit); err == nil {
+		t.Fatal("stale version below floor was accepted after InvalidateAll")
+	}
+}
+
+func TestListenRejectsUnsafeSocketNames(t *testing.T) {
+	mgr := NewManager(NewStore(func(_ context.Context, _ string) (proto.SigningKey, error) {
+		return proto.SigningKey{}, nil
+	}))
+	defer mgr.CloseAll()
+	dir := t.TempDir()
+	for _, bad := range []string{"", "..", "../escape", "sub/vsock", `sub\vsock`} {
+		if err := mgr.Listen("sbx_1", dir, bad); err == nil {
+			t.Fatalf("Listen accepted unsafe udsName %q", bad)
+		}
 	}
 }

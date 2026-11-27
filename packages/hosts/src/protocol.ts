@@ -1646,6 +1646,8 @@ export interface HostResumeParams {
 	readonly gitSigning?: HostGitSigning;
 	/** Explicitly clears any prior Git signing config on the sandbox when none applies. */
 	readonly clearGitSigning?: boolean;
+	/** Orders the boot's signing change (including clears) against newer sandbox.signing notifications. */
+	readonly signingVersion?: number;
 	/** Orders the boot's egress (its `egressRevision`); with one, no `egress` is the host's default, a clear. */
 	readonly revision?: number;
 	/**

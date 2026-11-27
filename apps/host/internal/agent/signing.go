@@ -15,7 +15,32 @@ import (
 
 // signingSetter is a tier whose sandboxes' Git is signed on the host (the microVM tier).
 type signingSetter interface {
-	SetSigning(ctx context.Context, id string, cfg *proto.GitSigning) error
+	SetSigning(ctx context.Context, id string, cfg *proto.GitSigning, version int64) error
+}
+
+// signingVersioner is a tier that remembers the latest signing version it accepted for each sandbox (including clears).
+type signingVersioner interface {
+	SigningVersion(id string) int64
+}
+
+func signingVersionOf(g *proto.GitSigning, version int64) int64 {
+	if g != nil && g.Version > version {
+		return g.Version
+	}
+	return version
+}
+
+func (h *Host) acceptedSigningVersion(t Tier, sandboxID string) int64 {
+	var floor int64
+	if h.signing != nil {
+		floor = h.signing.Store().MinVersion(sandboxID)
+	}
+	if v, ok := t.(signingVersioner); ok {
+		if got := v.SigningVersion(sandboxID); got > floor {
+			floor = got
+		}
+	}
+	return floor
 }
 
 // fetchSigning is the signing.Store's fetch: signing.fetch to Kantel. Its errors never quote the answer, which holds
@@ -39,8 +64,15 @@ func (h *Host) fetchSigning(ctx context.Context, sandboxID string) (proto.Signin
 // requireSigning passes the signing key version a create, start, resume or fork names to the store: a key older than
 // it is no longer fetched or used.
 func (h *Host) requireSigning(sandboxID string, g *proto.GitSigning) {
-	if h.signing != nil && g != nil {
-		h.signing.Store().Require(sandboxID, g.Version)
+	h.requireSigningVersion(sandboxID, g, 0)
+}
+
+func (h *Host) requireSigningVersion(sandboxID string, g *proto.GitSigning, version int64) {
+	if h.signing == nil {
+		return
+	}
+	if v := signingVersionOf(g, version); v > 0 {
+		h.signing.Store().Require(sandboxID, v)
 	}
 }
 
@@ -51,14 +83,10 @@ func (h *Host) forgetSigning(sandboxID string) {
 	}
 }
 
-// setSigning is sandbox.signing: the sandbox's key changed (or went). The host's copy goes, the next signature fetches
-// the new one, and the sandbox's record and running guest take the new public half.
+// setSigning is sandbox.signing: the sandbox's key changed (or went). Notifications older than the latest accepted
+// signing revision are ignored before anything is invalidated or changed; equal-version retries still run so a partial
+// guest update can finish.
 func (h *Host) setSigning(ctx context.Context, t Tier, tier string, p proto.SigningParams) error {
-	if h.signing != nil {
-		store := h.signing.Store()
-		store.Invalidate(p.SandboxID)
-		store.Require(p.SandboxID, p.Version)
-	}
 	setter, ok := t.(signingSetter)
 	if !ok {
 		if p.Signing == nil {
@@ -66,7 +94,18 @@ func (h *Host) setSigning(ctx context.Context, t Tier, tier string, p proto.Sign
 		}
 		return &proto.Error{Code: proto.ErrUnsupported, Message: fmt.Sprintf("the %s tier on this host doesn't sign Git commits", tier)}
 	}
-	return setter.SetSigning(ctx, p.SandboxID, p.Signing)
+	version := signingVersionOf(p.Signing, p.Version)
+	if version > 0 && version < h.acceptedSigningVersion(t, p.SandboxID) {
+		return nil
+	}
+	if h.signing != nil {
+		store := h.signing.Store()
+		store.Invalidate(p.SandboxID)
+		if version > 0 {
+			store.Require(p.SandboxID, version)
+		}
+	}
+	return setter.SetSigning(ctx, p.SandboxID, p.Signing, version)
 }
 
 // --- signing events -------------------------------------------------------------------------------------------------

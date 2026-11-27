@@ -388,6 +388,8 @@ export interface SandboxSpec {
 	readonly gitSigning?: BackendGitSigning;
 	/** On a fork: explicitly clear any signing config inherited from the source when the fork has none. */
 	readonly clearGitSigning?: boolean;
+	/** Monotonic signing revision for ordering creates, forks and clears on the host. */
+	readonly signingVersion?: number;
 	/** Made from a template (microVMs only): from its built snapshot, or by booting its base image fresh. */
 	readonly template?: SandboxTemplateBoot;
 	/**
@@ -838,6 +840,8 @@ export interface BootOptions {
 	readonly gitSigning?: BackendGitSigning;
 	/** Explicitly clear any previous Git signing config on this boot when the sandbox has none. */
 	readonly clearGitSigning?: boolean;
+	/** Monotonic signing revision for ordering boots and clears on the host. */
+	readonly signingVersion?: number;
 	/** The sandbox's mounts, mounted again on the new machine. */
 	readonly mounts?: readonly BackendMount[];
 	/**
