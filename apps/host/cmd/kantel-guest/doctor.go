@@ -83,7 +83,7 @@ func probes(bindings []binding, hosts []string) []probe {
 	return out
 }
 
-// doctor checks, from inside the sandbox, that protected variables will work: the proxy is set, the sandbox trusts
+// doctor checks, from inside the sandbox, that Git signing and protected variables will work: the proxy is set, the sandbox trusts
 // its egress certificate, and each placeholder in the environment would be swapped at each host it is bound to. The
 // checks go through the proxy with the placeholder only; the proxy answers them itself and sends nothing on.
 func doctor(out io.Writer) int {
@@ -110,6 +110,7 @@ func doctor(out io.Writer) int {
 	sort.Strings(names)
 
 	checkCA(report, len(names) > 0)
+	checkGitSigning(report)
 
 	if len(names) == 0 {
 		report(true, "protected variables", "none in this environment")

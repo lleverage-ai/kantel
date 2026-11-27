@@ -194,6 +194,7 @@ RUN chmod -R u+rwX,go+rX-w /tmp/kantel-rootfs /usr/local/bin/kantel-guest \
 	&& install -d -m 0700 /root/.docker && install -m 0600 /home/user/.docker/config.json /root/.docker/config.json \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-doctor \
 	&& ln -sf kantel-guest /usr/local/bin/kantel-connect \
+	&& ln -sf kantel-guest /usr/local/bin/kantel-sign \
 	&& ssh-keygen -lf /etc/ssh/ssh_known_hosts >/dev/null \
 	&& test "$(ssh -G git@github.com | sed -n 's/^proxycommand //p')" = '/usr/local/bin/kantel-connect %h %p'
 

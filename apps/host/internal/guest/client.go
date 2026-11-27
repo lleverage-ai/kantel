@@ -209,6 +209,16 @@ func (c *Client) SetIdentitySteps(ctx context.Context, id Identity) (map[string]
 	return out.StepsMs, err
 }
 
+// SetSigning makes a running guest's Git sign with cfg's key through the host, or not at all for nil (POST /signing).
+// An agent from before it answers 404 (IsNotFound).
+func (c *Client) SetSigning(ctx context.Context, cfg *GitSigningConfig) error {
+	body := struct {
+		GitSigning *GitSigningConfig `json:"gitSigning"`
+	}{cfg}
+	_, err := c.do(ctx, http.MethodPost, "/signing", jsonBody(body), &map[string]any{})
+	return err
+}
+
 // GrowDisk grows the file system on the sandbox's disk (/dev/vdb) to fill the device, online, after the host made the
 // device bytes long: the agent first waits until the guest kernel sees that capacity. An older agent answers 404
 // (IsNotFound).

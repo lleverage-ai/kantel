@@ -162,6 +162,7 @@ func (m *Manager) reset(s *sandbox, why string) {
 	if mt := m.mountsOf(s); mt != nil {
 		mt.Close()
 	}
+	m.closeSigning(s)
 	if s.link != nil {
 		m.cfg.Network.Remove(*s.link)
 		m.detach(s.link.Slot)
